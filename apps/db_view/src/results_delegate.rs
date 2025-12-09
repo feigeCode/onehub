@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use db::{FieldType, TableColumnMeta};
-use gpui::{div, px, App, Context, IntoElement, ParentElement, Styled, Window};
+use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Window};
 use gpui_component::{button::{Button, ButtonVariants}, h_flex, table::{Column, ColumnFilterValue, TableDelegate, TableState}, IconName, Sizable, Size};
+use gpui_component::input::InputState;
 
 /// Represents a single cell change with old and new values
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,23 +459,26 @@ impl TableDelegate for EditorTableDelegate {
             .unwrap_or_default()
     }
 
-    fn is_cell_editable(&self, row_ix: usize, _col_ix: usize, _cx: &App) -> bool {
+    fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) -> Option<Entity<InputState>> {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
+        
+        if self.is_deleted_row(actual_row) {
+            return None;
+        }
 
-        // Don't allow editing deleted rows
-        !self.is_deleted_row(actual_row)
-    }
-
-    fn get_cell_value(&self, row_ix: usize, col_ix: usize, _cx: &App) -> String {
-        // Map display row index to actual row index
-        let actual_row = self.map_display_to_actual_row(row_ix);
-
-        self.rows
+        let value = self.rows
             .get(actual_row)
             .and_then(|r| r.get(col_ix))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Create input state with the current value (support multiline)
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).multi_line(true).rows(1).auto_grow(1,1);
+            state.set_value(value, window, cx);
+            state
+        });
+        Some(input)
     }
 
     fn on_cell_edited(
