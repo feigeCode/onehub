@@ -15,7 +15,8 @@ use crate::{
     v_flex, ActiveTheme, Icon, IconName, StyleSized as _, StyledExt,
     VirtualListScrollHandle,
 };
-
+use crate::list::{List, ListState};
+use crate::table::filter_panel::FilterPanel;
 use super::*;
 use super::filter_state::FilterState;
 
@@ -132,10 +133,12 @@ pub struct TableState<D: TableDelegate> {
     /// Filter state for column filtering.
     filter_state: FilterState,
 
+    filter_list: Option<Entity<ListState<FilterPanel>>>,
+
     /// 当前打开的筛选面板的列索引（用于跟踪哪个筛选面板是打开的）
     active_filter_col: Option<usize>,
     /// 筛选面板中的值（临时存储，直到确认）
-    filter_panel_values: Vec<super::filter_panel::FilterValue>,
+    filter_panel_values: Vec<filter_panel::FilterValue>,
     /// 搜索查询（用于筛选面板中的搜索）
     filter_search_query: String,
 
@@ -168,6 +171,7 @@ where
             fixed_head_cols_bounds: Bounds::default(),
             visible_range: TableVisibleRange::default(),
             filter_state: FilterState::new(),
+            filter_list: None,
             active_filter_col: None,
             filter_panel_values: Vec::new(),
             filter_search_query: String::new(),
@@ -370,7 +374,7 @@ where
     }
 
     /// 打开筛选面板
-    pub fn open_filter_panel(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+    pub fn open_filter_panel(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let filter_values = self.delegate.get_column_filter_values(col_ix, cx);
         let current_filter = self.filter_state.get_filter(col_ix);
 
@@ -380,9 +384,10 @@ where
                 let selected = current_filter
                     .map(|f| f.selected_values.contains(fv.value.as_ref()))
                     .unwrap_or(true);
-                super::filter_panel::FilterValue {
+                filter_panel::FilterValue {
                     value: fv.value.to_string(),
                     count: fv.count,
+                    checked: selected,
                     selected,
                 }
             })
@@ -390,6 +395,11 @@ where
 
         self.active_filter_col = Some(col_ix);
         self.filter_search_query.clear();
+
+        // Create FilterPanel with the values
+        let filter_panel = FilterPanel::new(self.filter_panel_values.clone());
+        self.filter_list = Some(cx.new(|cx| ListState::new(filter_panel, window, cx)));
+
         cx.notify();
     }
 
@@ -421,7 +431,7 @@ where
     }
 
     /// 获取筛选面板中的值（根据搜索过滤）
-    pub fn get_filtered_panel_values(&self) -> Vec<&super::filter_panel::FilterValue> {
+    pub fn get_filtered_panel_values(&self) -> Vec<&filter_panel::FilterValue> {
         if self.filter_search_query.is_empty() {
             self.filter_panel_values.iter().collect()
         } else {
@@ -544,7 +554,7 @@ where
 
     fn on_row_left_click(
         &mut self,
-        e: &ClickEvent,
+        _e: &ClickEvent,
         row_ix: usize,
         _: &mut Window,
         cx: &mut Context<Self>,
@@ -573,24 +583,12 @@ where
         if e.click_count() == 2 {
             // Double click: enter edit mode (not for row number column)
             if !is_row_number_col {
-                // Calculate the actual column index for delegate
-                let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
-                    col_ix - 1
-                } else {
-                    col_ix
-                };
-                
-                if self.delegate.is_cell_editable(row_ix, delegate_col_ix, cx) {
-                    self.start_editing(row_ix, col_ix, window, cx);
-                }
+                self.start_editing(row_ix, col_ix, window, cx);
             }
         } else {
             // Single click
-            if is_row_number_col {
+            if !is_row_number_col {
                 // Click on row number column: select entire row
-                self.set_selected_row(row_ix, cx);
-            } else {
-                // Click on other cells: emit cell selection event
                 self.set_selected_cell(row_ix, col_ix, cx);
             }
         }
@@ -615,20 +613,13 @@ where
             col_ix
         };
 
-        // Get the current cell value from delegate
-        let value = self.delegate.get_cell_value(row_ix, delegate_col_ix, cx);
-
-        // Create input state with the current value (support multiline)
-        let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).multi_line(true).rows(1).auto_grow(1,1);
-            state.set_value(value, window, cx);
-            state
-        });
-
-        self.editing_cell = Some((row_ix, col_ix));
-        self.editing_input = Some(input);
-        cx.emit(TableEvent::CellEditing(row_ix, col_ix));
-        cx.notify();
+        let input = self.delegate.build_input(row_ix, delegate_col_ix, window, cx);
+        if input.is_some() {
+            self.editing_cell = Some((row_ix, col_ix));
+            self.editing_input = Some(input.unwrap());
+            cx.emit(TableEvent::CellEditing(row_ix, col_ix));
+            cx.notify();
+        }
     }
 
     /// Commit the current cell edit.
@@ -1269,18 +1260,28 @@ where
                         .icon(IconName::Settings)
                         .ghost()
                         .with_size(Size::XSmall)
-                        .when(is_filtered, |this| this.primary())
+                        .ary())
                 )
                 .content({
-                    let table_entity = cx.entity().clone();
-                    move |_, _, cx| {
-                        let selected_count = table_entity.clone().read(cx).filter_panel_selected_count();
+                    let table_enlone();
+                    move |_, window, cx| {
+                        // Initialize filter panel when popover o
+
+                          l_ix);
+
+                        if needs_init{
+                            table_entity.update(cx, |table, cx| {
+                                table.open_filter_panel(col_ix, window, cx);
+                            });
+                        }
+
+                        let selected_count = tabl);
                         let total_count = table_entity.clone().read(cx).filter_panel_total_count();
-                        let filtered_values = table_entity.clone().read(cx).get_filtered_panel_values()
+                        let filt
                             .into_iter()
                             .cloned()
-                            .collect::<Vec<_>>();
-
+                            .collectec<_>>();
+                        let filter);p().clone(nwraref().us_lter_list.a(cx).fine().reade_entity.clol = tabl_pane::<Vvalues()d_panel__filtere.getead(cx)lone().re_entity.ctablvalues = ered_
                         v_flex()
                             .w(px(300.))
                             .max_h(px(500.))
@@ -1339,44 +1340,15 @@ where
                                     .flex_1()
                                     .gap_1()
                                     .px_1()
-                                    .children(filtered_values.iter().map(|v| {
-                                        let v_clone = v.clone();
-                                        let entity = table_entity.clone();
-
-                                        h_flex()
+                                    .child(
+                                        List::new(&filter_panel)
+                                            .p(px(8.))
+                                            .flex_1()
                                             .w_full()
-                                            .px_2()
-                                            .py_1()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap_2()
-                                            .cursor_pointer()
-                                            .child(
-                                                h_flex()
-                                                    .flex_1()
-                                                    .gap_2()
-                                                    .items_center()
-                                                    .overflow_x_hidden()
-                                                    .child(
-                                                        crate::checkbox::Checkbox::new(
-                                                            SharedString::from(format!("filter-{}", v.value)),
-                                                        )
-                                                            .checked(v.selected),
-                                                    )
-                                                    .child(
-                                                        crate::label::Label::new(v.value.clone())
-                                                            .whitespace_nowrap()
-                                                            .overflow_hidden()
-                                                            .text_ellipsis(),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(format!("({})", v.count)),
-                                            )
-                                    }))
+                                            .border_1()
+                                            .border_color(cx.theme().border)
+                                            .rounded(cx.theme().radius),
+                                    )
                                     .when(filtered_values.is_empty(), |this| {
                                         this.child(
                                             div()
@@ -1443,6 +1415,13 @@ where
         let movable = self.col_movable && col_group.column.movable && !is_row_number_col;
         let paddings = col_group.column.paddings;
         let name = col_group.column.name.clone();
+        let col_group_width = col_group.width;
+
+        // Render filter icon first to avoid borrow issues
+        let filter_icon = self.render_filter_icon(col_ix, window, cx);
+
+        // Get col_group again after mutable borrow
+        let col_group = self.col_groups.get(col_ix).expect("BUG: invalid col index");
 
         h_flex()
             .h_full()
@@ -1483,7 +1462,7 @@ where
                                     self.options.size.table_cell_padding().right - paddings.right;
                                 this.pr(offset_pr.max(px(0.)))
                             })
-                            .children(self.render_filter_icon(col_ix, window, cx))
+                            .children(filter_icon)
                             .children(self.render_sort_icon(col_ix, &col_group, window, cx)),
                     )
                     .when(movable, |this| {
@@ -1492,7 +1471,7 @@ where
                                 entity_id,
                                 col_ix,
                                 name,
-                                width: col_group.width,
+                                width: col_group_width,
                             },
                             |drag, _, _, cx| {
                                 cx.stop_propagation();
@@ -1810,9 +1789,9 @@ where
                         this.on_row_right_click(e, row_ix, window, cx);
                     }),
                 )
-                .on_click(cx.listener(move |this, e, window, cx| {
-                    this.on_row_left_click(e, row_ix, window, cx);
-                }))
+                // .on_click(cx.listener(move |this, e, window, cx| {
+                //     this.on_row_left_click(e, row_ix, window, cx);
+                // }))
         } else {
             // Render fake rows to fill the rest table space
             self.delegate
