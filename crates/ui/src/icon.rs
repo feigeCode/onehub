@@ -1,9 +1,6 @@
 use crate::{ActiveTheme, Sizable, Size};
-use gpui::{
-    prelude::FluentBuilder as _, svg, AnyElement, App, AppContext, Context, Entity, Hsla,
-    IntoElement, Radians, Render, RenderOnce, SharedString, StyleRefinement, Styled, Svg,
-    Transformation, Window,
-};
+use gpui::{div, img, prelude::FluentBuilder as _, svg, AnyElement, App, AppContext, Context, Entity, Hsla, IntoElement, ParentElement, Radians, Render, RenderOnce, SharedString, StyleRefinement, Styled, Svg, Transformation, Window};
+
 
 /// Types implementing this trait can automatically be converted to [`Icon`].
 ///
@@ -18,6 +15,15 @@ impl<T: IconNamed> From<T> for Icon {
     fn from(value: T) -> Self {
         Icon::build(value)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IconColorMode {
+    /// Monochrome mode: uses SVG with text_color tinting (default)
+    #[default]
+    Mono,
+    /// Color mode: renders the original SVG/image colors
+    Color,
 }
 
 /// The name of an icon in the asset bundle.
@@ -109,12 +115,33 @@ pub enum IconName {
     WindowMaximize,
     WindowMinimize,
     WindowRestore,
+    Database,
+    Table,
+    Column,
+    Key,
+    Redis,
+    Terminal,
+    Apps,
+    MongoDB,
+    MySQLColor,
+    MySQLLineColor,
+    PostgreSQLColor,
+    MSSQLColor,
+    OracleColor,
+    Workspace,
+    RedisColor,
+    All
 }
 
 impl IconName {
     /// Return the icon as a Entity<Icon>
     pub fn view(self, cx: &mut App) -> Entity<Icon> {
         Icon::build(self).view(cx)
+    }
+
+    /// Return the icon in color mode (renders original colors)
+    pub fn color(self) -> Icon {
+        Icon::build(self).color()
     }
 }
 
@@ -207,6 +234,22 @@ impl IconNamed for IconName {
             Self::WindowMaximize => "icons/window-maximize.svg",
             Self::WindowMinimize => "icons/window-minimize.svg",
             Self::WindowRestore => "icons/window-restore.svg",
+            Self::Database => "icons/db.svg",
+            Self::Table => "icons/table.svg",
+            Self::Column => "icons/column.svg",
+            Self::Key => "icons/key.svg",
+            Self::Redis => "icons/redis.svg",
+            Self::Terminal => "icons/terminal.svg",
+            Self::Apps => "icons/apps.svg",
+            Self::MongoDB => "icons/mongodb.svg",
+            Self::MySQLColor => "icons/mysql_color.svg",
+            Self::PostgreSQLColor => "icons/postgresql_color.svg",
+            Self::MSSQLColor => "icons/mssql_color.svg",
+            Self::MySQLLineColor => "icons/mysql_line_color.svg",
+            Self::OracleColor => "icons/oracle_color.svg",
+            Self::Workspace => "icons/workspace.svg",
+            Self::RedisColor => "icons/redis_color.svg",
+            Self::All => "icons/all.svg"
         }
         .into()
     }
@@ -232,6 +275,7 @@ pub struct Icon {
     text_color: Option<Hsla>,
     size: Option<Size>,
     rotation: Option<Radians>,
+    color_mode: IconColorMode,
 }
 
 impl Default for Icon {
@@ -243,6 +287,7 @@ impl Default for Icon {
             text_color: None,
             size: None,
             rotation: None,
+            color_mode: IconColorMode::default(),
         }
     }
 }
@@ -254,6 +299,7 @@ impl Clone for Icon {
         this.rotation = self.rotation;
         this.size = self.size;
         this.text_color = self.text_color;
+        this.color_mode = self.color_mode;
         this
     }
 }
@@ -296,6 +342,24 @@ impl Icon {
             .with_transformation(Transformation::rotate(radians));
         self
     }
+
+    /// Set the icon color mode
+    pub fn color_mode(mut self, mode: IconColorMode) -> Self {
+        self.color_mode = mode;
+        self
+    }
+
+    /// Set the icon to color mode (renders original colors)
+    pub fn color(mut self) -> Self {
+        self.color_mode = IconColorMode::Color;
+        self
+    }
+
+    /// Set the icon to mono mode (uses text_color tinting)
+    pub fn mono(mut self) -> Self {
+        self.color_mode = IconColorMode::Mono;
+        self
+    }
 }
 
 impl Styled for Icon {
@@ -318,24 +382,49 @@ impl Sizable for Icon {
 
 impl RenderOnce for Icon {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let text_color = self.text_color.unwrap_or_else(|| window.text_style().color);
         let text_size = window.text_style().font_size.to_pixels(window.rem_size());
         let has_base_size = self.style.size.width.is_some() || self.style.size.height.is_some();
 
-        let mut base = self.base;
-        *base.style() = self.style;
+        match self.color_mode {
+            IconColorMode::Mono => {
+                // Monochrome mode: use SVG with text_color tinting
+                let text_color = self.text_color.unwrap_or_else(|| window.text_style().color);
 
-        base.flex_shrink_0()
-            .text_color(text_color)
-            .when(!has_base_size, |this| this.size(text_size))
-            .when_some(self.size, |this, size| match size {
-                Size::Size(px) => this.size(px),
-                Size::XSmall => this.size_3(),
-                Size::Small => this.size_3p5(),
-                Size::Medium => this.size_4(),
-                Size::Large => this.size_6(),
-            })
-            .path(self.path)
+                let mut base = self.base;
+                *base.style() = self.style;
+
+                base.flex_shrink_0()
+                    .text_color(text_color)
+                    .when(!has_base_size, |this| this.size(text_size))
+                    .when_some(self.size, |this, size| match size {
+                        Size::Size(px) => this.size(px),
+                        Size::XSmall => this.size_3(),
+                        Size::Small => this.size_3p5(),
+                        Size::Medium => this.size_4(),
+                        Size::Large => this.size_6(),
+                    })
+                    .path(self.path)
+                    .into_any_element()
+            }
+            IconColorMode::Color => {
+                // Color mode: use img to render original colors
+                let size = self.size.unwrap_or(Size::Medium);
+                let (w, h) = match size {
+                    Size::Size(px) => (px, px),
+                    Size::XSmall => (gpui::px(12.), gpui::px(12.)),
+                    Size::Small => (gpui::px(14.), gpui::px(14.)),
+                    Size::Medium => (gpui::px(16.), gpui::px(16.)),
+                    Size::Large => (gpui::px(24.), gpui::px(24.)),
+                };
+
+                div()
+                    .flex_shrink_0()
+                    .w(w)
+                    .h(h)
+                    .child(img(self.path.clone()).size_full())
+                    .into_any_element()
+            }
+        }
     }
 }
 
@@ -347,26 +436,51 @@ impl From<Icon> for AnyElement {
 
 impl Render for Icon {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text_color = self.text_color.unwrap_or_else(|| cx.theme().foreground);
         let text_size = window.text_style().font_size.to_pixels(window.rem_size());
         let has_base_size = self.style.size.width.is_some() || self.style.size.height.is_some();
 
-        let mut base = svg().flex_none();
-        *base.style() = self.style.clone();
+        match self.color_mode {
+            IconColorMode::Mono => {
+                // Monochrome mode: use SVG with text_color tinting
+                let text_color = self.text_color.unwrap_or_else(|| cx.theme().foreground);
 
-        base.flex_shrink_0()
-            .text_color(text_color)
-            .when(!has_base_size, |this| this.size(text_size))
-            .when_some(self.size, |this, size| match size {
-                Size::Size(px) => this.size(px),
-                Size::XSmall => this.size_3(),
-                Size::Small => this.size_3p5(),
-                Size::Medium => this.size_4(),
-                Size::Large => this.size_6(),
-            })
-            .path(self.path.clone())
-            .when_some(self.rotation, |this, rotation| {
-                this.with_transformation(Transformation::rotate(rotation))
-            })
+                let mut base = svg().flex_none();
+                *base.style() = self.style.clone();
+
+                base.flex_shrink_0()
+                    .text_color(text_color)
+                    .when(!has_base_size, |this| this.size(text_size))
+                    .when_some(self.size, |this, size| match size {
+                        Size::Size(px) => this.size(px),
+                        Size::XSmall => this.size_3(),
+                        Size::Small => this.size_3p5(),
+                        Size::Medium => this.size_4(),
+                        Size::Large => this.size_6(),
+                    })
+                    .path(self.path.clone())
+                    .when_some(self.rotation, |this, rotation| {
+                        this.with_transformation(Transformation::rotate(rotation))
+                    })
+                    .into_any_element()
+            }
+            IconColorMode::Color => {
+                // Color mode: use img to render original colors
+                let size = self.size.unwrap_or(Size::Medium);
+                let (w, h) = match size {
+                    Size::Size(px) => (px, px),
+                    Size::XSmall => (gpui::px(12.), gpui::px(12.)),
+                    Size::Small => (gpui::px(14.), gpui::px(14.)),
+                    Size::Medium => (gpui::px(16.), gpui::px(16.)),
+                    Size::Large => (gpui::px(24.), gpui::px(24.)),
+                };
+
+                div()
+                    .flex_shrink_0()
+                    .w(w)
+                    .h(h)
+                    .child(img(self.path.clone()).size_full())
+                    .into_any_element()
+            }
+        }
     }
 }

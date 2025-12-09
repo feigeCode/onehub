@@ -6,3 +6,44 @@
 index.scip
 *.log
 node_modules/
+
+# Rust build artifacts
+target/
+**/target/
+crates/**/target/
+
+# Debug artifacts
+**/*.rs.bk
+*.pdb
+
+# Claude Code
+.claude
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Cargo lock for libraries (keep for binaries)
+# Cargo.lock is already tracked, so commenting this out
+# Cargo.lock
+
+# Backup files
+*.bak
+*.tmp
+
+# OS specific
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Application specific
+onehub.db
+onehub.db-shm
+onehub.db-wal
+
+.qwen
+.specify
+specs
+draft_constitution.md

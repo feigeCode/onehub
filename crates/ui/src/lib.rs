@@ -65,6 +65,8 @@ pub mod text;
 pub mod theme;
 pub mod tooltip;
 pub mod tree;
+pub mod context_menu_tree;
+
 pub use time::{calendar, date_picker};
 
 pub use crate::Disableable;

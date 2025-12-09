@@ -1,27 +1,29 @@
-use std::{ops::Range, rc::Rc, time::Duration};
+// 1. 标准库导入
+use std::{collections::HashSet, ops::Range, rc::Rc, time::Duration};
 
+// 2. 外部 crate 导入
+use gpui::{canvas, div, prelude::FluentBuilder, px, uniform_list, AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Task, UniformListScrollHandle, Window};
+
+// 3. 当前 crate 导入
 use crate::{
-    ActiveTheme, Icon, IconName, StyleSized as _, StyledExt, VirtualListScrollHandle,
-    actions::{Cancel, SelectDown, SelectUp},
+    actions::{Cancel, Confirm, SelectDown, SelectUp},
     h_flex,
+    input::{Input, InputState},
     menu::{ContextMenuExt, PopupMenu},
+    popover::Popover,
     scroll::{ScrollableMask, Scrollbar},
-    v_flex,
-};
-use gpui::{
-    AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled, Task, UniformListScrollHandle, Window, canvas, div,
-    prelude::FluentBuilder, px, uniform_list,
+    v_flex, ActiveTheme, Icon, IconName, StyleSized as _, StyledExt,
+    VirtualListScrollHandle,
 };
 
 use super::*;
+use super::filter_state::FilterState;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum SelectionState {
     Column,
     Row,
+    Cell
 }
 
 /// The Table event.
@@ -33,6 +35,8 @@ pub enum TableEvent {
     DoubleClickedRow(usize),
     /// Selected column.
     SelectColumn(usize),
+    /// Selected cell (row_ix, col_ix).
+    SelectCell(usize, usize),
     /// The column widths have changed.
     ///
     /// The `Vec<Pixels>` contains the new widths of all columns.
@@ -42,6 +46,14 @@ pub enum TableEvent {
     /// The first `usize` is the original index of the column,
     /// and the second `usize` is the new index of the column.
     MoveColumn(usize, usize),
+    /// A cell is being edited.
+    CellEditing(usize, usize),
+    /// A cell edit was committed.
+    CellEdited(usize, usize),
+    /// A row was added.
+    RowAdded,
+    /// A row was deleted.
+    RowDeleted(usize),
 }
 
 /// The visible range of the rows and columns.
@@ -93,6 +105,8 @@ pub struct TableState<D: TableDelegate> {
     pub col_movable: bool,
     /// Enable/disable fixed columns feature.
     pub col_fixed: bool,
+    /// Enable/disable column filtering feature.
+    pub col_filterable: bool,
 
     pub vertical_scroll_handle: UniformListScrollHandle,
     pub horizontal_scroll_handle: VirtualListScrollHandle,
@@ -101,12 +115,29 @@ pub struct TableState<D: TableDelegate> {
     selection_state: SelectionState,
     right_clicked_row: Option<usize>,
     selected_col: Option<usize>,
-
+    /// The cell that is currently selected (row_ix, col_ix).
+    selected_cell: Option<(usize, usize)>,
     /// The column index that is being resized.
     resizing_col: Option<usize>,
 
+    /// The cell that is currently being edited (row_ix, col_ix).
+    editing_cell: Option<(usize, usize)>,
+
+    /// The input state for the cell being edited.
+    editing_input: Option<Entity<InputState>>,
+
     /// The visible range of the rows and columns.
     visible_range: TableVisibleRange,
+
+    /// Filter state for column filtering.
+    filter_state: FilterState,
+
+    /// 当前打开的筛选面板的列索引（用于跟踪哪个筛选面板是打开的）
+    active_filter_col: Option<usize>,
+    /// 筛选面板中的值（临时存储，直到确认）
+    filter_panel_values: Vec<super::filter_panel::FilterValue>,
+    /// 搜索查询（用于筛选面板中的搜索）
+    filter_search_query: String,
 
     _measure: Vec<Duration>,
     _load_more_task: Task<()>,
@@ -129,10 +160,17 @@ where
             selected_row: None,
             right_clicked_row: None,
             selected_col: None,
+            selected_cell: None,
             resizing_col: None,
+            editing_cell: None,
+            editing_input: None,
             bounds: Bounds::default(),
             fixed_head_cols_bounds: Bounds::default(),
             visible_range: TableVisibleRange::default(),
+            filter_state: FilterState::new(),
+            active_filter_col: None,
+            filter_panel_values: Vec::new(),
+            filter_search_query: String::new(),
             loop_selection: true,
             col_selectable: true,
             row_selectable: true,
@@ -140,6 +178,7 @@ where
             col_movable: true,
             col_resizable: true,
             col_fixed: true,
+            col_filterable: true,
             _load_more_task: Task::ready(()),
             _measure: Vec::new(),
         };
@@ -230,6 +269,8 @@ where
         self.selection_state = SelectionState::Row;
         self.right_clicked_row = None;
         self.selected_row = Some(row_ix);
+        self.selected_col = None;
+        self.selected_cell = None;
         if let Some(row_ix) = self.selected_row {
             self.vertical_scroll_handle.scroll_to_item(
                 row_ix,
@@ -253,6 +294,8 @@ where
     pub fn set_selected_col(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         self.selection_state = SelectionState::Column;
         self.selected_col = Some(col_ix);
+        self.selected_row = None;
+        self.selected_cell = None;
         if let Some(col_ix) = self.selected_col {
             self.scroll_to_col(col_ix, cx);
         }
@@ -265,6 +308,24 @@ where
         self.selection_state = SelectionState::Row;
         self.selected_row = None;
         self.selected_col = None;
+        self.selected_cell = None;
+        cx.notify();
+    }
+
+
+    pub fn selected_cell(&self) -> Option<(usize, usize)> {
+        self.selected_cell
+    }
+
+    pub fn set_selected_cell(&mut self, row_ix: usize, col_ix: usize, cx: &mut Context<Self>) {
+        self.selection_state = SelectionState::Cell;
+        self.selected_cell = Some((row_ix, col_ix));
+        self.selected_col = None;
+        self.selected_row = None;
+        if let Some(col_ix) = self.selected_col {
+            self.scroll_to_col(col_ix, cx);
+        }
+        cx.emit(TableEvent::SelectCell(row_ix, col_ix));
         cx.notify();
     }
 
@@ -275,17 +336,188 @@ where
         &self.visible_range
     }
 
-    fn prepare_col_groups(&mut self, cx: &mut Context<Self>) {
-        self.col_groups = (0..self.delegate.columns_count(cx))
-            .map(|col_ix| {
-                let column = self.delegate().column(col_ix, cx);
-                ColGroup {
-                    width: column.width,
-                    bounds: Bounds::default(),
-                    column: column.clone(),
+    /// Returns a reference to the filter state.
+    pub fn filter_state(&self) -> &FilterState {
+        &self.filter_state
+    }
+
+    /// Returns a mutable reference to the filter state.
+    pub fn filter_state_mut(&mut self) -> &mut FilterState {
+        &mut self.filter_state
+    }
+
+    /// Check if a column has an active filter.
+    pub fn is_column_filtered(&self, col_ix: usize) -> bool {
+        self.filter_state.is_column_filtered(col_ix)
+    }
+
+    /// Set filter for a column.
+    pub fn set_column_filter(&mut self, col_ix: usize, selected_values: HashSet<String>, cx: &mut Context<Self>) {
+        self.filter_state.set_filter(col_ix, selected_values);
+        cx.notify();
+    }
+
+    /// Clear filter for a column.
+    pub fn clear_column_filter(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        self.filter_state.clear_filter(col_ix);
+        cx.notify();
+    }
+
+    /// Clear all filters.
+    pub fn clear_all_filters(&mut self, cx: &mut Context<Self>) {
+        self.filter_state.clear_all();
+        cx.notify();
+    }
+
+    /// 打开筛选面板
+    pub fn open_filter_panel(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+        let filter_values = self.delegate.get_column_filter_values(col_ix, cx);
+        let current_filter = self.filter_state.get_filter(col_ix);
+
+        self.filter_panel_values = filter_values
+            .iter()
+            .map(|fv| {
+                let selected = current_filter
+                    .map(|f| f.selected_values.contains(fv.value.as_ref()))
+                    .unwrap_or(true);
+                super::filter_panel::FilterValue {
+                    value: fv.value.to_string(),
+                    count: fv.count,
+                    selected,
                 }
             })
             .collect();
+
+        self.active_filter_col = Some(col_ix);
+        self.filter_search_query.clear();
+        cx.notify();
+    }
+
+    /// 关闭筛选面板
+    pub fn close_filter_panel(&mut self, cx: &mut Context<Self>) {
+        self.active_filter_col = None;
+        self.filter_panel_values.clear();
+        self.filter_search_query.clear();
+        cx.notify();
+    }
+
+    /// 切换筛选面板中的值
+    pub fn toggle_filter_value(&mut self, value: &str, cx: &mut Context<Self>) {
+        if let Some(v) = self.filter_panel_values.iter_mut().find(|v| v.value == value) {
+            v.selected = !v.selected;
+            cx.notify();
+        }
+    }
+
+    /// 获取筛选面板中的搜索查询
+    pub fn filter_search_query(&self) -> &str {
+        &self.filter_search_query
+    }
+
+    /// 设置筛选面板中的搜索查询
+    pub fn set_filter_search_query(&mut self, query: String, cx: &mut Context<Self>) {
+        self.filter_search_query = query;
+        cx.notify();
+    }
+
+    /// 获取筛选面板中的值（根据搜索过滤）
+    pub fn get_filtered_panel_values(&self) -> Vec<&super::filter_panel::FilterValue> {
+        if self.filter_search_query.is_empty() {
+            self.filter_panel_values.iter().collect()
+        } else {
+            let query_lower = self.filter_search_query.to_lowercase();
+            self.filter_panel_values
+                .iter()
+                .filter(|v| v.value.to_lowercase().contains(&query_lower))
+                .collect()
+        }
+    }
+
+    /// 在筛选面板中全选
+    pub fn filter_panel_select_all(&mut self, cx: &mut Context<Self>) {
+        let query_lower = self.filter_search_query.to_lowercase();
+        for v in &mut self.filter_panel_values {
+            if self.filter_search_query.is_empty() || v.value.to_lowercase().contains(&query_lower) {
+                v.selected = true;
+            }
+        }
+        cx.notify();
+    }
+
+    /// 在筛选面板中清空选择
+    pub fn filter_panel_deselect_all(&mut self, cx: &mut Context<Self>) {
+        for v in &mut self.filter_panel_values {
+            v.selected = false;
+        }
+        cx.notify();
+    }
+
+    /// 重置筛选面板为全选状态
+    pub fn filter_panel_reset(&mut self, cx: &mut Context<Self>) {
+        for v in &mut self.filter_panel_values {
+            v.selected = true;
+        }
+        self.filter_search_query.clear();
+        cx.notify();
+    }
+
+    /// 确认筛选面板的选择
+    pub fn confirm_filter_panel(&mut self, cx: &mut Context<Self>) {
+        if let Some(col_ix) = self.active_filter_col {
+            let selected: HashSet<String> = self.filter_panel_values
+                .iter()
+                .filter(|v| v.selected)
+                .map(|v| v.value.clone())
+                .collect();
+
+            if selected.is_empty() {
+                self.clear_column_filter(col_ix, cx);
+            } else {
+                self.set_column_filter(col_ix, selected, cx);
+            }
+
+            self.close_filter_panel(cx);
+        }
+    }
+
+    /// 获取筛选面板中选中的值数量
+    pub fn filter_panel_selected_count(&self) -> usize {
+        self.filter_panel_values.iter().filter(|v| v.selected).count()
+    }
+
+    /// 获取筛选面板中的总值数量
+    pub fn filter_panel_total_count(&self) -> usize {
+        self.filter_panel_values.len()
+    }
+
+    fn prepare_col_groups(&mut self, cx: &mut Context<Self>) {
+        let mut col_groups = Vec::new();
+
+        // Add row number column if enabled
+        if self.delegate.row_number_enabled(cx) {
+            col_groups.push(ColGroup {
+                width: px(60.),
+                bounds: Bounds::default(),
+                column: Column::new("__row_number__", " ")
+                    .width(px(60.))
+                    .resizable(false)
+                    .movable(false)
+                    .selectable(false)
+                    .text_right(),
+            });
+        }
+
+        // Add user-defined columns
+        col_groups.extend((0..self.delegate.columns_count(cx)).map(|col_ix| {
+            let column = self.delegate().column(col_ix, cx);
+            ColGroup {
+                width: column.width,
+                bounds: Bounds::default(),
+                column: column.clone(),
+            }
+        }));
+
+        self.col_groups = col_groups;
         cx.notify();
     }
 
@@ -318,10 +550,151 @@ where
         cx: &mut Context<Self>,
     ) {
         self.set_selected_row(row_ix, cx);
+    }
+
+    fn on_cell_click(
+        &mut self,
+        e: &ClickEvent,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // If clicking on a different cell while editing, commit current edit first
+        if let Some((edit_row, edit_col)) = self.editing_cell {
+            if edit_row != row_ix || edit_col != col_ix {
+                self.commit_cell_edit(window, cx);
+            }
+        }
+
+        // Check if this is the row number column
+        let is_row_number_col = self.delegate.row_number_enabled(cx) && col_ix == 0;
 
         if e.click_count() == 2 {
-            cx.emit(TableEvent::DoubleClickedRow(row_ix));
+            // Double click: enter edit mode (not for row number column)
+            if !is_row_number_col {
+                // Calculate the actual column index for delegate
+                let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+                    col_ix - 1
+                } else {
+                    col_ix
+                };
+                
+                if self.delegate.is_cell_editable(row_ix, delegate_col_ix, cx) {
+                    self.start_editing(row_ix, col_ix, window, cx);
+                }
+            }
+        } else {
+            // Single click
+            if is_row_number_col {
+                // Click on row number column: select entire row
+                self.set_selected_row(row_ix, cx);
+            } else {
+                // Click on other cells: emit cell selection event
+                self.set_selected_cell(row_ix, col_ix, cx);
+            }
         }
+    }
+
+    /// Start editing a cell.
+    pub fn start_editing(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+
+        if self.editing_cell == Some((row_ix, col_ix)) {
+            return;
+        }
+        // Calculate the actual column index for delegate
+        let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+            col_ix.saturating_sub(1)
+        } else {
+            col_ix
+        };
+
+        // Get the current cell value from delegate
+        let value = self.delegate.get_cell_value(row_ix, delegate_col_ix, cx);
+
+        // Create input state with the current value (support multiline)
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).multi_line(true).rows(1).auto_grow(1,1);
+            state.set_value(value, window, cx);
+            state
+        });
+
+        self.editing_cell = Some((row_ix, col_ix));
+        self.editing_input = Some(input);
+        cx.emit(TableEvent::CellEditing(row_ix, col_ix));
+        cx.notify();
+    }
+
+    /// Commit the current cell edit.
+    pub fn commit_cell_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((row_ix, col_ix)) = self.editing_cell {
+            // Calculate the actual column index for delegate
+            let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+                col_ix.saturating_sub(1)
+            } else {
+                col_ix
+            };
+
+            // Get the new value from the input
+            let new_value = self
+                .editing_input
+                .as_ref()
+                .map(|input| input.read(cx).text().to_string())
+                .unwrap_or_default();
+
+            // Call delegate to handle the edit
+            let accepted = self
+                .delegate
+                .on_cell_edited(row_ix, delegate_col_ix, new_value, window, cx);
+            if accepted {
+                cx.emit(TableEvent::CellEdited(row_ix, col_ix));
+            }
+            self.editing_cell = None;
+            self.editing_input = None;
+            cx.notify();
+        }
+    }
+
+    /// Cancel the current cell edit.
+    pub fn cancel_cell_edit(&mut self, cx: &mut Context<Self>) {
+        if self.editing_cell.is_some() {
+            self.editing_cell = None;
+            self.editing_input = None;
+            cx.notify();
+        }
+    }
+
+    /// Returns the editing input state if currently editing.
+    pub fn editing_input(&self) -> Option<&Entity<InputState>> {
+        self.editing_input.as_ref()
+    }
+
+    /// Returns the currently editing cell position.
+    pub fn editing_cell(&self) -> Option<(usize, usize)> {
+        self.editing_cell
+    }
+
+    /// Add a new row.
+    pub fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.delegate.on_row_added(window, cx);
+        cx.emit(TableEvent::RowAdded);
+        self.refresh(cx);
+    }
+
+    /// Delete a row.
+    pub fn delete_row(&mut self, row_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.delegate.on_row_deleted(row_ix, window, cx);
+        cx.emit(TableEvent::RowDeleted(row_ix));
+        if self.selected_row == Some(row_ix) {
+            self.selected_row = None;
+        }
+        self.refresh(cx);
     }
 
     fn on_col_head_click(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<Self>) {
@@ -344,7 +717,20 @@ where
         self.selected_row.is_some() || self.selected_col.is_some()
     }
 
+    pub(super) fn action_confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        // Commit editing if in edit mode
+        if self.editing_cell.is_some() {
+            self.commit_cell_edit(window, cx);
+        }
+    }
+
     pub(super) fn action_cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        // Cancel editing first if in edit mode
+        if self.editing_cell.is_some() {
+            self.cancel_cell_edit(cx);
+            return;
+        }
+
         if self.has_selection() {
             self.clear_selection(cx);
             return;
@@ -524,7 +910,14 @@ where
             }
         }
 
-        self.delegate_mut().perform_sort(col_ix, sort, window, cx);
+        // Calculate the actual column index for delegate
+        let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+            col_ix.saturating_sub(1)
+        } else {
+            col_ix
+        };
+
+        self.delegate_mut().perform_sort(delegate_col_ix, sort, window, cx);
 
         cx.notify();
     }
@@ -540,7 +933,17 @@ where
             return;
         }
 
-        self.delegate.move_column(col_ix, to_ix, window, cx);
+        // Don't allow moving the row number column
+        let row_number_offset = if self.delegate.row_number_enabled(cx) { 1 } else { 0 };
+        if row_number_offset > 0 && (col_ix == 0 || to_ix == 0) {
+            return;
+        }
+
+        // Calculate the actual column indices for delegate
+        let delegate_col_ix = col_ix.saturating_sub(row_number_offset);
+        let delegate_to_ix = to_ix.saturating_sub(row_number_offset);
+
+        self.delegate.move_column(delegate_col_ix, delegate_to_ix, window, cx);
         let col_group = self.col_groups.remove(col_ix);
         self.col_groups.insert(to_ix, col_group);
 
@@ -601,29 +1004,85 @@ where
         }
     }
 
-    fn render_cell(&self, col_ix: usize, _window: &mut Window, _cx: &mut Context<Self>) -> Div {
+    fn render_cell(
+        &self,
+        col_ix: usize,
+        row_ix: Option<usize>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let Some(col_group) = self.col_groups.get(col_ix) else {
-            return div();
+            return div().id("empty-cell");
         };
-
+        let is_select_cell = match self.selected_cell {
+            None => false,
+            Some(cell) => row_ix.is_some() && row_ix.unwrap() == cell.0 && col_ix == cell.1
+        };
         let col_width = col_group.width;
         let col_padding = col_group.column.paddings;
 
-        div()
+        // Check if cell is modified (skip for row number column)
+        let is_row_number_col = self.delegate.row_number_enabled(cx) && col_ix == 0;
+        let is_modified = if is_row_number_col {
+            false
+        } else {
+            row_ix
+                .map(|r| {
+                    let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+                        col_ix - 1
+                    } else {
+                        col_ix
+                    };
+                    self.delegate.is_cell_modified(r, delegate_col_ix, cx)
+                })
+                .unwrap_or(false)
+        };
+
+        // Generate unique id: for cells use row*10000+col, for headers use col
+        let cell_id = match row_ix {
+            Some(r) => ("cell", r * 10000 + col_ix),
+            None => ("cell-header", col_ix),
+        };
+
+        // Check if this cell is being edited
+        let is_editing = row_ix.is_some() && self.editing_cell == Some((row_ix.unwrap(), col_ix));
+
+        let mut cell = div()
+            .id(cell_id)
             .w(col_width)
             .h_full()
             .flex_shrink_0()
             .overflow_hidden()
             .whitespace_nowrap()
-            .table_cell_size(self.options.size)
-            .map(|this| match col_padding {
-                Some(padding) => this
+            .when(is_select_cell, |this| {
+                this.bg(if is_editing { cx.theme().background} else {cx.theme().table_active})
+                    .border_1()
+                    .border_color(if is_editing { cx.theme().ring } else {cx.theme().table_active_border})
+            })
+            .when(is_modified, |this| {
+                this.bg(cx.theme().warning.opacity(0.15))
+            });
+
+        if is_editing {
+            // Render input box that fills the entire cell
+            // Don't apply table_cell_size padding in edit mode
+            if let Some(input) = &self.editing_input {
+                cell = cell.child(Input::new(input).w_full().h_full().text_base().appearance(false));
+            }
+        } else {
+            // Apply table_cell_size and padding for normal cell content
+            cell = cell.table_cell_size(self.options.size);
+            cell = match col_padding {
+                Some(padding) => cell
                     .pl(padding.left)
                     .pr(padding.right)
                     .pt(padding.top)
                     .pb(padding.bottom),
-                None => this,
-            })
+                None => cell,
+            };
+        }
+
+        cell
     }
 
     /// Show Column selection style, when the column is selected and the selection state is Column.
@@ -784,6 +1243,194 @@ where
         )
     }
 
+    fn render_filter_icon(
+        &self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        if !self.col_filterable {
+            return None;
+        }
+
+        if !self.delegate.column_filter_enabled(cx) {
+            return None;
+        }
+
+        let is_filtered = self.is_column_filtered(col_ix);
+
+        use crate::{button::Button, button::ButtonVariants, Sizable, Size};
+
+        Some(
+            Popover::new(("filter-popover", col_ix))
+                .anchor(gpui::Corner::BottomLeft)
+                .trigger(
+                    Button::new(("filter-btn", col_ix))
+                        .icon(IconName::Settings)
+                        .ghost()
+                        .with_size(Size::XSmall)
+                        .when(is_filtered, |this| this.primary())
+                )
+                .content({
+                    let table_entity = cx.entity().clone();
+                    move |_, _, cx| {
+                        let selected_count = table_entity.clone().read(cx).filter_panel_selected_count();
+                        let total_count = table_entity.clone().read(cx).filter_panel_total_count();
+                        let filtered_values = table_entity.clone().read(cx).get_filtered_panel_values()
+                            .into_iter()
+                            .cloned()
+                            .collect::<Vec<_>>();
+
+                        v_flex()
+                            .w(px(300.))
+                            .max_h(px(500.))
+                            .gap_2()
+                            .p_2()
+                            // 统计行
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!("已选 {} / {}", selected_count, total_count)),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Button::new("filter-select-all")
+                                                    .label("全选")
+                                                    .ghost()
+                                                    .with_size(Size::XSmall)
+                                                    .on_click({
+                                                        let entity = table_entity.clone();
+                                                        move |_, _, cx| {
+                                                            entity.update(cx, |table, cx| {
+                                                                table.filter_panel_select_all(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                            .child(
+                                                Button::new("filter-deselect-all")
+                                                    .label("清空")
+                                                    .ghost()
+                                                    .with_size(Size::XSmall)
+                                                    .on_click({
+                                                        let entity = table_entity.clone();
+                                                        move |_, _, cx| {
+                                                            entity.update(cx, |table, cx| {
+                                                                table.filter_panel_deselect_all(cx);
+                                                            });
+                                                        }
+                                                    }),
+                                            ),
+                                    ),
+                            )
+                            // 分隔线
+                            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+                            // 列表
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .gap_1()
+                                    .px_1()
+                                    .children(filtered_values.iter().map(|v| {
+                                        let v_clone = v.clone();
+                                        let entity = table_entity.clone();
+
+                                        h_flex()
+                                            .w_full()
+                                            .px_2()
+                                            .py_1()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_2()
+                                            .cursor_pointer()
+                                            .child(
+                                                h_flex()
+                                                    .flex_1()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .overflow_x_hidden()
+                                                    .child(
+                                                        crate::checkbox::Checkbox::new(
+                                                            SharedString::from(format!("filter-{}", v.value)),
+                                                        )
+                                                            .checked(v.selected),
+                                                    )
+                                                    .child(
+                                                        crate::label::Label::new(v.value.clone())
+                                                            .whitespace_nowrap()
+                                                            .overflow_hidden()
+                                                            .text_ellipsis(),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!("({})", v.count)),
+                                            )
+                                    }))
+                                    .when(filtered_values.is_empty(), |this| {
+                                        this.child(
+                                            div()
+                                                .p_4()
+                                                .text_center()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("无匹配结果"),
+                                        )
+                                    }),
+                            )
+                            // 底部分隔线
+                            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+                            // 底部按钮
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_end()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("filter-reset")
+                                            .label("重置")
+                                            .ghost()
+                                            .with_size(Size::Small)
+                                            .on_click({
+                                                let entity = table_entity.clone();
+                                                move |_, _, cx| {
+                                                    entity.update(cx, |table, cx| {
+                                                        table.filter_panel_reset(cx);
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new("filter-confirm")
+                                            .label("确定")
+                                            .primary()
+                                            .with_size(Size::Small)
+                                            .on_click({
+                                                let entity = table_entity.clone();
+                                                move |_, _, cx| {
+                                                    entity.update(cx, |table, cx| {
+                                                        table.confirm_filter_panel(cx);
+                                                    });
+                                                }
+                                            }),
+                                    ),
+                            )
+                            .into_any_element()
+                    }
+                }),
+        )
+    }
+
     /// Render the column header.
     /// The children must be one by one items.
     /// Because the horizontal scroll handle will use the child_item_bounds to
@@ -792,14 +1439,15 @@ where
         let entity_id = cx.entity_id();
         let col_group = self.col_groups.get(col_ix).expect("BUG: invalid col index");
 
-        let movable = self.col_movable && col_group.column.movable;
+        let is_row_number_col = self.delegate.row_number_enabled(cx) && col_ix == 0;
+        let movable = self.col_movable && col_group.column.movable && !is_row_number_col;
         let paddings = col_group.column.paddings;
         let name = col_group.column.name.clone();
 
         h_flex()
             .h_full()
             .child(
-                self.render_cell(col_ix, window, cx)
+                self.render_cell(col_ix, None, window, cx)
                     .id(("col-header", col_ix))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.on_col_head_click(col_ix, window, cx);
@@ -809,13 +1457,33 @@ where
                             .size_full()
                             .justify_between()
                             .items_center()
-                            .child(self.delegate.render_th(col_ix, window, cx))
+                            .child(
+                                if is_row_number_col {
+                                    // Render row number column header
+                                    div()
+                                        .size_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_end()
+                                        .child(col_group.column.name.clone())
+                                        .into_any_element()
+                                } else {
+                                    // Calculate the actual column index for delegate
+                                    let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+                                        col_ix - 1
+                                    } else {
+                                        col_ix
+                                    };
+                                    self.delegate.render_th(delegate_col_ix, window, cx).into_any_element()
+                                }
+                            )
                             .when_some(paddings, |this, paddings| {
-                                // Leave right space for the sort icon, if this column have custom padding
+                                // Leave right space for the sort/filter icons, if this column have custom padding
                                 let offset_pr =
                                     self.options.size.table_cell_padding().right - paddings.right;
                                 this.pr(offset_pr.max(px(0.)))
                             })
+                            .children(self.render_filter_icon(col_ix, window, cx))
                             .children(self.render_sort_icon(col_ix, &col_group, window, cx)),
                     )
                     .when(movable, |this| {
@@ -1008,11 +1676,26 @@ where
                                 let mut items = Vec::with_capacity(left_columns_count);
 
                                 (0..left_columns_count).for_each(|col_ix| {
-                                    items.push(self.render_col_wrap(col_ix, window, cx).child(
-                                        self.render_cell(col_ix, window, cx).child(
-                                            self.measure_render_td(row_ix, col_ix, window, cx),
+                                    let is_editing = self.editing_cell == Some((row_ix, col_ix));
+                                    items.push(
+                                        self.render_col_wrap(col_ix, window, cx).child(
+                                            self.render_cell(col_ix, Some(row_ix), window, cx)
+                                                .on_click(cx.listener(
+                                                    move |this, e, window, cx| {
+                                                        this.on_cell_click(
+                                                            e, row_ix, col_ix, window, cx,
+                                                        );
+                                                    },
+                                                ))
+                                                .when(!is_editing, |this| {
+                                                    this.child(
+                                                        self.measure_render_td(
+                                                            row_ix, col_ix, window, cx,
+                                                        ),
+                                                    )
+                                                }),
                                         ),
-                                    ));
+                                    );
                                 });
 
                                 items
@@ -1058,13 +1741,24 @@ where
 
                                         visible_range.for_each(|col_ix| {
                                             let col_ix = col_ix + left_columns_count;
-                                            let el =
-                                                table.render_col_wrap(col_ix, window, cx).child(
-                                                    table.render_cell(col_ix, window, cx).child(
-                                                        table.measure_render_td(
-                                                            row_ix, col_ix, window, cx,
-                                                        ),
-                                                    ),
+                                            let is_editing = table.editing_cell == Some((row_ix, col_ix));
+                                            let el = table
+                                                .render_col_wrap(col_ix, window, cx)
+                                                .child(
+                                                    table
+                                                        .render_cell(col_ix, Some(row_ix), window, cx)
+                                                        .on_click(cx.listener(
+                                                            move |this, e, window, cx| {
+                                                                this.on_cell_click(
+                                                                    e, row_ix, col_ix, window, cx,
+                                                                );
+                                                            },
+                                                        ))
+                                                        .when(!is_editing, |this| {
+                                                            this.child(table.measure_render_td(
+                                                                row_ix, col_ix, window, cx,
+                                                            ))
+                                                        }),
                                                 );
 
                                             items.push(el);
@@ -1132,7 +1826,7 @@ where
                 .children((0..columns_count).map(|col_ix| {
                     h_flex()
                         .left(horizontal_scroll_handle.offset().x)
-                        .child(self.render_cell(col_ix, window, cx))
+                        .child(self.render_cell(col_ix, Some(row_ix), window, cx))
                 }))
                 .child(self.delegate.render_last_empty_col(window, cx))
         }
@@ -1163,17 +1857,45 @@ where
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Check if this is the row number column
+        let is_row_number_col = self.delegate.row_number_enabled(cx) && col_ix == 0;
+        
+        if is_row_number_col {
+            // Render row number
+            return div()
+                .id(ElementId::Name(format!("row-number-{}", row_ix).into()))
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_end()
+                .text_color(cx.theme().muted_foreground)
+                .child((row_ix + 1).to_string())
+                .on_click(cx.listener(move |this, e, window, cx| {
+                    this.on_row_left_click(e, row_ix, window, cx);
+                }))
+                .into_any_element();
+        }
+
+        // Calculate the actual column index for delegate (subtract row number column offset)
+        let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
+            col_ix - 1
+        } else {
+            col_ix
+        };
+
         if !crate::measure_enable() {
             return self
                 .delegate
-                .render_td(row_ix, col_ix, window, cx)
+                .render_td(row_ix, delegate_col_ix, window, cx)
                 .into_any_element();
         }
 
         let start = std::time::Instant::now();
-        let el = self.delegate.render_td(row_ix, col_ix, window, cx);
+        let el = self.delegate
+            .render_td(row_ix, delegate_col_ix, window, cx)
+            .into_any_element();
         self._measure.push(start.elapsed());
-        el.into_any_element()
+        el
     }
 
     fn measure(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {

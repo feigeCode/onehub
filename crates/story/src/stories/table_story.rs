@@ -813,6 +813,7 @@ impl TableStory {
             TableEvent::MoveColumn(origin_idx, target_idx) => {
                 println!("Move col index: {} -> {}", origin_idx, target_idx);
             }
+            _ => {}
         }
     }
 }

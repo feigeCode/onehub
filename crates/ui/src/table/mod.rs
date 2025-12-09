@@ -1,5 +1,5 @@
 use crate::{
-    actions::{Cancel, SelectDown, SelectUp},
+    actions::{Cancel, Confirm, SelectDown, SelectUp},
     ActiveTheme, Sizable, Size,
 };
 use gpui::{
@@ -9,11 +9,17 @@ use gpui::{
 
 mod column;
 mod delegate;
+mod filter;
 mod loading;
 mod state;
+pub mod filter_button;
+pub mod filter_state;
+mod filter_list_delegate;
+pub mod filter_panel;
 
 pub use column::*;
 pub use delegate::*;
+pub use filter::*;
 pub use state::*;
 
 actions!(table, [SelectPrevColumn, SelectNextColumn]);
@@ -22,6 +28,7 @@ const CONTEXT: &'static str = "Table";
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("escape", Cancel, Some(CONTEXT)),
+        KeyBinding::new("enter", Confirm { secondary: false }, Some(CONTEXT)),
         KeyBinding::new("up", SelectUp, Some(CONTEXT)),
         KeyBinding::new("down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("left", SelectPrevColumn, Some(CONTEXT)),
@@ -119,6 +126,7 @@ where
             .key_context(CONTEXT)
             .track_focus(&focus_handle)
             .on_action(window.listener_for(&self.state, TableState::action_cancel))
+            .on_action(window.listener_for(&self.state, TableState::action_confirm))
             .on_action(window.listener_for(&self.state, TableState::action_select_next))
             .on_action(window.listener_for(&self.state, TableState::action_select_prev))
             .on_action(window.listener_for(&self.state, TableState::action_select_next_col))
