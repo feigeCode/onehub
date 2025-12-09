@@ -132,7 +132,7 @@ pub struct TableState<D: TableDelegate> {
 
     /// Filter state for column filtering.
     filter_state: FilterState,
-
+    
     filter_list: Option<Entity<ListState<FilterPanel>>>,
 
     /// 当前打开的筛选面板的列索引（用于跟踪哪个筛选面板是打开的）
@@ -374,7 +374,7 @@ where
     }
 
     /// 打开筛选面板
-    pub fn open_filter_panel(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_filter_panel(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         let filter_values = self.delegate.get_column_filter_values(col_ix, cx);
         let current_filter = self.filter_state.get_filter(col_ix);
 
@@ -387,7 +387,7 @@ where
                 filter_panel::FilterValue {
                     value: fv.value.to_string(),
                     count: fv.count,
-                    checked: selected,
+                    checked: false,
                     selected,
                 }
             })
@@ -395,11 +395,9 @@ where
 
         self.active_filter_col = Some(col_ix);
         self.filter_search_query.clear();
-
-        // Create FilterPanel with the values
-        let filter_panel = FilterPanel::new(self.filter_panel_values.clone());
-        self.filter_list = Some(cx.new(|cx| ListState::new(filter_panel, window, cx)));
-
+        // 创建filter_list
+        // self.filter_list = Some(cx.new())
+        
         cx.notify();
     }
 
@@ -1260,28 +1258,18 @@ where
                         .icon(IconName::Settings)
                         .ghost()
                         .with_size(Size::XSmall)
-                        .ary())
+                        .when(is_filtered, |this| this.primary())
                 )
                 .content({
-                    let table_enlone();
-                    move |_, window, cx| {
-                        // Initialize filter panel when popover o
-
-                          l_ix);
-
-                        if needs_init{
-                            table_entity.update(cx, |table, cx| {
-                                table.open_filter_panel(col_ix, window, cx);
-                            });
-                        }
-
-                        let selected_count = tabl);
+                    let table_entity = cx.entity().clone();
+                    move |_, _, cx| {
+                        let selected_count = table_entity.clone().read(cx).filter_panel_selected_count();
                         let total_count = table_entity.clone().read(cx).filter_panel_total_count();
-                        let filt
+                        let filtered_values = table_entity.clone().read(cx).get_filtered_panel_values()
                             .into_iter()
                             .cloned()
-                            .collectec<_>>();
-                        let filter);p().clone(nwraref().us_lter_list.a(cx).fine().reade_entity.clol = tabl_pane::<Vvalues()d_panel__filtere.getead(cx)lone().re_entity.ctablvalues = ered_
+                            .collect::<Vec<_>>();
+                        let filter_panel = table_entity.clone().read(cx).filter_list.clone().unwrap();
                         v_flex()
                             .w(px(300.))
                             .max_h(px(500.))
@@ -1415,13 +1403,6 @@ where
         let movable = self.col_movable && col_group.column.movable && !is_row_number_col;
         let paddings = col_group.column.paddings;
         let name = col_group.column.name.clone();
-        let col_group_width = col_group.width;
-
-        // Render filter icon first to avoid borrow issues
-        let filter_icon = self.render_filter_icon(col_ix, window, cx);
-
-        // Get col_group again after mutable borrow
-        let col_group = self.col_groups.get(col_ix).expect("BUG: invalid col index");
 
         h_flex()
             .h_full()
@@ -1462,7 +1443,7 @@ where
                                     self.options.size.table_cell_padding().right - paddings.right;
                                 this.pr(offset_pr.max(px(0.)))
                             })
-                            .children(filter_icon)
+                            .children(self.render_filter_icon(col_ix, window, cx))
                             .children(self.render_sort_icon(col_ix, &col_group, window, cx)),
                     )
                     .when(movable, |this| {
@@ -1471,7 +1452,7 @@ where
                                 entity_id,
                                 col_ix,
                                 name,
-                                width: col_group_width,
+                                width: col_group.width,
                             },
                             |drag, _, _, cx| {
                                 cx.stop_propagation();

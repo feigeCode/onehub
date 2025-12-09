@@ -116,10 +116,13 @@ style = { level = "allow", priority = -1 }
 todo = "deny"
 type_complexity = "allow"
 
+
 [profile.dev]
-codegen-units = 16
-debug = "limited"
+opt-level = 0
+debug = true
 split-debuginfo = "unpacked"
+codegen-units = 1
+incremental = true
 
 [profile.dev.package]
 resvg = { opt-level = 3 }

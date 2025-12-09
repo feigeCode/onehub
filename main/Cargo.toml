@@ -36,3 +36,4 @@ panic = "abort"
 
 [lints]
 workspace = true
+

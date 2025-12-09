@@ -1,35 +1,135 @@
-// 1. 标准库导入
+use gpui::{div, App, Context, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window};
 use std::collections::HashSet;
+use std::rc::Rc;
 
-// 2. 外部 crate 导入
-use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, IntoElement, ParentElement, SharedString, Styled};
-
-// 3. 当前 crate 导入
-use crate::{
-    button::{Button, ButtonVariants},
-    checkbox::Checkbox,
-    h_flex,
-    label::Label,
-    v_flex, ActiveTheme, Sizable, Size,
-};
+use crate::list::{ListDelegate, ListItem, ListState};
+use crate::{checkbox::Checkbox, h_flex, label::Label, ActiveTheme, IndexPath, Selectable};
 
 /// 筛选值项
 #[derive(Clone, Debug)]
 pub struct FilterValue {
     pub value: String,
     pub count: usize,
+    pub checked: bool,
     pub selected: bool,
 }
+
+
+#[derive(IntoElement)]
+pub struct FilterListItem {
+    pub base: ListItem,
+    pub value: Rc<FilterValue>,
+    pub selected: bool,
+    /// 回调：当复选框状态改变时
+    pub on_toggle: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+}
+
+
+impl FilterListItem {
+
+    pub fn new(id: impl Into<ElementId> , value: Rc<FilterValue>, selected: bool) -> Self {
+        Self {
+            base: ListItem::new(id).selected(selected),
+            value,
+            selected,
+            on_toggle: None,
+        }
+    }
+
+    /// 设置切换回调
+    pub fn on_toggle(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_toggle = Some(Rc::new(handler));
+        self
+    }
+}
+
+
+impl Selectable for FilterListItem {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+
+impl RenderOnce for FilterListItem {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let on_toggle = self.on_toggle.clone();
+        let value_str = self.value.value.clone();
+
+        h_flex()
+            .id(SharedString::from(format!("filter-item-{}", value_str)))
+            .w_full()
+            .px_2()
+            .py_1()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .cursor_pointer()
+            .on_click(move |_, window, cx| {
+                if let Some(handler) = on_toggle.as_ref() {
+                    handler(window, cx);
+                }
+            })
+            .child(
+                h_flex()
+                    .flex_1()
+                    .gap_2()
+                    .items_center()
+                    .overflow_x_hidden()
+                    .child(
+                        Checkbox::new(
+                            SharedString::from(format!("filter-{}", value_str)),
+                        )
+                            .checked(self.value.checked),
+                    )
+                    .child(
+                        Label::new(self.value.value.clone())
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis(),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("({})", self.value.count)),
+            )
+    }
+}
+
+
+
 
 /// 筛选面板组件 - 用于在 Popover 中显示筛选选项
 pub struct FilterPanel {
     values: Vec<FilterValue>,
+    selected_index: Option<IndexPath>,
+    confirmed_index: Option<IndexPath>,
+    /// 回调：当筛选值被切换时
+    on_toggle: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
 }
 
 impl FilterPanel {
     /// 创建新的筛选面板
     pub fn new(values: Vec<FilterValue>) -> Self {
-        Self { values }
+        Self { 
+            values,
+            selected_index: None,
+            confirmed_index: None,
+            on_toggle: None,
+        }
+    }
+
+    /// 设置切换回调
+    pub fn on_toggle(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
+        self.on_toggle = Some(Rc::new(handler));
+        self
     }
 
     /// 获取当前选中的值
@@ -45,6 +145,7 @@ impl FilterPanel {
     pub fn toggle_value(&mut self, value: &str) {
         if let Some(v) = self.values.iter_mut().find(|v| v.value == value) {
             v.selected = !v.selected;
+            v.checked = v.selected;
         }
     }
 
@@ -52,6 +153,7 @@ impl FilterPanel {
     pub fn select_all(&mut self) {
         for v in &mut self.values {
             v.selected = true;
+            v.checked = true;
         }
     }
 
@@ -59,108 +161,47 @@ impl FilterPanel {
     pub fn deselect_all(&mut self) {
         for v in &mut self.values {
             v.selected = false;
+            v.checked = false;
         }
     }
 
-    /// 渲染筛选面板
-    pub fn render(&self, cx: &mut App) -> impl IntoElement {
-        let selected_count = self.values.iter().filter(|v| v.selected).count();
-        let total_count = self.values.len();
+}
 
-        v_flex()
-            .w(px(280.))
-            .max_h(px(400.))
-            .gap_2()
-            .p_2()
-            // 操作按钮
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("已选 {} / {}", selected_count, total_count)),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("select-all")
-                                    .label("全选")
-                                    .ghost()
-                                    .with_size(Size::XSmall),
-                            )
-                            .child(
-                                Button::new("deselect-all")
-                                    .label("清空")
-                                    .ghost()
-                                    .with_size(Size::XSmall),
-                            ),
-                    ),
-            )
-            // 分隔线
-            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
-            // 唯一值列表
-            .child(
-                v_flex()
-                    .flex_1()
-                    .gap_1()
-                    .children(self.values.iter().map(|v| {
-                        self.render_value_item(v, cx)
-                    }).collect::<Vec<AnyElement>>())
-                    .when(self.values.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .p_4()
-                                .text_center()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("无匹配结果"),
-                        )
-                    }),
-            )
+
+impl ListDelegate for FilterPanel {
+    type Item = FilterListItem;
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.values.len()
     }
 
-    /// 渲染单个值项
-    fn render_value_item(
-        &self,
-        v: &FilterValue,
-        cx: &mut App,
-    ) -> AnyElement {
-        let theme = cx.theme();
-        h_flex()
-            .w_full()
-            .px_2()
-            .py_1()
-            .rounded(px(4.))
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .cursor_pointer()
-            .child(
-                h_flex()
-                    .flex_1()
-                    .gap_2()
-                    .items_center()
-                    .overflow_x_hidden()
-                    .child(
-                        Checkbox::new(SharedString::from(format!("filter-{}", v.value)))
-                            .checked(v.selected),
-                    )
-                    .child(
-                        Label::new(v.value.clone())
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis(),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(format!("({})", v.count)),
-            ).into_any_element()
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let selected = Some(ix) == self.selected_index || Some(ix) == self.confirmed_index;
+        if let Some(value) = self.values.get(ix.row) {
+            let value_rc = Rc::from(value.clone());
+            let mut item = FilterListItem::new(ix, value_rc.clone(), selected);
+            
+            // 如果有回调，设置到item上
+            if let Some(on_toggle) = self.on_toggle.as_ref() {
+                let on_toggle = on_toggle.clone();
+                let value_str = value.value.clone();
+                item = item.on_toggle(move |window, cx| {
+                    on_toggle(&value_str, window, cx);
+                });
+            }
+            
+            return Some(item);
+        }
+        None
+    }
+
+    fn set_selected_index(&mut self, ix: Option<IndexPath>, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        self.selected_index = ix;
+        cx.notify();
     }
 }

@@ -1,9 +1,6 @@
 use std::ops::Range;
 
-use gpui::{
-    div, App, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Stateful,
-    Styled as _, Window,
-};
+use gpui::{div, App, AppContext, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Stateful, Styled as _, Window};
 
 use crate::{
     h_flex,
@@ -11,6 +8,7 @@ use crate::{
     table::{filter::ColumnFilterValue, loading::Loading, Column, ColumnSort, TableState},
     ActiveTheme as _, Icon, IconName, Size,
 };
+use crate::input::InputState;
 
 /// A delegate trait for providing data and rendering for a table.
 #[allow(unused)]
@@ -196,14 +194,9 @@ pub trait TableDelegate: Sized + 'static {
     ) {
     }
 
-    /// Return true if the cell is editable, default is false.
-    fn is_cell_editable(&self, row_ix: usize, col_ix: usize, cx: &App) -> bool {
-        false
-    }
-
-    /// Get the current value of a cell as a string for editing.
-    fn get_cell_value(&self, row_ix: usize, col_ix: usize, cx: &App) -> String {
-        String::new()
+    /// Build an input element for editing a cell.
+    fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) -> Option<Entity<InputState>> {
+        None
     }
 
     /// Called when editing is committed (e.g., Enter key or blur).
