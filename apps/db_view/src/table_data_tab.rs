@@ -1,10 +1,11 @@
 use std::any::Any;
 use std::marker::PhantomData;
 
-use gpui::{div, AnyElement, App, AppContext, ClickEvent, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, SharedString, Styled, Subscription, Window, px};
+use gpui::{div, AnyElement, App, AppContext, ClickEvent, Corner, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, SharedString, Styled, Subscription, Window, px};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
     resizable::{resizable_panel, v_resizable},
     table::{Column, Table, TableState},
     v_flex, ActiveTheme as _, IconName, Sizable as _, Size,
@@ -32,8 +33,8 @@ pub struct TableDataTabContent {
     editing_large_text: Entity<Option<(usize, usize)>>,
     /// Current page (1-based)
     current_page: Entity<usize>,
-    /// Page size
-    page_size: usize,
+    /// Page size (dynamic, supports 500, 1000, 2000, or 0 for all)
+    page_size: Entity<usize>,
     /// Total row count
     total_count: Entity<usize>,
     /// Filter editor with WHERE and ORDER BY inputs
@@ -66,6 +67,7 @@ impl TableDataTabContent {
         let focus_handle = cx.focus_handle();
         let editing_large_text = cx.new(|_| None);
         let current_page = cx.new(|_| 1usize);
+        let page_size = cx.new(|_| 500usize);
         let total_count = cx.new(|_| 0usize);
 
         // Create filter editor with empty schema initially
@@ -92,7 +94,7 @@ impl TableDataTabContent {
             text_editor: text_editor.clone(),
             editing_large_text: editing_large_text.clone(),
             current_page,
-            page_size: 100,
+            page_size,
             total_count,
             filter_editor,
             editor_visible: editor_visible.clone(),
@@ -127,7 +129,7 @@ impl TableDataTabContent {
         let table_state = self.table.clone();
         let current_page = self.current_page.clone();
         let total_count = self.total_count.clone();
-        let page_size = self.page_size;
+        let page_size = *self.page_size.read(cx);
         let where_clause = self.filter_editor.read(cx).get_where_clause(cx);
         let order_by_clause = self.filter_editor.read(cx).get_order_by_clause(cx);
         let filter_editor = self.filter_editor.clone();
@@ -150,10 +152,17 @@ impl TableDataTabContent {
             let conn = conn_arc.read().await;
 
             // Build request with raw where/order by clauses
-            let request = TableDataRequest::new(&database_name, &table_name)
-                .with_page(page, page_size)
-                .with_where_clause(where_clause.clone())
-                .with_order_by_clause(order_by_clause.clone());
+            // page_size == 0 means fetch all records
+            let request = if page_size == 0 {
+                TableDataRequest::new(&database_name, &table_name)
+                    .with_where_clause(where_clause.clone())
+                    .with_order_by_clause(order_by_clause.clone())
+            } else {
+                TableDataRequest::new(&database_name, &table_name)
+                    .with_page(page, page_size)
+                    .with_where_clause(where_clause.clone())
+                    .with_order_by_clause(order_by_clause.clone())
+            };
 
             match plugin.query_table_data(&**conn, &request).await {
                 Ok(response) => {
@@ -175,7 +184,7 @@ impl TableDataTabContent {
 
                     let row_count = rows.len();
                     let total = response.total_count;
-                    let total_pages = (total + page_size - 1) / page_size;
+                    let total_pages = if page_size == 0 { 1 } else { (total + page_size - 1) / page_size };
                     let pk_columns = response.primary_key_indices;
                     let duration = start_time.elapsed().as_millis();
                     let sql_str = response.executed_sql;
@@ -259,10 +268,22 @@ impl TableDataTabContent {
     fn handle_next_page(&self, cx: &mut App) {
         let page = *self.current_page.read(cx);
         let total = *self.total_count.read(cx);
-        let total_pages = (total + self.page_size - 1) / self.page_size;
+        let page_size = *self.page_size.read(cx);
+        if page_size == 0 {
+            return; // No pagination when showing all
+        }
+        let total_pages = (total + page_size - 1) / page_size;
         if page < total_pages {
             self.load_data_with_clauses(page + 1, cx);
         }
+    }
+
+    fn handle_page_size_change(&self, new_size: usize, cx: &mut App) {
+        self.page_size.update(cx, |size, cx| {
+            *size = new_size;
+            cx.notify();
+        });
+        self.load_data_with_clauses(1, cx);
     }
 
     fn handle_apply_query(&self, cx: &mut App) {
@@ -835,6 +856,51 @@ impl TabContent for TableDataTabContent {
                                         move |_, _, cx| this.handle_prev_page(cx)
                                     }),
                             )
+                            .child({
+                                let current_page_size = *self.page_size.read(cx);
+                                let label = match current_page_size {
+                                    0 => "全部".to_string(),
+                                    n => format!("{}", n),
+                                };
+                                let this = self.clone();
+                                Button::new("page-size-selector")
+                                    .with_size(Size::Small)
+                                    .label(label)
+                                    .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
+                                        let this500 = this.clone();
+                                        let this1000 = this.clone();
+                                        let this2000 = this.clone();
+                                        let this_all = this.clone();
+                                        menu.item(
+                                            PopupMenuItem::new("500")
+                                                .checked(current_page_size == 500)
+                                                .on_click(move |_, _, cx| {
+                                                    this500.handle_page_size_change(500, cx);
+                                                })
+                                        )
+                                        .item(
+                                            PopupMenuItem::new("1000")
+                                                .checked(current_page_size == 1000)
+                                                .on_click(move |_, _, cx| {
+                                                    this1000.handle_page_size_change(1000, cx);
+                                                })
+                                        )
+                                        .item(
+                                            PopupMenuItem::new("2000")
+                                                .checked(current_page_size == 2000)
+                                                .on_click(move |_, _, cx| {
+                                                    this2000.handle_page_size_change(2000, cx);
+                                                })
+                                        )
+                                        .item(
+                                            PopupMenuItem::new("全部")
+                                                .checked(current_page_size == 0)
+                                                .on_click(move |_, _, cx| {
+                                                    this_all.handle_page_size_change(0, cx);
+                                                })
+                                        )
+                                    })
+                            })
                             .child(
                                 Button::new("next-page")
                                     .with_size(Size::Small)
@@ -871,7 +937,7 @@ impl Clone for TableDataTabContent {
             text_editor: self.text_editor.clone(),
             editing_large_text: self.editing_large_text.clone(),
             current_page: self.current_page.clone(),
-            page_size: self.page_size,
+            page_size: self.page_size.clone(),
             total_count: self.total_count.clone(),
             filter_editor: self.filter_editor.clone(),
             editor_visible: self.editor_visible.clone(),
