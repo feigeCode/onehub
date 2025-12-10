@@ -624,6 +624,9 @@ impl HomePage {
                                 .child(
                                     Icon::new(filter_type.icon())
                                         .color()
+                                        .when(filter_type == ConnectionType::SshSftp  && !is_selected, |this| {
+                                            this.text_color(gpui::rgb(0x8b5cf6)).mono()
+                                        })
                                         .with_size(Size::Large)
                                 )
                                 .child(
@@ -739,7 +742,7 @@ impl HomePage {
         div()
             .id("home-content")
             .size_full()
-            .overflow_scroll()
+            .overflow_y_scroll()
             .p_6()
             .child({
                 let mut container = v_flex()
@@ -854,18 +857,23 @@ impl HomePage {
                     )
             )
             .when(!connections.is_empty(), |this| {
-                let mut grid = div()
-                    .grid()
-                    .grid_cols(3)
+                // 使用 flex 布局实现响应式卡片网格
+                let mut container = div()
+                    .flex()
+                    .flex_wrap()
+                    .w_full()
                     .gap_3();
                 
                 for conn in connections {
-                    grid = grid.child(
-                        self.render_connection_card(conn, selected_id, cx)
+                    container = container.child(
+                        div()
+                            .w(px(320.0))  // 固定宽度，不增长
+                            .flex_shrink_0() // 不收缩
+                            .child(self.render_connection_card(conn, selected_id, cx))
                     );
                 }
                 
-                this.child(grid)
+                this.child(container)
             })
     }
 
@@ -898,18 +906,22 @@ impl HomePage {
                     )
             )
             .child({
-                let mut grid = div()
-                    .grid()
-                    .grid_cols(3)
+                // 使用 flex 布局实现响应式卡片网格
+                let mut container = div()
+                    .flex()
+                    .flex_wrap()
+                    .w_full()
                     .gap_3();
                 
                 for conn in connections {
-                    grid = grid.child(
-                        self.render_connection_card(conn, selected_id, cx)
+                    container = container.child(
+                        div()
+                            .w(px(320.0))  // 固定宽度，不增长
+                            .flex_shrink_0() // 不收缩
+                            .child(self.render_connection_card(conn, selected_id, cx))
                     );
                 }
-                
-                grid
+                container
             })
     }
 
@@ -968,7 +980,7 @@ impl HomePage {
                                     .overflow_hidden()
                                     .child(
                                         div()
-                                            .w(px(48.0))
+                                            // .w(px(48.0))
                                             .h(px(48.0))
                                             .rounded(px(8.0))
                                             // .bg(icon_bg)
