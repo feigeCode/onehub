@@ -57,7 +57,7 @@ impl Selectable for FilterListItem {
 
 
 impl RenderOnce for FilterListItem {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let on_toggle = self.on_toggle.clone();
         let value_str = self.value.value.clone();
 
@@ -108,21 +108,28 @@ impl RenderOnce for FilterListItem {
 
 /// 筛选面板组件 - 用于在 Popover 中显示筛选选项
 pub struct FilterPanel {
-    values: Vec<FilterValue>,
+    pub(crate) values: Vec<FilterValue>,
     selected_index: Option<IndexPath>,
     confirmed_index: Option<IndexPath>,
     /// 回调：当筛选值被切换时
     on_toggle: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
+    /// 搜索查询
+    search_query: String,
+    /// 过滤后的值列表
+    filtered_values: Vec<FilterValue>,
 }
 
 impl FilterPanel {
     /// 创建新的筛选面板
     pub fn new(values: Vec<FilterValue>) -> Self {
+        let filtered_values = values.clone();
         Self { 
             values,
             selected_index: None,
             confirmed_index: None,
             on_toggle: None,
+            search_query: String::new(),
+            filtered_values,
         }
     }
 
@@ -143,26 +150,93 @@ impl FilterPanel {
 
     /// 切换值的选中状态
     pub fn toggle_value(&mut self, value: &str) {
+        // 更新主列表中的值
         if let Some(v) = self.values.iter_mut().find(|v| v.value == value) {
+            v.selected = !v.selected;
+            v.checked = v.selected;
+        }
+        
+        // 同步更新过滤后的列表中的值
+        if let Some(v) = self.filtered_values.iter_mut().find(|v| v.value == value) {
             v.selected = !v.selected;
             v.checked = v.selected;
         }
     }
 
-    /// 全选
+    /// 全选（只选中当前可见的筛选项）
     pub fn select_all(&mut self) {
+        // 获取当前可见项的值
+        let visible_values: std::collections::HashSet<String> = self.filtered_values
+            .iter()
+            .map(|v| v.value.clone())
+            .collect();
+        
+        // 只选中可见的项
         for v in &mut self.values {
+            if visible_values.contains(&v.value) {
+                v.selected = true;
+                v.checked = true;
+            }
+        }
+        
+        // 同步更新filtered_values
+        for v in &mut self.filtered_values {
             v.selected = true;
             v.checked = true;
         }
     }
 
-    /// 清空选择
+    /// 清空选择（只清空当前可见的筛选项）
     pub fn deselect_all(&mut self) {
+        // 获取当前可见项的值
+        let visible_values: std::collections::HashSet<String> = self.filtered_values
+            .iter()
+            .map(|v| v.value.clone())
+            .collect();
+        
+        // 只清空可见的项
         for v in &mut self.values {
+            if visible_values.contains(&v.value) {
+                v.selected = false;
+                v.checked = false;
+            }
+        }
+        
+        // 同步更新filtered_values
+        for v in &mut self.filtered_values {
             v.selected = false;
             v.checked = false;
         }
+    }
+
+    /// 设置搜索查询并更新过滤后的值列表
+    pub fn set_search_query(&mut self, query: String) {
+        self.search_query = query.clone();
+        self.update_filtered_values();
+    }
+
+    /// 获取当前搜索查询
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// 更新过滤后的值列表（不区分大小写）
+    fn update_filtered_values(&mut self) {
+        if self.search_query.is_empty() {
+            self.filtered_values = self.values.clone();
+        } else {
+            let query_lower = self.search_query.to_lowercase();
+            self.filtered_values = self.values
+                .iter()
+                .filter(|v| v.value.to_lowercase().contains(&query_lower))
+                .cloned()
+                .collect();
+        }
+    }
+
+    /// 获取过滤后的值列表
+    pub fn filtered_values(&self) -> &[FilterValue] {
+        &self.filtered_values
     }
 
 }
@@ -172,7 +246,7 @@ impl ListDelegate for FilterPanel {
     type Item = FilterListItem;
 
     fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.values.len()
+        self.filtered_values.len()
     }
 
     fn render_item(
@@ -182,7 +256,7 @@ impl ListDelegate for FilterPanel {
         _: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let selected = Some(ix) == self.selected_index || Some(ix) == self.confirmed_index;
-        if let Some(value) = self.values.get(ix.row) {
+        if let Some(value) = self.filtered_values.get(ix.row) {
             let value_rc = Rc::from(value.clone());
             let mut item = FilterListItem::new(ix, value_rc.clone(), selected);
             

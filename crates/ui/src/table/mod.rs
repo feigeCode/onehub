@@ -12,8 +12,8 @@ mod delegate;
 mod filter;
 mod loading;
 mod state;
-pub mod filter_state;
 pub mod filter_panel;
+pub mod filter_state;
 
 pub use column::*;
 pub use delegate::*;

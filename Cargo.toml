@@ -37,7 +37,7 @@ edition = "2024"
 gpui-component = { path = "crates/ui", version = "0.5.0" }
 gpui-component-macros = { path = "crates/macros", version = "0.5.0" }
 gpui-component-assets = { path = "crates/assets", version = "0.5.0" }
-story = { path = "crates/story" }
+reqwest_client = { path = "crates/reqwest_client", version = "0.5.0" }
 
 db = { path = "apps/db" }
 db_view = { path = "apps/db_view" }

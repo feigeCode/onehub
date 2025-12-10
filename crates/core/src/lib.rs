@@ -5,8 +5,6 @@ pub mod themes;
 pub mod storage;
 pub mod gpui_tokio;
 pub mod llm;
-mod http_client_tls;
-pub mod reqwest_client;
 
 
 pub fn init(cx: &mut App){

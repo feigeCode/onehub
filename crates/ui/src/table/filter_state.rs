@@ -64,6 +64,16 @@ impl FilterState {
         );
     }
 
+    /// 设置列筛选（带全选检查）
+    pub fn set_filter_with_all_values(&mut self, col_ix: usize, selected_values: HashSet<String>, all_values: HashSet<String>) {
+        // 如果选中的值等于所有值，则视为未筛选状态
+        let is_active = !selected_values.is_empty() && selected_values != all_values;
+        self.filters.insert(
+            col_ix,
+            ColumnFilter::new(selected_values, is_active),
+        );
+    }
+
     /// 清除列筛选
     pub fn clear_filter(&mut self, col_ix: usize) {
         self.filters.remove(&col_ix);
@@ -1373,5 +1383,64 @@ mod tests {
         
         // 验证：结果正确
         assert_eq!(indices.len(), 100); // value_50 出现 100 次
+    }
+
+    #[test]
+    fn test_set_filter_with_all_values_select_all() {
+        let mut state = FilterState::new();
+        
+        // 创建所有值的集合
+        let mut all_values = HashSet::new();
+        all_values.insert("value1".to_string());
+        all_values.insert("value2".to_string());
+        all_values.insert("value3".to_string());
+        
+        // 选中所有值
+        let selected_values = all_values.clone();
+        
+        state.set_filter_with_all_values(0, selected_values, all_values);
+        
+        // 全选状态应该被视为未筛选
+        assert!(!state.is_column_filtered(0));
+    }
+
+    #[test]
+    fn test_set_filter_with_all_values_partial_selection() {
+        let mut state = FilterState::new();
+        
+        // 创建所有值的集合
+        let mut all_values = HashSet::new();
+        all_values.insert("value1".to_string());
+        all_values.insert("value2".to_string());
+        all_values.insert("value3".to_string());
+        
+        // 只选中部分值
+        let mut selected_values = HashSet::new();
+        selected_values.insert("value1".to_string());
+        selected_values.insert("value2".to_string());
+        
+        state.set_filter_with_all_values(0, selected_values.clone(), all_values);
+        
+        // 部分选择应该被视为已筛选
+        assert!(state.is_column_filtered(0));
+        assert_eq!(state.filters.get(&0).unwrap().selected_values, selected_values);
+    }
+
+    #[test]
+    fn test_set_filter_with_all_values_empty_selection() {
+        let mut state = FilterState::new();
+        
+        // 创建所有值的集合
+        let mut all_values = HashSet::new();
+        all_values.insert("value1".to_string());
+        all_values.insert("value2".to_string());
+        
+        // 空选择
+        let selected_values = HashSet::new();
+        
+        state.set_filter_with_all_values(0, selected_values, all_values);
+        
+        // 空选择应该被视为未筛选
+        assert!(!state.is_column_filtered(0));
     }
 }

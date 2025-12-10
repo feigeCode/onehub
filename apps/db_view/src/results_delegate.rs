@@ -403,9 +403,6 @@ impl TableDelegate for EditorTableDelegate {
             .map(|c| c.name.clone())
             .unwrap_or_default();
 
-        let is_filtered = self.is_column_filtered(col_ix, cx);
-        let has_data = !self.rows.is_empty();
-
         h_flex()
             .size_full()
             .items_center()
@@ -418,28 +415,6 @@ impl TableDelegate for EditorTableDelegate {
                     .text_ellipsis()
                     .child(col_name),
             )
-            .child({
-                if !has_data {
-                    // 无数据时只显示禁用按钮
-                    Button::new(("filter-button", col_ix))
-                        .icon(IconName::Settings)
-                        .with_size(Size::XSmall)
-                        .ghost()
-                        .into_any_element()
-                } else {
-                    // 有数据时显示筛选按钮
-                    let mut trigger_button = Button::new(("filter-button", col_ix))
-                        .icon(IconName::Settings)
-                        .with_size(Size::XSmall)
-                        .ghost();
-
-                    if is_filtered {
-                        trigger_button = trigger_button.primary();
-                    }
-
-                    trigger_button.into_any_element()
-                }
-            })
     }
 
     fn render_td(
@@ -462,7 +437,7 @@ impl TableDelegate for EditorTableDelegate {
     fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) -> Option<Entity<InputState>> {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
-        
+
         if self.is_deleted_row(actual_row) {
             return None;
         }

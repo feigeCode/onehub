@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use gpui::{div, App, AppContext, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Stateful, Styled as _, Window};
+use gpui::{div, App, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Stateful, Styled as _, Window};
 
 use crate::{
     h_flex,

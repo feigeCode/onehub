@@ -100,10 +100,10 @@ pub mod completion_priority {
     pub const KEYWORDS_BASE: i32 = 1000;
     pub const TABLES_BASE: i32 = 2000;
     pub const COLUMNS_BASE: i32 = 3000;
-    pub const FUNCTIONS_BASE: i32 = 4000;
+    pub const SNIPPETS_BASE: i32 = 4000;
     pub const OPERATORS_BASE: i32 = 4500;
-    pub const SNIPPETS_BASE: i32 = 5000;
-    
+    pub const FUNCTIONS_BASE: i32 = 5000;
+
     // Context boost (subtract from base to increase priority)
     // Large boost to make context-relevant items appear before keywords
     pub const CONTEXT_BOOST: i32 = 2500;
@@ -273,27 +273,6 @@ impl DefaultSqlCompletionProvider {
     pub fn with_db_completion_info(mut self, info: SqlCompletionInfo) -> Self {
         self.db_completion_info = Some(info);
         self
-    }
-
-    /// Parse SQL text to determine the current context for smarter completions.
-    ///
-    /// Uses tokenizer-based implementation for accurate context detection:
-    /// - SqlTokenizer for lexical analysis (handles strings, comments correctly)
-    /// - SymbolTable for alias resolution
-    /// - ContextInferrer for semantic context determination
-    fn parse_context(text: &str, offset: usize) -> SqlContext {
-        // Tokenize the input
-        let mut tokenizer = SqlTokenizer::new(text);
-        let tokens = tokenizer.tokenize();
-
-        // Build symbol table from tokens
-        let symbol_table = SymbolTable::build_from_tokens(&tokens);
-
-        // Infer context using the new inferrer
-        let inferred = ContextInferrer::infer(&tokens, offset, &symbol_table);
-
-        // Convert InferredSqlContext to local SqlContext
-        Self::convert_context(inferred)
     }
 
     /// Parse SQL text and return both context and symbol table.

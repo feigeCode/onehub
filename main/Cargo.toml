@@ -27,6 +27,7 @@ provider-openai.workspace = true
 provider-claude.workspace = true
 provider-qwen.workspace = true
 provider-ollama.workspace = true
+reqwest_client.workspace = true
 [profile.release]
 opt-level = "s"
 lto = "fat"

@@ -10,7 +10,6 @@ use crate::{
     h_flex,
     input::{Input, InputState},
     menu::{ContextMenuExt, PopupMenu},
-    popover::Popover,
     scroll::{ScrollableMask, Scrollbar},
     v_flex, ActiveTheme, Icon, IconName, StyleSized as _, StyledExt,
     VirtualListScrollHandle,
@@ -132,15 +131,15 @@ pub struct TableState<D: TableDelegate> {
 
     /// Filter state for column filtering.
     filter_state: FilterState,
-    
+
     filter_list: Option<Entity<ListState<FilterPanel>>>,
 
     /// 当前打开的筛选面板的列索引（用于跟踪哪个筛选面板是打开的）
     active_filter_col: Option<usize>,
-    /// 筛选面板中的值（临时存储，直到确认）
-    filter_panel_values: Vec<filter_panel::FilterValue>,
     /// 搜索查询（用于筛选面板中的搜索）
     filter_search_query: String,
+    /// 筛选面板的搜索输入框状态
+    filter_search_input: Option<Entity<InputState>>,
 
     _measure: Vec<Duration>,
     _load_more_task: Task<()>,
@@ -173,8 +172,8 @@ where
             filter_state: FilterState::new(),
             filter_list: None,
             active_filter_col: None,
-            filter_panel_values: Vec::new(),
             filter_search_query: String::new(),
+            filter_search_input: None,
             loop_selection: true,
             col_selectable: true,
             row_selectable: true,
@@ -361,6 +360,19 @@ where
         cx.notify();
     }
 
+    /// Set filter for a column with all values check.
+    pub fn set_column_filter_with_all_values(&mut self, col_ix: usize, selected_values: HashSet<String>, cx: &mut Context<Self>) {
+        // 获取该列的所有唯一值
+        let filter_values = self.delegate.get_column_filter_values(col_ix, cx);
+        let all_values: HashSet<String> = filter_values
+            .iter()
+            .map(|fv| fv.value.to_string())
+            .collect();
+
+        self.filter_state.set_filter_with_all_values(col_ix, selected_values, all_values);
+        cx.notify();
+    }
+
     /// Clear filter for a column.
     pub fn clear_column_filter(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         self.filter_state.clear_filter(col_ix);
@@ -374,11 +386,11 @@ where
     }
 
     /// 打开筛选面板
-    pub fn open_filter_panel(&mut self, col_ix: usize, cx: &mut Context<Self>) {
+    pub fn open_filter_panel(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let filter_values = self.delegate.get_column_filter_values(col_ix, cx);
         let current_filter = self.filter_state.get_filter(col_ix);
 
-        self.filter_panel_values = filter_values
+        let values = filter_values
             .iter()
             .map(|fv| {
                 let selected = current_filter
@@ -387,33 +399,127 @@ where
                 filter_panel::FilterValue {
                     value: fv.value.to_string(),
                     count: fv.count,
-                    checked: false,
+                    checked: selected,
                     selected,
                 }
             })
             .collect();
 
+        // 创建FilterPanel并设置实时筛选回调
+        let table_entity = cx.entity().clone();
+        let filter_panel = FilterPanel::new(values)
+            .on_toggle(move |value, window, cx| {
+                table_entity.update(cx, |table, cx| {
+                    // 使用实时筛选方法，立即应用筛选
+                    table.toggle_filter_value_realtime(col_ix, value, window, cx);
+                });
+            });
+
+        // 创建ListState并包装FilterPanel
+        self.filter_list = Some(cx.new(|cx| ListState::new(filter_panel, window, cx).searchable(true)));
         self.active_filter_col = Some(col_ix);
         self.filter_search_query.clear();
-        // 创建filter_list
-        // self.filter_list = Some(cx.new())
-        
+        // 创建搜索输入框状态
+        self.filter_search_input = Some(cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索...")
+        }));
+
         cx.notify();
     }
 
     /// 关闭筛选面板
     pub fn close_filter_panel(&mut self, cx: &mut Context<Self>) {
         self.active_filter_col = None;
-        self.filter_panel_values.clear();
+        self.filter_list = None;
         self.filter_search_query.clear();
+        self.filter_search_input = None;
         cx.notify();
     }
 
-    /// 切换筛选面板中的值
+    /// 切换筛选面板中的值（实时应用筛选）
+    pub fn toggle_filter_value_realtime(&mut self, col_ix: usize, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // 1. 更新 FilterPanel 中的选中状态
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().toggle_value(value);
+                cx.notify();
+            });
+        }
+
+        // 2. 立即应用筛选
+        self.apply_filter_realtime(col_ix, window, cx);
+    }
+
+    /// 全选筛选项（实时应用筛选）
+    pub fn filter_panel_select_all_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // 1. 更新 FilterPanel 中的选中状态
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().select_all();
+                cx.notify();
+            });
+        }
+
+        // 2. 立即应用筛选
+        self.apply_filter_realtime(col_ix, window, cx);
+    }
+
+    /// 清空筛选项（实时应用筛选）
+    pub fn filter_panel_deselect_all_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // 1. 更新 FilterPanel 中的选中状态
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().deselect_all();
+                cx.notify();
+            });
+        }
+
+        // 2. 立即应用筛选
+        self.apply_filter_realtime(col_ix, window, cx);
+    }
+
+    /// 重置筛选（实时应用筛选）
+    pub fn filter_panel_reset_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // 1. 重置 FilterPanel 为全选状态
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().select_all();
+                cx.notify();
+            });
+        }
+
+        // 2. 清空搜索查询
+        self.filter_search_query.clear();
+
+        // 3. 立即应用筛选
+        self.apply_filter_realtime(col_ix, window, cx);
+    }
+
+    /// 立即应用筛选（从 FilterPanel 获取当前选中的值）
+    fn apply_filter_realtime(&mut self, col_ix: usize, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(filter_list) = &self.filter_list {
+            let selected = filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
+                list_state.delegate().get_selected_values()
+            });
+
+            if selected.is_empty() {
+                self.clear_column_filter(col_ix, cx);
+            } else {
+                self.set_column_filter_with_all_values(col_ix, selected, cx);
+            }
+
+            // 刷新表格以应用筛选
+            self.refresh(cx);
+        }
+    }
+
+    /// 切换筛选面板中的值（旧方法，保留向后兼容）
     pub fn toggle_filter_value(&mut self, value: &str, cx: &mut Context<Self>) {
-        if let Some(v) = self.filter_panel_values.iter_mut().find(|v| v.value == value) {
-            v.selected = !v.selected;
-            cx.notify();
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().toggle_value(value);
+                cx.notify();
+            });
         }
     }
 
@@ -424,46 +530,67 @@ where
 
     /// 设置筛选面板中的搜索查询
     pub fn set_filter_search_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.filter_search_query = query;
+        self.filter_search_query = query.clone();
+
+        // 更新FilterPanel中的搜索查询和过滤后的值列表
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().set_search_query(query);
+                cx.notify();
+            });
+        }
+
         cx.notify();
     }
 
     /// 获取筛选面板中的值（根据搜索过滤）
-    pub fn get_filtered_panel_values(&self) -> Vec<&filter_panel::FilterValue> {
-        if self.filter_search_query.is_empty() {
-            self.filter_panel_values.iter().collect()
+    pub fn get_filtered_panel_values(&self, cx: &App) -> Vec<filter_panel::FilterValue> {
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
+                let panel = list_state.delegate();
+                if self.filter_search_query.is_empty() {
+                    panel.values.clone()
+                } else {
+                    let query_lower = self.filter_search_query.to_lowercase();
+                    panel.values
+                        .iter()
+                        .filter(|v| v.value.to_lowercase().contains(&query_lower))
+                        .cloned()
+                        .collect()
+                }
+            })
         } else {
-            let query_lower = self.filter_search_query.to_lowercase();
-            self.filter_panel_values
-                .iter()
-                .filter(|v| v.value.to_lowercase().contains(&query_lower))
-                .collect()
+            Vec::new()
         }
     }
 
     /// 在筛选面板中全选
     pub fn filter_panel_select_all(&mut self, cx: &mut Context<Self>) {
-        let query_lower = self.filter_search_query.to_lowercase();
-        for v in &mut self.filter_panel_values {
-            if self.filter_search_query.is_empty() || v.value.to_lowercase().contains(&query_lower) {
-                v.selected = true;
-            }
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().select_all();
+                cx.notify();
+            });
         }
-        cx.notify();
     }
 
     /// 在筛选面板中清空选择
     pub fn filter_panel_deselect_all(&mut self, cx: &mut Context<Self>) {
-        for v in &mut self.filter_panel_values {
-            v.selected = false;
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().deselect_all();
+                cx.notify();
+            });
         }
-        cx.notify();
     }
 
     /// 重置筛选面板为全选状态
     pub fn filter_panel_reset(&mut self, cx: &mut Context<Self>) {
-        for v in &mut self.filter_panel_values {
-            v.selected = true;
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.update(cx, |list_state, cx| {
+                list_state.delegate_mut().select_all();
+                cx.notify();
+            });
         }
         self.filter_search_query.clear();
         cx.notify();
@@ -472,16 +599,16 @@ where
     /// 确认筛选面板的选择
     pub fn confirm_filter_panel(&mut self, cx: &mut Context<Self>) {
         if let Some(col_ix) = self.active_filter_col {
-            let selected: HashSet<String> = self.filter_panel_values
-                .iter()
-                .filter(|v| v.selected)
-                .map(|v| v.value.clone())
-                .collect();
+            if let Some(filter_list) = &self.filter_list {
+                let selected = filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
+                    list_state.delegate().get_selected_values()
+                });
 
-            if selected.is_empty() {
-                self.clear_column_filter(col_ix, cx);
-            } else {
-                self.set_column_filter(col_ix, selected, cx);
+                if selected.is_empty() {
+                    self.clear_column_filter(col_ix, cx);
+                } else {
+                    self.set_column_filter(col_ix, selected, cx);
+                }
             }
 
             self.close_filter_panel(cx);
@@ -489,13 +616,25 @@ where
     }
 
     /// 获取筛选面板中选中的值数量
-    pub fn filter_panel_selected_count(&self) -> usize {
-        self.filter_panel_values.iter().filter(|v| v.selected).count()
+    pub fn filter_panel_selected_count(&self, cx: &App) -> usize {
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
+                list_state.delegate().get_selected_values().len()
+            })
+        } else {
+            0
+        }
     }
 
     /// 获取筛选面板中的总值数量
-    pub fn filter_panel_total_count(&self) -> usize {
-        self.filter_panel_values.len()
+    pub fn filter_panel_total_count(&self, cx: &App) -> usize {
+        if let Some(filter_list) = &self.filter_list {
+            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
+                list_state.delegate().values.len()
+            })
+        } else {
+            0
+        }
     }
 
     fn prepare_col_groups(&mut self, cx: &mut Context<Self>) {
@@ -1193,7 +1332,7 @@ where
         &self,
         col_ix: usize,
         col_group: &ColGroup,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         if !self.sortable {
@@ -1238,21 +1377,24 @@ where
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
-        if !self.col_filterable {
-            return None;
-        }
-
-        if !self.delegate.column_filter_enabled(cx) {
+        if !self.col_filterable || !self.delegate.column_filter_enabled(cx) {
             return None;
         }
 
         let is_filtered = self.is_column_filtered(col_ix);
+        let is_open = self.active_filter_col == Some(col_ix);
+        let table_entity = cx.entity().clone();
 
-        use crate::{button::Button, button::ButtonVariants, Sizable, Size};
+        use crate::{button::Button, button::ButtonVariants, popover::Popover, Sizable, Size};
+
+        let filter_content = if is_open {
+            Some(self.render_filter_panel_content(col_ix, _window, cx))
+        } else {
+            None
+        };
 
         Some(
             Popover::new(("filter-popover", col_ix))
-                .anchor(gpui::Corner::BottomLeft)
                 .trigger(
                     Button::new(("filter-btn", col_ix))
                         .icon(IconName::Settings)
@@ -1260,135 +1402,165 @@ where
                         .with_size(Size::XSmall)
                         .when(is_filtered, |this| this.primary())
                 )
-                .content({
-                    let table_entity = cx.entity().clone();
-                    move |_, _, cx| {
-                        let selected_count = table_entity.clone().read(cx).filter_panel_selected_count();
-                        let total_count = table_entity.clone().read(cx).filter_panel_total_count();
-                        let filtered_values = table_entity.clone().read(cx).get_filtered_panel_values()
-                            .into_iter()
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        let filter_panel = table_entity.clone().read(cx).filter_list.clone().unwrap();
-                        v_flex()
-                            .w(px(300.))
-                            .max_h(px(500.))
-                            .gap_2()
-                            .p_2()
-                            // 统计行
+                .open(is_open)
+                .on_open_change({
+                    let entity = table_entity.clone();
+                    move |open, window, cx| {
+                        entity.update(cx, |table, cx| {
+                            if *open {
+                                table.open_filter_panel(col_ix, window, cx);
+                            } else {
+                                table.close_filter_panel(cx);
+                            }
+                        });
+                    }
+                })
+                .p_0()
+                .children(filter_content)
+        )
+    }
+
+    fn render_filter_panel_content(
+        &self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        use crate::{button::Button, button::ButtonVariants, Sizable, Size};
+
+        let table_entity = cx.entity().clone();
+        let selected_count = self.filter_panel_selected_count(cx);
+        let total_count = self.filter_panel_total_count(cx);
+
+        let filter_list = match &self.filter_list {
+            Some(list) => list.clone(),
+            None => return div().into_any_element(),
+        };
+
+        let search_input = match &self.filter_search_input {
+            Some(input) => input.clone(),
+            None => return div().into_any_element(),
+        };
+
+        // 同步搜索输入框的值到FilterPanel
+        let current_input_value = search_input.read(cx).value().to_string();
+        if current_input_value != self.filter_search_query {
+            let entity = table_entity.clone();
+            let value = current_input_value.clone();
+            cx.defer(move |cx| {
+                entity.update(cx, |table, cx| {
+                    table.set_filter_search_query(value, cx);
+                });
+            });
+        }
+
+        let filtered_count = filter_list.read(cx).delegate().filtered_values().len();
+        let has_search_query = !self.filter_search_query.is_empty();
+
+        v_flex()
+            .w(px(280.))
+            .max_h(px(400.))
+            .gap_2()
+            .p_2()
+            // 搜索输入框
+            .child(
+                Input::new(&search_input)
+                    .cleanable(true)
+            )
+            // 统计行
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("已选 {} / {}", selected_count, total_count)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
                             .child(
-                                h_flex()
-                                    .w_full()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!("已选 {} / {}", selected_count, total_count)),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_1()
-                                            .child(
-                                                Button::new("filter-select-all")
-                                                    .label("全选")
-                                                    .ghost()
-                                                    .with_size(Size::XSmall)
-                                                    .on_click({
-                                                        let entity = table_entity.clone();
-                                                        move |_, _, cx| {
-                                                            entity.update(cx, |table, cx| {
-                                                                table.filter_panel_select_all(cx);
-                                                            });
-                                                        }
-                                                    }),
-                                            )
-                                            .child(
-                                                Button::new("filter-deselect-all")
-                                                    .label("清空")
-                                                    .ghost()
-                                                    .with_size(Size::XSmall)
-                                                    .on_click({
-                                                        let entity = table_entity.clone();
-                                                        move |_, _, cx| {
-                                                            entity.update(cx, |table, cx| {
-                                                                table.filter_panel_deselect_all(cx);
-                                                            });
-                                                        }
-                                                    }),
-                                            ),
-                                    ),
-                            )
-                            // 分隔线
-                            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
-                            // 列表
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .gap_1()
-                                    .px_1()
-                                    .child(
-                                        List::new(&filter_panel)
-                                            .p(px(8.))
-                                            .flex_1()
-                                            .w_full()
-                                            .border_1()
-                                            .border_color(cx.theme().border)
-                                            .rounded(cx.theme().radius),
-                                    )
-                                    .when(filtered_values.is_empty(), |this| {
-                                        this.child(
-                                            div()
-                                                .p_4()
-                                                .text_center()
-                                                .text_sm()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child("无匹配结果"),
-                                        )
+                                Button::new("filter-select-all")
+                                    .label("全选")
+                                    .ghost()
+                                    .with_size(Size::XSmall)
+                                    .on_click({
+                                        let entity = table_entity.clone();
+                                        move |_, window, cx| {
+                                            entity.update(cx, |table, cx| {
+                                                table.filter_panel_select_all_realtime(col_ix, window, cx);
+                                            });
+                                        }
                                     }),
                             )
-                            // 底部分隔线
-                            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
-                            // 底部按钮
                             .child(
-                                h_flex()
-                                    .w_full()
-                                    .justify_end()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("filter-reset")
-                                            .label("重置")
-                                            .ghost()
-                                            .with_size(Size::Small)
-                                            .on_click({
-                                                let entity = table_entity.clone();
-                                                move |_, _, cx| {
-                                                    entity.update(cx, |table, cx| {
-                                                        table.filter_panel_reset(cx);
-                                                    });
-                                                }
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new("filter-confirm")
-                                            .label("确定")
-                                            .primary()
-                                            .with_size(Size::Small)
-                                            .on_click({
-                                                let entity = table_entity.clone();
-                                                move |_, _, cx| {
-                                                    entity.update(cx, |table, cx| {
-                                                        table.confirm_filter_panel(cx);
-                                                    });
-                                                }
-                                            }),
-                                    ),
-                            )
-                            .into_any_element()
-                    }
-                }),
-        )
+                                Button::new("filter-deselect-all")
+                                    .label("清空")
+                                    .ghost()
+                                    .with_size(Size::XSmall)
+                                    .on_click({
+                                        let entity = table_entity.clone();
+                                        move |_, window, cx| {
+                                            entity.update(cx, |table, cx| {
+                                                table.filter_panel_deselect_all_realtime(col_ix, window, cx);
+                                            });
+                                        }
+                                    }),
+                            ),
+                    ),
+            )
+            // 分隔线
+            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+            // 列表
+            .child(
+                if filtered_count == 0 && has_search_query {
+                    div()
+                        .h(px(100.))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("无匹配结果")
+                        )
+                        .into_any_element()
+                } else {
+                    List::new(&filter_list)
+                        .max_h(px(200.))
+                        .w_full()
+                        .into_any_element()
+                }
+            )
+            // 底部分隔线
+            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
+            // 底部按钮
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("filter-reset")
+                            .label("重置")
+                            .ghost()
+                            .with_size(Size::Small)
+                            .on_click({
+                                let entity = table_entity.clone();
+                                move |_, window, cx| {
+                                    entity.update(cx, |table, cx| {
+                                        table.filter_panel_reset_realtime(col_ix, window, cx);
+                                    });
+                                }
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// Render the column header.
@@ -1403,6 +1575,12 @@ where
         let movable = self.col_movable && col_group.column.movable && !is_row_number_col;
         let paddings = col_group.column.paddings;
         let name = col_group.column.name.clone();
+        // Calculate the actual column index for delegate
+        let delegate_col_ix = if self.delegate.row_number_enabled(cx) && col_ix > 0 {
+            col_ix - 1
+        } else {
+            col_ix
+        };
 
         h_flex()
             .h_full()
@@ -1428,12 +1606,7 @@ where
                                         .child(col_group.column.name.clone())
                                         .into_any_element()
                                 } else {
-                                    // Calculate the actual column index for delegate
-                                    let delegate_col_ix = if self.delegate.row_number_enabled(cx) {
-                                        col_ix - 1
-                                    } else {
-                                        col_ix
-                                    };
+
                                     self.delegate.render_th(delegate_col_ix, window, cx).into_any_element()
                                 }
                             )
@@ -1443,14 +1616,18 @@ where
                                     self.options.size.table_cell_padding().right - paddings.right;
                                 this.pr(offset_pr.max(px(0.)))
                             })
-                            .children(self.render_filter_icon(col_ix, window, cx))
-                            .children(self.render_sort_icon(col_ix, &col_group, window, cx)),
+                            .when(!is_row_number_col, |this| {
+                                this.children(self.render_filter_icon(delegate_col_ix, window, cx))
+                            })
+                            .when(!is_row_number_col, |this| {
+                                this.children(self.render_sort_icon(delegate_col_ix,&col_group, window, cx))
+                            })
                     )
                     .when(movable, |this| {
                         this.on_drag(
                             DragColumn {
                                 entity_id,
-                                col_ix,
+                                col_ix: delegate_col_ix,
                                 name,
                                 width: col_group.width,
                             },
@@ -1472,13 +1649,13 @@ where
                                     return;
                                 }
 
-                                table.move_column(drag.col_ix, col_ix, window, cx);
+                                table.move_column(drag.col_ix, delegate_col_ix, window, cx);
                             },
                         ))
                     }),
             )
             // resize handle
-            .child(self.render_resize_handle(col_ix, window, cx))
+            .child(self.render_resize_handle(delegate_col_ix, window, cx))
             // to save the bounds of this col.
             .child({
                 let view = cx.entity().clone();

@@ -4357,6 +4357,7 @@ dependencies = [
  "provider-ollama",
  "provider-openai",
  "provider-qwen",
+ "reqwest_client",
  "rust-i18n",
  "serde",
  "serde_json",

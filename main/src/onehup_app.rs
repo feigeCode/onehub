@@ -1,11 +1,10 @@
 use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, KeyBinding, ParentElement, Render, Styled, Window};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
 use gpui_component::{ActiveTheme, Root};
-use one_core::reqwest_client::ReqwestClient;
 use one_core::tab_container::{TabContainer, TabItem};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-
+use reqwest_client::ReqwestClient;
 use crate::home::HomeTabContent;
 
 /// Initialize all LLM provider factories
