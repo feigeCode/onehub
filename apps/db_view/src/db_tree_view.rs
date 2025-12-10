@@ -819,6 +819,8 @@ impl Render for DbTreeView {
                                                                     let node4 = node.clone();
                                                                     let node5 = node.clone();
                                                                     let node6 = node.clone();
+                                                                    let node7 = node.clone();
+                                                                    let node8 = node.clone();
                                                                     
                                                                     menu = menu
                                                                         .item(
@@ -826,6 +828,23 @@ impl Render for DbTreeView {
                                                                                 .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
                                                                                     cx.emit(DbTreeViewEvent::CreateNewQuery {
                                                                                         node: node1.clone()
+                                                                                    });
+                                                                                }))
+                                                                        )
+                                                                        .separator()
+                                                                        .item(
+                                                                            PopupMenuItem::new("运行SQL文件")
+                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
+                                                                                    cx.emit(DbTreeViewEvent::RunSqlFile {
+                                                                                        node: node7.clone()
+                                                                                    });
+                                                                                }))
+                                                                        )
+                                                                        .item(
+                                                                            PopupMenuItem::new("转储SQL文件")
+                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
+                                                                                    cx.emit(DbTreeViewEvent::DumpSqlFile {
+                                                                                        node: node8.clone()
                                                                                     });
                                                                                 }))
                                                                         )
@@ -880,6 +899,7 @@ impl Render for DbTreeView {
                                                                     let node4 = node.clone();
                                                                     let node5 = node.clone();
                                                                     let node6 = node.clone();
+                                                                    let node7 = node.clone();
                                                                     
                                                                     menu = menu
                                                                         .item(
@@ -924,6 +944,14 @@ impl Render for DbTreeView {
                                                                                 }))
                                                                         )
                                                                         .separator()
+                                                                        .item(
+                                                                            PopupMenuItem::new("导入数据")
+                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
+                                                                                    cx.emit(DbTreeViewEvent::ImportData {
+                                                                                        node: node7.clone()
+                                                                                    });
+                                                                                }))
+                                                                        )
                                                                         .item(
                                                                             PopupMenuItem::new("导出表")
                                                                                 .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {

@@ -144,8 +144,12 @@ impl DatabaseEventHandler {
                 DbTreeViewEvent::DeleteQuery { node } => {
                     Self::handle_delete_query(node.clone(), tree_view.clone(), window, cx);
                 }
-                DbTreeViewEvent::RunSqlFile { node } => todo!(),
-                DbTreeViewEvent::DumpSqlFile { node } => todo!(),
+                DbTreeViewEvent::RunSqlFile { node } => {
+                    Self::handle_run_sql_file(node.clone(), global_state, window, cx);
+                }
+                DbTreeViewEvent::DumpSqlFile { node } => {
+                    Self::handle_dump_sql_file(node.clone(), global_state, window, cx);
+                }
             }
         });
 
@@ -420,8 +424,18 @@ impl DatabaseEventHandler {
         use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();
-        // 获取数据库名：如果是数据库节点则用 name，否则用 parent_context
-        let database = node.parent_context.clone().unwrap_or_else(|| node.name.clone());
+        // 获取数据库名和表名
+        let (database, table_name) = if node.node_type == db::DbNodeType::Table {
+            // 表节点：从 metadata 获取数据库名，表名是 node.name
+            let db = node.metadata.as_ref()
+                .and_then(|m| m.get("database"))
+                .cloned()
+                .unwrap_or_else(|| node.parent_context.clone().unwrap_or_default());
+            (db, Some(node.name.clone()))
+        } else {
+            // 数据库节点：数据库名是 node.name
+            (node.name.clone(), None)
+        };
 
         eprintln!("Opening import dialog for database: {}", database);
 
@@ -437,12 +451,21 @@ impl DatabaseEventHandler {
                 cx,
             );
 
+            // 如果有表名则预填
+            if let Some(table) = table_name {
+                import_view.update(cx, |view, cx| {
+                    view.table.update(cx, |state, cx| {
+                        state.set_value(table, window, cx);
+                    });
+                });
+            }
+
             eprintln!("Import view created, opening dialog...");
 
             window.open_dialog(cx, move |dialog, _window, _cx| {
                 eprintln!("Dialog builder called");
                 dialog
-                    .title("Import Data")
+                    .title("导入数据")
                     .child(import_view.clone())
                     .width(px(800.0))
                     .on_cancel(|_, _window, _cx| true)
@@ -1119,6 +1142,69 @@ impl DatabaseEventHandler {
                         }).detach();
                         true
                     })
+            });
+        }
+    }
+
+    /// 处理运行SQL文件事件
+    fn handle_run_sql_file(
+        node: DbNode,
+        global_state: GlobalDbState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use crate::sql_run_view::SqlRunView;
+
+        let connection_id = node.connection_id.clone();
+        // 获取数据库名：如果是数据库节点则用 name，否则为空（连接级别）
+        let database = if node.node_type == db::DbNodeType::Database {
+            Some(node.name.clone())
+        } else {
+            None
+        };
+
+        let config = Tokio::block_on(cx, async move {
+            global_state.get_config(&connection_id).await
+        });
+
+        if let Some(config) = config {
+            let run_view = SqlRunView::new(config.id, database, window, cx);
+
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                dialog
+                    .title("运行SQL文件")
+                    .child(run_view.clone())
+                    .width(px(800.0))
+                    .on_cancel(|_, _window, _cx| true)
+            });
+        }
+    }
+
+    /// 处理转储SQL文件事件
+    fn handle_dump_sql_file(
+        node: DbNode,
+        global_state: GlobalDbState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use crate::sql_dump_view::SqlDumpView;
+
+        let connection_id = node.connection_id.clone();
+        let database = node.name.clone();
+
+        let config = Tokio::block_on(cx, async move {
+            global_state.get_config(&connection_id).await
+        });
+
+        if let Some(config) = config {
+            let dump_view = SqlDumpView::new(config.id, database, window, cx);
+
+            window.open_dialog(cx, move |dialog, _window, _cx| {
+                dialog
+                    .title("转储SQL文件")
+                    .child(dump_view.clone())
+                    .width(px(800.0))
+                    .on_cancel(|_, _window, _cx| true)
             });
         }
     }

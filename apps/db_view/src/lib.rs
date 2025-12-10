@@ -10,9 +10,11 @@ pub mod db_tree_view;
 pub mod filter_editor;
 pub mod multi_text_editor;
 pub mod results_delegate;
+pub mod sql_dump_view;
 pub mod sql_editor;
 #[cfg(test)]
 mod sql_editor_completion_tests;
 pub mod sql_editor_view;
 pub mod sql_result_tab;
+pub mod sql_run_view;
 pub mod table_data_tab;

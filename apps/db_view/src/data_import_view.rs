@@ -12,7 +12,7 @@ use db::{DataFormat, DataImporter, GlobalDbState, ImportConfig};
 pub struct DataImportView {
     connection_id: String,
     database: Entity<InputState>,
-    table: Entity<InputState>,
+    pub table: Entity<InputState>,
     format: Entity<DataFormat>,
     stop_on_error: Entity<bool>,
     use_transaction: Entity<bool>,
