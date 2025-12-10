@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{collections::HashSet, ops::Range};
 
 use gpui::{div, App, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Stateful, Styled as _, Window};
 
@@ -249,5 +249,25 @@ pub trait TableDelegate: Sized + 'static {
     /// Check if a column has an active filter.
     fn is_column_filtered(&self, col_ix: usize, cx: &App) -> bool {
         false
+    }
+
+    /// Called when a column filter is applied.
+    /// The delegate should update its data based on the selected values.
+    fn on_column_filter_changed(
+        &mut self,
+        col_ix: usize,
+        selected_values: HashSet<String>,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+    }
+
+    /// Called when a column filter is cleared.
+    fn on_column_filter_cleared(
+        &mut self,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
     }
 }

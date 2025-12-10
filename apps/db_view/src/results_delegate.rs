@@ -79,6 +79,8 @@ pub struct EditorTableDelegate {
     /// Filtered row indices (None means no filter, show all rows)
     /// When set, only these row indices from `rows` will be displayed
     filtered_row_indices: Option<Vec<usize>>,
+    /// Column filter conditions: col_ix -> selected values
+    column_filters: HashMap<usize, HashSet<String>>,
 }
 
 impl Clone for EditorTableDelegate {
@@ -98,6 +100,7 @@ impl Clone for EditorTableDelegate {
             primary_key_columns: self.primary_key_columns.clone(),
             active_filter_columns: self.active_filter_columns.clone(),
             filtered_row_indices: self.filtered_row_indices.clone(),
+            column_filters: self.column_filters.clone(),
         }
     }
 }
@@ -121,9 +124,10 @@ impl EditorTableDelegate {
             primary_key_columns: Vec::new(),
             active_filter_columns: HashSet::new(),
             filtered_row_indices: None,
+            column_filters: HashMap::new(),
         }
     }
-    
+
     /// Set column metadata
     pub fn set_column_meta(&mut self, meta: Vec<TableColumnMeta>) {
         self.column_meta = meta;
@@ -326,55 +330,58 @@ impl EditorTableDelegate {
     // Column Filter Methods (to be called from external code)
     // ============================================================================
 
-    /// 应用筛选到数据
-    /// 
-    /// 外部调用方式：
-    /// ```
-    /// table.update(cx, |state, cx| {
-    ///     state.delegate_mut().apply_filter(col_ix, selected_values);
-    ///     state.refresh(cx);
-    /// });
-    /// ```
+    /// 应用筛选到数据（支持多列筛选）
     pub fn apply_filter(&mut self, col_ix: usize, selected_values: HashSet<String>) {
-        // 计算筛选后的行索引
-        let filtered_indices: Vec<usize> = self.rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| {
-                let cell_value = row.get(col_ix).map(|s| s.as_str()).unwrap_or("NULL");
-                selected_values.contains(cell_value)
-            })
-            .map(|(ix, _)| ix)
-            .collect();
-
-        // 更新激活的筛选列
+        // 存储该列的筛选条件
+        self.column_filters.insert(col_ix, selected_values);
         self.active_filter_columns.insert(col_ix);
-
-        // 如果筛选后的行数等于总行数，说明没有实际筛选
-        if filtered_indices.len() == self.rows.len() {
-            self.filtered_row_indices = None;
-            self.active_filter_columns.remove(&col_ix);
-        } else {
-            self.filtered_row_indices = Some(filtered_indices);
-        }
+        
+        // 重新计算所有筛选条件的组合结果
+        self.recalculate_filtered_indices();
     }
 
     /// 清除单列筛选
     pub fn clear_column_filter(&mut self, col_ix: usize) {
+        self.column_filters.remove(&col_ix);
         self.active_filter_columns.remove(&col_ix);
         
-        // 如果没有其他筛选，清除筛选索引
-        if self.active_filter_columns.is_empty() {
-            self.filtered_row_indices = None;
-        }
-        // 注意：如果有多列筛选，需要重新计算筛选结果
-        // 这里简化处理，假设单列筛选场景
+        // 重新计算筛选结果
+        self.recalculate_filtered_indices();
     }
 
     /// 清除所有筛选
     pub fn clear_all_filters(&mut self) {
+        self.column_filters.clear();
         self.active_filter_columns.clear();
         self.filtered_row_indices = None;
+    }
+
+    /// 重新计算筛选后的行索引（多列 AND 组合）
+    fn recalculate_filtered_indices(&mut self) {
+        if self.column_filters.is_empty() {
+            self.filtered_row_indices = None;
+            return;
+        }
+
+        let filtered_indices: Vec<usize> = self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                // 所有筛选条件都必须满足（AND）
+                self.column_filters.iter().all(|(&col_ix, selected_values)| {
+                    let cell_value = row.get(col_ix).map(|s| s.as_str()).unwrap_or("NULL");
+                    selected_values.contains(cell_value)
+                })
+            })
+            .map(|(ix, _)| ix)
+            .collect();
+
+        // 如果筛选后的行数等于总行数，说明没有实际筛选效果
+        if filtered_indices.len() == self.rows.len() {
+            self.filtered_row_indices = None;
+        } else {
+            self.filtered_row_indices = Some(filtered_indices);
+        }
     }
 
 }
@@ -587,12 +594,27 @@ impl TableDelegate for EditorTableDelegate {
 
         let mut value_counts: HashMap<String, usize> = HashMap::new();
 
-        for row in &self.rows {
-            let value = row
-                .get(col_ix)
-                .cloned()
-                .unwrap_or_else(|| "NULL".to_string());
-            *value_counts.entry(value).or_insert(0) += 1;
+        // 获取其他列的筛选条件（排除当前列）
+        let other_filters: HashMap<usize, &HashSet<String>> = self.column_filters
+            .iter()
+            .filter(|(c, _)| **c != col_ix)
+            .map(|(c, v)| (*c, v))
+            .collect();
+
+        for (row_ix, row) in self.rows.iter().enumerate() {
+            // 检查该行是否满足其他列的筛选条件
+            let passes_other_filters = other_filters.iter().all(|(&other_col, selected_values)| {
+                let cell_value = row.get(other_col).map(|s| s.as_str()).unwrap_or("NULL");
+                selected_values.contains(cell_value)
+            });
+
+            if passes_other_filters {
+                let value = row
+                    .get(col_ix)
+                    .cloned()
+                    .unwrap_or_else(|| "NULL".to_string());
+                *value_counts.entry(value).or_insert(0) += 1;
+            }
         }
 
         let mut result: Vec<_> = value_counts
@@ -605,6 +627,25 @@ impl TableDelegate for EditorTableDelegate {
 
     fn is_column_filtered(&self, col_ix: usize, _cx: &App) -> bool {
         self.active_filter_columns.contains(&col_ix)
+    }
+
+    fn on_column_filter_changed(
+        &mut self,
+        col_ix: usize,
+        selected_values: HashSet<String>,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        self.apply_filter(col_ix, selected_values);
+    }
+
+    fn on_column_filter_cleared(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) {
+        self.clear_column_filter(col_ix);
     }
 }
 

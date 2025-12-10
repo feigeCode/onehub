@@ -496,7 +496,7 @@ where
     }
 
     /// 立即应用筛选（从 FilterPanel 获取当前选中的值）
-    fn apply_filter_realtime(&mut self, col_ix: usize, _window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_filter_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(filter_list) = &self.filter_list {
             let selected = filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
                 list_state.delegate().get_selected_values()
@@ -504,8 +504,12 @@ where
 
             if selected.is_empty() {
                 self.clear_column_filter(col_ix, cx);
+                // 通知 delegate 筛选已清除
+                self.delegate.on_column_filter_cleared(col_ix, window, cx);
             } else {
-                self.set_column_filter_with_all_values(col_ix, selected, cx);
+                self.set_column_filter_with_all_values(col_ix, selected.clone(), cx);
+                // 通知 delegate 筛选已变更
+                self.delegate.on_column_filter_changed(col_ix, selected, window, cx);
             }
 
             // 刷新表格以应用筛选
