@@ -1,11 +1,27 @@
-use one_core::storage::{GlobalStorageState, StoredConnection};
+// 1. 标准库导入
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+// 2. 外部 crate 导入（按字母顺序）
 use gpui::{App, AppContext, Context, Entity, IntoElement, InteractiveElement, ParentElement, Render, Styled, Window, div, StatefulInteractiveElement, EventEmitter, SharedString, Focusable, FocusHandle, AsyncApp, px, prelude::FluentBuilder};
-use tracing::log::trace;
-use gpui_component::{ActiveTheme, IconName, h_flex, list::ListItem, menu::{ContextMenuExt, PopupMenuItem}, tree::TreeItem, v_flex, Icon, Sizable, Size, tooltip::Tooltip, button::{Button, ButtonVariants as _}, input::{InputState, InputEvent, Input}};
-use db::{GlobalDbState, DbNode, DbNodeType, spawn_result, DbError};
-use gpui_component::context_menu_tree::{context_menu_tree, ContextMenuTreeState};
-use one_core::gpui_tokio::Tokio;
+use gpui_component::{
+    ActiveTheme, IconName, h_flex, list::ListItem, 
+    menu::{ContextMenuExt, PopupMenuItem}, 
+    tree::TreeItem, v_flex, Icon, Sizable, Size, 
+    tooltip::Tooltip, 
+    button::{Button, ButtonVariants as _}, 
+    input::{InputState, InputEvent, Input}, 
+    spinner::Spinner,
+    context_menu_tree::{context_menu_tree, ContextMenuTreeState}
+};
+use tracing::log::{error, info, trace};
+
+// 3. 当前 crate 导入（按模块分组）
+use db::{GlobalDbState, DbNode, DbNodeType};
+use one_core::{
+    storage::{GlobalStorageState, StoredConnection},
+    gpui_tokio::Tokio
+};
 // ============================================================================
 // DbTreeView Events
 // ============================================================================
@@ -73,6 +89,8 @@ pub struct DbTreeView {
     loaded_children: HashSet<String>,
     // 正在加载的节点集合（用于显示加载状态）
     loading_nodes: HashSet<String>,
+    // 加载失败的节点集合（用于显示错误状态）
+    error_nodes: HashMap<String, String>,
     // 已展开的节点（用于在重建树时保持展开状态）
     expanded_nodes: HashSet<String>,
     // 当前树的根节点集合，便于我们更新子节点
@@ -85,6 +103,8 @@ pub struct DbTreeView {
     search_input: Entity<InputState>,
     // 搜索关键字
     search_query: String,
+    // 搜索防抖序列号
+    search_seq: u64,
 }
 
 impl DbTreeView {
@@ -121,8 +141,22 @@ impl DbTreeView {
 
         cx.subscribe_in(&search_input, _window, |this, _input, event, _window, cx| {
             if let InputEvent::Change = event {
-                this.search_query = _input.read(cx).text().to_string();
-                this.rebuild_tree(cx);
+                let query = _input.read(cx).text().to_string();
+
+                this.search_seq += 1;
+                let current_seq = this.search_seq;
+
+                // TODO 需要加防抖
+                cx.spawn(async move |view, cx| {
+                    // tokio::time::sleep(Duration::from_millis(250)).await;
+
+                    let _ = view.update(cx, |this, cx| {
+                        if this.search_seq == current_seq {
+                            this.search_query = query;
+                            this.rebuild_tree(cx);
+                        }
+                    });
+                }).detach();
             }
         }).detach();
 
@@ -133,12 +167,14 @@ impl DbTreeView {
             db_nodes,
             loaded_children: HashSet::new(),
             loading_nodes: HashSet::new(),
+            error_nodes: HashMap::new(),
             expanded_nodes: HashSet::new(),
             items: clone_items,
             connection_name: None,
             _workspace_id: workspace_id,
             search_input,
             search_query: String::new(),
+            search_seq: 0,
         }
     }
 
@@ -176,14 +212,15 @@ impl DbTreeView {
     /// 3. 重新加载子节点
     /// 4. 如果节点已展开，保持展开状态
     pub fn refresh_tree(&mut self, node_id: String, cx: &mut Context<Self>) {
-        eprintln!("Refreshing node: {}", node_id);
+        info!("Refreshing node in DbTreeView: {}", node_id);
         
         // 递归清除节点及其所有后代
         self.clear_node_descendants(&node_id);
         
-        // 清除加载状态
+        // 清除加载状态和错误状态
         self.loaded_children.remove(&node_id);
         self.loading_nodes.remove(&node_id);
+        self.error_nodes.remove(&node_id);
         
         // 重置节点状态
         if let Some(node) = self.db_nodes.get_mut(&node_id) {
@@ -217,6 +254,7 @@ impl DbTreeView {
             self.db_nodes.remove(&child_id);
             self.loaded_children.remove(&child_id);
             self.loading_nodes.remove(&child_id);
+            self.error_nodes.remove(&child_id);
             self.expanded_nodes.remove(&child_id);
         }
     }
@@ -232,13 +270,13 @@ impl DbTreeView {
         let node = match self.db_nodes.get(&node_id) {
             Some(n) => n.clone(),
             None => {
-                eprintln!("Node not found in db_nodes: {}", node_id);
+                error!("DbTreeView lazy_load_children: node not found in db_nodes: {}", node_id);
                 return;
             }
         };
 
-        eprintln!("Attempting to load children for: {} (type: {:?}, has_children: {})",
-                  node_id, node.node_type, node.has_children);
+        info!("DbTreeView lazy_load_children: attempting to load children for: {} (type: {:?}, has_children: {})",
+              node_id, node.node_type, node.has_children);
 
         // 如果节点没有子节点能力，跳过
         // if !node.has_children {
@@ -256,14 +294,16 @@ impl DbTreeView {
         let connection_id = node.connection_id.clone();
         
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-
-            // 使用 DatabasePlugin 的方法加载子节点
-            let children_result = Tokio::block_on(cx,async move {
-                let (plugin, conn_arc) = global_state.get_plugin_and_connection(&connection_id).await?;
-                let conn = conn_arc.read().await;
-                // 加载子节点并返回结果
-                plugin.load_node_children(&**conn, &node, &global_storage_state).await
-            }).unwrap();
+            // 使用 DatabasePlugin 的方法加载子节点，添加超时机制
+            let children_result = Tokio::spawn_result(
+                cx,
+                async move {
+                    let (plugin, conn_arc) = global_state.get_plugin_and_connection(&connection_id).await?;
+                    let conn = conn_arc.read().await;
+                    // 加载子节点并返回结果
+                    plugin.load_node_children(&**conn, &node, &global_storage_state).await
+                }
+            ).unwrap().await;
 
             this.update(cx, |this: &mut Self, cx| {
                 // 移除加载状态
@@ -271,9 +311,10 @@ impl DbTreeView {
 
                 match children_result {
                     Ok(children) => {
-                        eprintln!("Loaded {} children for node: {}", children.len(), clone_node_id);
-                        // 标记为已加载
+                        info!("DbTreeView lazy_load_children: loaded {} children for node: {}", children.len(), clone_node_id);
+                        // 标记为已加载，清除错误状态
                         this.loaded_children.insert(clone_node_id.clone());
+                        this.error_nodes.remove(&clone_node_id);
 
                         // 更新节点的子节点
                         if let Some(parent_node) = this.db_nodes.get_mut(&clone_node_id) {
@@ -293,7 +334,7 @@ impl DbTreeView {
                         }
 
                         for child in &children {
-                            eprintln!("  - Adding child: {} (type: {:?})", child.id, child.node_type);
+                            trace!("DbTreeView lazy_load_children: adding child: {} (type: {:?})", child.id, child.node_type);
                             insert_nodes_recursive(&mut this.db_nodes, child);
                         }
 
@@ -301,7 +342,11 @@ impl DbTreeView {
                         this.rebuild_tree(cx);
                     }
                     Err(e) => {
-                        eprintln!("Failed to load children for {}: {}", clone_node_id, e);
+                        error!("DbTreeView lazy_load_children: failed to execute load_node_children for {}: {}", clone_node_id, e);
+                        this.expanded_nodes.remove(&clone_node_id);
+                        // 记录错误状态
+                        this.error_nodes.insert(clone_node_id.clone(), format!("操作失败: {}", e));
+                        this.rebuild_tree(cx);
                     }
                 }
             }).ok();
@@ -406,13 +451,6 @@ impl DbTreeView {
                 // 如果有搜索关键字且有匹配的子节点，自动展开
                 should_expand = !query.is_empty();
             }
-        } else if (node.has_children || expanded_nodes.contains(&node.id)) && query.is_empty() {
-            // 未加载的节点：只在没有搜索时显示占位符
-            let placeholder = TreeItem::new(
-                format!("{}_placeholder", node.id),
-                "Loading...".to_string()
-            );
-            item = item.children(vec![placeholder]);
         }
 
         // 设置展开状态
@@ -441,33 +479,21 @@ impl DbTreeView {
             item = item.expanded(true);
         }
 
-        if node.children_loaded {
-            if !node.children.is_empty() {
-                let children: Vec<TreeItem> = node
-                    .children
-                    .iter()
-                    .map(|child_node| {
-                        // 优先使用 db_nodes 中的最新版本，避免使用过期的克隆
-                        if let Some(updated) = db_nodes.get::<str>(child_node.id.as_ref()) {
-                            Self::db_node_to_tree_item_recursive(updated, db_nodes, expanded_nodes)
-                        } else {
-                            Self::db_node_to_tree_item_recursive(child_node, db_nodes, expanded_nodes)
-                        }
-                    })
-                    .collect();
-                item = item.children(children);
-            } else {
-                // 已加载且为空：不要添加占位节点，保持为叶子
-            }
-        } else if node.has_children || expanded_nodes.contains(&node.id) {
-            // 有子节点但未加载，或者节点已标记为展开但还在加载中，设置占位节点
-            let placeholder = TreeItem::new(
-                format!("{}_placeholder", node.id),
-                "Loading...".to_string()
-            );
-            item = item.children(vec![placeholder]);
+        if  node.children_loaded && !node.children.is_empty() {
+            let children: Vec<TreeItem> = node
+                .children
+                .iter()
+                .map(|child_node| {
+                    // 优先使用 db_nodes 中的最新版本，避免使用过期的克隆
+                    if let Some(updated) = db_nodes.get::<str>(child_node.id.as_ref()) {
+                        Self::db_node_to_tree_item_recursive(updated, db_nodes, expanded_nodes)
+                    } else {
+                        Self::db_node_to_tree_item_recursive(child_node, db_nodes, expanded_nodes)
+                    }
+                })
+                .collect();
+            item = item.children(children);
         }
-
         item
     }
 
@@ -499,13 +525,22 @@ impl DbTreeView {
     }
 
     fn handle_item_double_click(&mut self, item: TreeItem, cx: &mut Context<Self>) {
+        let node_id = item.id.to_string();
+        
+        // 如果节点有错误，双击重试连接
+        if self.error_nodes.contains_key(&node_id) {
+            self.error_nodes.remove(&node_id);
+            self.lazy_load_children(node_id, cx);
+            return;
+        }
+        
         // 根据节点类型执行不同的操作
         if let Some(node) = self.db_nodes.get(item.id.as_ref()).cloned() {
             match node.node_type {
                 DbNodeType::Table => {
                     // 查找所属数据库
                     if let Some(database) = self.find_parent_database(&node.id) {
-                        eprintln!("Opening table data tab: {}.{}", database, node.name);
+                        info!("DbTreeView: opening table data tab: {}.{}", database, node.name);
                         cx.emit(DbTreeViewEvent::OpenTableData {
                             node
                         });
@@ -514,7 +549,7 @@ impl DbTreeView {
                 DbNodeType::View => {
                     // 查找所属数据库
                     if let Some(database) = self.find_parent_database(&node.id) {
-                        eprintln!("Opening view data tab: {}.{}", database, node.name);
+                        info!("DbTreeView: opening view data tab: {}.{}", database, node.name);
                         cx.emit(DbTreeViewEvent::OpenViewData {
                             node
                         });
@@ -522,7 +557,7 @@ impl DbTreeView {
                 }
                 DbNodeType::NamedQuery => {
                     // 打开命名查询
-                    eprintln!("Opening named query: {}", node.name);
+                    info!("DbTreeView: opening named query: {}", node.name);
                     cx.emit(DbTreeViewEvent::OpenNamedQuery {
                         node
                     });
@@ -669,7 +704,7 @@ impl Render for DbTreeView {
                                     &self.tree_state,
                                     move |ix, item, _depth, _selected, _window, cx| {
                                         let node_id = item.id.to_string();
-                                        let (icon, label_text, _item_clone, search_query) = view.update(cx, |this, cx| {
+                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query) = view.update(cx, |this, cx| {
                                             let icon = this.get_icon_for_node(&node_id, item.is_expanded(),cx);
 
                                             // 同步节点展开状态
@@ -679,15 +714,19 @@ impl Render for DbTreeView {
                                                 this.expanded_nodes.remove(item.id.as_ref());
                                             }
 
-                                            // 显示加载状态
-                                            let is_loading = this.loading_nodes.contains(&node_id);
-                                            let label_text = if is_loading {
-                                                format!("{} (Loading...)", item.label)
+                                            // 显示错误状态
+                                            let error_msg = this.error_nodes.get(&node_id);
+
+                                            // 文本始终保持为节点原始名称；错误信息只在 tooltip 中展示
+                                            let label_text = item.label.to_string();
+
+                                            let label_for_tooltip = if let Some(error) = error_msg {
+                                                error.to_string()
                                             } else {
-                                                item.label.to_string()
+                                                label_text.clone()
                                             };
 
-                                            (icon, label_text, item.clone(), this.search_query.clone())
+                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone())
                                         });
 
                                         // 在 update 之后触发懒加载
@@ -702,7 +741,6 @@ impl Render for DbTreeView {
                                         let view_clone = view.clone();
                                         let node_id_clone = node_id.clone();
                                         trace!("node_id: {}, item: {}", &node_id, &item.label);
-                                        let label_for_tooltip = label_text.clone();
                                         let highlight_color = cx.theme().warning;
                                         
                                         // 构建带高亮的 label
@@ -725,6 +763,12 @@ impl Render for DbTreeView {
                                         } else {
                                             div().child(label_text).into_any_element()
                                         };
+
+                                        let (is_loading, error_msg) = view.update(cx, |this, _cx| {
+                                            let is_loading = this.loading_nodes.contains(&node_id);
+                                            let error_msg = this.error_nodes.get(&node_id);
+                                            (is_loading, error_msg.cloned())
+                                        });
 
                                         let list_item = ListItem::new(ix)
                                             .flex_1()
@@ -754,6 +798,27 @@ impl Render for DbTreeView {
                                                                 Tooltip::new(label_for_tooltip.clone()).build(window, cx)
                                                             })
                                                     )
+                                                    .when(is_loading, |this| {
+                                                        this.child(
+                                                            Spinner::new()
+                                                                .with_size(Size::Small)
+                                                                .color(cx.theme().muted_foreground)
+                                                        )
+                                                    })
+                                                    .when_some(error_msg.clone(), |this, error_text| {
+                                                        this.child(
+                                                            div()
+                                                                .id(SharedString::from(format!("error-{}", ix)))
+                                                                .child(
+                                                                    Icon::new(IconName::TriangleAlert)
+                                                                        .with_size(Size::Small)
+                                                                        .text_color(cx.theme().warning)
+                                                                )
+                                                                .tooltip(move |window, cx| {
+                                                                    Tooltip::new(error_text.clone()).build(window, cx)
+                                                                })
+                                                        )
+                                                    })
                                             );
 
                                         // 使用 context_menu 方法为 ListItem 添加上下文菜单
