@@ -420,58 +420,68 @@ impl DatabaseEventHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
-        use crate::data_import_view::DataImportView;
         use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();
-        // 获取数据库名和表名
-        let (database, table_name) = if node.node_type == db::DbNodeType::Table {
-            // 表节点：从 metadata 获取数据库名，表名是 node.name
+        
+        // 根据节点类型选择不同的导入视图
+        if node.node_type == db::DbNodeType::Table {
+            // 表节点：使用表导入视图（支持 TXT/CSV/JSON）
+            use crate::table_import_view::TableImportView;
+            
             let db = node.metadata.as_ref()
                 .and_then(|m| m.get("database"))
                 .cloned()
                 .unwrap_or_else(|| node.parent_context.clone().unwrap_or_default());
-            (db, Some(node.name.clone()))
-        } else {
-            // 数据库节点：数据库名是 node.name
-            (node.name.clone(), None)
-        };
+            let table_name = node.name.clone();
 
-        eprintln!("Opening import dialog for database: {}", database);
-
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
-        });
-
-        if let Some(config) = config {
-            let import_view = DataImportView::new(
-                config.id,
-                database.clone(),
-                window,
-                cx,
-            );
-
-            // 如果有表名则预填
-            if let Some(table) = table_name {
-                import_view.update(cx, |view, cx| {
-                    view.table.update(cx, |state, cx| {
-                        state.set_value(table, window, cx);
-                    });
-                });
-            }
-
-            eprintln!("Import view created, opening dialog...");
-
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                eprintln!("Dialog builder called");
-                dialog
-                    .title("导入数据")
-                    .child(import_view.clone())
-                    .width(px(800.0))
-                    .on_cancel(|_, _window, _cx| true)
+            let config = Tokio::block_on(cx, async move {
+                global_state.get_config(&connection_id).await
             });
 
-            eprintln!("Dialog opened");
+            if let Some(config) = config {
+                let import_view = TableImportView::new(
+                    config.id,
+                    db,
+                    Some(table_name),
+                    window,
+                    cx,
+                );
+
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    dialog
+                        .title("导入数据到表")
+                        .child(import_view.clone())
+                        .width(px(900.0))
+                        .on_cancel(|_, _window, _cx| true)
+                });
+            }
+        } else {
+            // 数据库节点：使用原有的导入视图（支持 SQL）
+            use crate::data_import_view::DataImportView;
+            
+            let database = node.name.clone();
+
+            let config = Tokio::block_on(cx, async move {
+                global_state.get_config(&connection_id).await
+            });
+
+            if let Some(config) = config {
+                let import_view = DataImportView::new(
+                    config.id,
+                    database,
+                    window,
+                    cx,
+                );
+
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    dialog
+                        .title("导入数据")
+                        .child(import_view.clone())
+                        .width(px(800.0))
+                        .on_cancel(|_, _window, _cx| true)
+                });
+            }
         }
     }
 
