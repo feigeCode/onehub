@@ -1,9 +1,9 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App,ClickEvent, DefiniteLength, DismissEvent, Div,
+    Animation, AnimationExt as _, AnyElement, App, ClickEvent, DefiniteLength, DismissEvent, Edges,
     EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    ParentElement, Pixels, RenderOnce, Styled, Window, anchored, div, point,
+    ParentElement, RenderOnce, StyleRefinement, Styled, Window, anchored, div, point,
     prelude::FluentBuilder as _, px,
 };
 
@@ -33,8 +33,8 @@ pub struct Sheet {
     on_close: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
     title: Option<AnyElement>,
     footer: Option<AnyElement>,
-    content: Div,
-    margin_top: Pixels,
+    style: StyleRefinement,
+    children: Vec<AnyElement>,
     overlay: bool,
     overlay_closable: bool,
 }
@@ -49,8 +49,8 @@ impl Sheet {
             resizable: true,
             title: None,
             footer: None,
-            content: v_flex().px_4().py_3(),
-            margin_top: TITLE_BAR_HEIGHT,
+            style: StyleRefinement::default(),
+            children: Vec::new(),
             overlay: true,
             overlay_closable: true,
             on_close: Rc::new(|_, _, _| {}),
@@ -72,14 +72,6 @@ impl Sheet {
     /// Sets the size of the sheet, default is 350px.
     pub fn size(mut self, size: impl Into<DefiniteLength>) -> Self {
         self.size = size.into();
-        self
-    }
-
-    /// Sets the margin top of the sheet, default is 0px.
-    ///
-    /// This is used to let Sheet be placed below a Windows Title, you can give the height of the title bar.
-    pub fn margin_top(mut self, top: Pixels) -> Self {
-        self.margin_top = top;
         self
     }
 
@@ -114,20 +106,20 @@ impl Sheet {
 impl EventEmitter<DismissEvent> for Sheet {}
 impl ParentElement for Sheet {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.content.extend(elements);
+        self.children.extend(elements);
     }
 }
 impl Styled for Sheet {
     fn style(&mut self) -> &mut gpui::StyleRefinement {
-        self.content.style()
+        &mut self.style
     }
 }
 
 impl RenderOnce for Sheet {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let placement = self.placement;
-        let titlebar_height = self.margin_top;
-        let window_paddings = crate::window_border::window_paddings(window);
+        let mut window_paddings = crate::window_border::window_paddings(window);
+        window_paddings.top += TITLE_BAR_HEIGHT;
         let size = window.viewport_size()
             - gpui::size(
                 window_paddings.left + window_paddings.right,
@@ -135,17 +127,30 @@ impl RenderOnce for Sheet {
             );
         let on_close = self.on_close.clone();
 
+        let base_size = window.text_style().font_size;
+        let rem_size = window.rem_size();
+        let mut paddings = Edges::all(px(16.));
+        if let Some(pl) = self.style.padding.left {
+            paddings.left = pl.to_pixels(base_size, rem_size);
+        }
+        if let Some(pr) = self.style.padding.right {
+            paddings.right = pr.to_pixels(base_size, rem_size);
+        }
+        if let Some(pt) = self.style.padding.top {
+            paddings.top = pt.to_pixels(base_size, rem_size);
+        }
+        if let Some(pb) = self.style.padding.bottom {
+            paddings.bottom = pb.to_pixels(base_size, rem_size);
+        }
+
         anchored()
-            .position(point(
-                window_paddings.left,
-                window_paddings.top + titlebar_height,
-            ))
+            .position(point(window_paddings.left, window_paddings.top))
             .snap_to_window()
             .child(
                 div()
                     .occlude()
                     .w(size.width)
-                    .h(size.height - titlebar_height)
+                    .h(size.height)
                     .bg(overlay_color(self.overlay, cx))
                     .when(self.overlay, |this| {
                         this.on_any_mouse_down({
@@ -154,8 +159,8 @@ impl RenderOnce for Sheet {
                                 cx.stop_propagation();
 
                                 if self.overlay_closable && event.button == MouseButton::Left {
-                                    on_close(&ClickEvent::default(), window, cx);
                                     window.close_sheet(cx);
+                                    on_close(&ClickEvent::default(), window, cx);
                                 }
                             }
                         })
@@ -171,8 +176,8 @@ impl RenderOnce for Sheet {
                                 move |_: &Cancel, window, cx| {
                                     cx.propagate();
 
-                                    on_close(&ClickEvent::default(), window, cx);
                                     window.close_sheet(cx);
+                                    on_close(&ClickEvent::default(), window, cx);
                                 }
                             })
                             .absolute()
@@ -180,6 +185,7 @@ impl RenderOnce for Sheet {
                             .bg(cx.theme().background)
                             .border_color(cx.theme().border)
                             .shadow_xl()
+                            .refine_style(&self.style)
                             .map(|this| {
                                 // Set the size of the sheet.
                                 if placement.is_horizontal() {
@@ -212,14 +218,21 @@ impl RenderOnce for Sheet {
                                             .ghost()
                                             .icon(IconName::Close)
                                             .on_click(move |_, window, cx| {
-                                                on_close(&ClickEvent::default(), window, cx);
                                                 window.close_sheet(cx);
+                                                on_close(&ClickEvent::default(), window, cx);
                                             }),
                                     ),
                             )
                             .child(
-                                // Body
-                                div().flex_1().overflow_scrollbar().child(self.content),
+                                div().flex_1().overflow_hidden().child(
+                                    // Body
+                                    v_flex()
+                                        .size_full()
+                                        .overflow_y_scrollbar()
+                                        .pl(paddings.left)
+                                        .pr(paddings.right)
+                                        .children(self.children),
+                                ),
                             )
                             .when_some(self.footer, |this, footer| {
                                 // Footer

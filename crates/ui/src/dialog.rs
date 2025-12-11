@@ -1,7 +1,7 @@
 use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, Bounds, BoxShadow, ClickEvent, Div, Edges,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, BoxShadow, ClickEvent, Edges,
     FocusHandle, Hsla, InteractiveElement, IntoElement, KeyBinding, MouseButton, ParentElement,
     Pixels, Point, RenderOnce, SharedString, StyleRefinement, Styled, Window, anchored, div, hsla,
     point, prelude::FluentBuilder, px, relative,
@@ -9,7 +9,7 @@ use gpui::{
 use rust_i18n::t;
 
 use crate::{
-    ActiveTheme as _, IconName, Root, Sizable as _, StyledExt, WindowExt as _,
+    ActiveTheme as _, IconName, Root, Sizable as _, StyledExt, TITLE_BAR_HEIGHT, WindowExt as _,
     actions::{Cancel, Confirm},
     animation::cubic_bezier,
     button::{Button, ButtonVariant, ButtonVariants as _},
@@ -81,7 +81,7 @@ pub struct Dialog {
     style: StyleRefinement,
     title: Option<AnyElement>,
     footer: Option<FooterFn>,
-    content: Div,
+    children: Vec<AnyElement>,
     width: Pixels,
     max_width: Option<Pixels>,
     margin_top: Option<Pixels>,
@@ -117,7 +117,7 @@ impl Dialog {
             style: StyleRefinement::default(),
             title: None,
             footer: None,
-            content: v_flex(),
+            children: Vec::new(),
             margin_top: None,
             width: px(480.),
             max_width: None,
@@ -278,7 +278,7 @@ impl Dialog {
 
 impl ParentElement for Dialog {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.content.extend(elements);
+        self.children.extend(elements);
     }
 }
 
@@ -318,8 +318,8 @@ impl RenderOnce for Dialog {
                                 }
                             }
 
-                            on_close(&ClickEvent::default(), window, cx);
                             window.close_dialog(cx);
+                            on_close(&ClickEvent::default(), window, cx);
                         }
                     })
                     .into_any_element()
@@ -345,15 +345,16 @@ impl RenderOnce for Dialog {
                                 return;
                             }
 
-                            on_close(&ClickEvent::default(), window, cx);
                             window.close_dialog(cx);
+                            on_close(&ClickEvent::default(), window, cx);
                         }
                     })
                     .into_any_element()
             }
         });
 
-        let window_paddings = crate::window_border::window_paddings(window);
+        let mut window_paddings = crate::window_border::window_paddings(window);
+        window_paddings.top += TITLE_BAR_HEIGHT;
         let view_size = window.viewport_size()
             - gpui::size(
                 window_paddings.left + window_paddings.right,
@@ -440,13 +441,13 @@ impl RenderOnce for Dialog {
                                     let on_cancel = on_cancel.clone();
                                     let on_close = on_close.clone();
                                     move |_: &Cancel, window, cx| {
+                                        window.close_dialog(cx);
                                         // FIXME:
                                         //
                                         // Here some Dialog have no focus_handle, so it will not work will Escape key.
                                         // But by now, we `cx.close_dialog()` going to close the last active model, so the Escape is unexpected to work.
                                         on_cancel(&ClickEvent::default(), window, cx);
                                         on_close(&ClickEvent::default(), window, cx);
-                                        window.close_dialog(cx);
                                     }
                                 })
                                 .on_action({
@@ -456,11 +457,12 @@ impl RenderOnce for Dialog {
                                     move |_: &Confirm, window, cx| {
                                         if let Some(on_ok) = &on_ok {
                                             if on_ok(&ClickEvent::default(), window, cx) {
-                                                on_close(&ClickEvent::default(), window, cx);
                                                 window.close_dialog(cx);
+                                                on_close(&ClickEvent::default(), window, cx);
                                             }
                                         } else if has_footer {
                                             window.close_dialog(cx);
+                                            on_close(&ClickEvent::default(), window, cx);
                                         }
                                     }
                                 })
@@ -498,20 +500,21 @@ impl RenderOnce for Dialog {
                                         let on_cancel = self.on_cancel.clone();
                                         let on_close = self.on_close.clone();
                                         move |_, window, cx| {
+                                            window.close_dialog(cx);
                                             on_cancel(&ClickEvent::default(), window, cx);
                                             on_close(&ClickEvent::default(), window, cx);
-                                            window.close_dialog(cx);
                                         }
                                     })
                             }))
                             .child(
-                                div().w_full().flex_1().overflow_hidden().child(
+                                div().flex_1().overflow_hidden().child(
+                                    // Body
                                     v_flex()
-                                        .id("contents")
+                                        .size_full()
+                                        .overflow_y_scrollbar()
                                         .pl(paddings.left)
                                         .pr(paddings.right)
-                                        .overflow_y_scrollbar()
-                                        .child(self.content),
+                                        .children(self.children),
                                 ),
                             )
                             .when_some(self.footer, |this, footer| {

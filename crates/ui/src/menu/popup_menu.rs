@@ -674,9 +674,12 @@ impl PopupMenu {
     {
         for item in items {
             match item.into() {
-                OwnedMenuItem::Action { name, action, .. } => {
-                    self = self.menu(name, action.boxed_clone())
-                }
+                OwnedMenuItem::Action {
+                    name,
+                    action,
+                    checked,
+                    ..
+                } => self = self.menu_with_check(name, checked, action.boxed_clone()),
                 OwnedMenuItem::Separator => {
                     self = self.separator();
                 }
@@ -1184,7 +1187,11 @@ impl PopupMenu {
                                 .items_center()
                                 .justify_between()
                                 .child(label.clone())
-                                .child(IconName::ChevronRight),
+                                .child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .xsmall()
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
                         ),
                 )
                 .when(selected, |this| {

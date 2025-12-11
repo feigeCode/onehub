@@ -1,5 +1,5 @@
 use crate::{
-    Selectable, Sizable,
+    Disableable, Selectable, Sizable, WindowExt,
     actions::{Cancel, SelectLeft, SelectRight},
     button::{Button, ButtonVariants},
     h_flex,
@@ -29,22 +29,29 @@ pub struct AppMenuBar {
 
 impl AppMenuBar {
     /// Create a new app menu bar.
-    pub fn new(window: &mut Window, cx: &mut App) -> Entity<Self> {
+    pub fn new(cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
-            let menu_bar = cx.entity();
-            let menus = cx
-                .get_menus()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-                .map(|(ix, menu)| AppMenu::new(ix, menu, menu_bar.clone(), window, cx))
-                .collect();
-
-            Self {
+            let mut this = Self {
                 selected_ix: None,
-                menus,
-            }
+                menus: Vec::new(),
+            };
+            this.reload(cx);
+            this
         })
+    }
+
+    /// Reload the menus from the app.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        let menu_bar = cx.entity();
+        self.menus = cx
+            .get_menus()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(ix, menu)| AppMenu::new(ix, menu, menu_bar.clone(), cx))
+            .collect();
+        self.selected_ix = None;
+        cx.notify();
     }
 
     fn on_move_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
@@ -119,7 +126,6 @@ impl AppMenu {
         ix: usize,
         menu: &OwnedMenu,
         menu_bar: Entity<AppMenuBar>,
-        _: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
         let name = menu.name.clone();
@@ -213,12 +219,14 @@ impl Render for AppMenu {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menu_bar = self.menu_bar.read(cx);
         let is_selected = menu_bar.selected_ix == Some(self.ix);
+        let is_disabled = window.has_active_dialog(cx) || window.has_active_sheet(cx);
 
         div()
             .id(self.ix)
             .relative()
             .child(
                 Button::new("menu")
+                    .disabled(is_disabled)
                     .small()
                     .py_0p5()
                     .compact()

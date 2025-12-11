@@ -2000,7 +2000,7 @@ where
     ) -> impl IntoElement {
         // Check if this is the row number column
         let is_row_number_col = self.delegate.row_number_enabled(cx) && col_ix == 0;
-        
+
         if is_row_number_col {
             // Render row number
             return div()
