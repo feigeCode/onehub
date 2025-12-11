@@ -502,7 +502,7 @@ impl Render for DbConnectionForm {
                                 .layout(Axis::Horizontal)
                                 .with_size(Size::Small)
                                 .columns(1)
-                                .label_width(px(80.))
+                                .label_width(px(100.))
                                 .children(
                                     current_tab_fields
                                         .iter()

@@ -180,15 +180,15 @@ impl AiChatPanel {
         };
 
         // 加载 providers
-        panel.load_providers(window, cx);
+        panel.load_providers(cx);
         panel
     }
 
-    fn load_providers(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn load_providers(&mut self, cx: &mut Context<Self>) {
         let storage_manager = self.storage_manager.clone();
         let ai_input = self.ai_input.clone();
 
-        cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
             use one_core::gpui_tokio::Tokio;
             use crate::ai_input::ProviderItem;
 
@@ -206,28 +206,35 @@ impl AiChatPanel {
 
             if let Ok(task) = result {
                 if let Ok(Ok(providers)) = task.await {
-                    if !providers.is_empty() {
-                        let first_provider_id = providers[0].id.to_string();
-                        
-                        _ = ai_input.update(cx, |input, cx| {
-                            let items: Vec<ProviderItem> = providers
-                                .iter()
-                                .map(|p| ProviderItem::from_config(p))
-                                .collect();
-                            
-                            // 更新 provider_select 的数据
-                            input.update_providers(items, cx);
-                        });
-                        
-                        // 自动选中第一个 provider
-                        if let Some(entity) = _this.upgrade() {
-                            _ = cx.update(|cx| {
-                                entity.update(cx, |this, cx| {
-                                    this.provider_id = Some(first_provider_id);
-                                    cx.notify();
+                    if providers.is_empty() {
+                        return;
+                    }
+
+                    let items: Vec<ProviderItem> = providers
+                        .iter()
+                        .map(ProviderItem::from_config)
+                        .collect();
+                    let first_provider_id = providers[0].id.to_string();
+
+                    let _ = cx.update(|cx| {
+                        if let Some(window_id) = cx.active_window() {
+                            cx.update_window(window_id, |_entity, window, cx| {
+                                ai_input.update(cx, |input, cx| {
+                                    input.update_providers(items.clone(), window, cx);
                                 });
-                            });
+                            })
+                        } else {
+                            Ok(())
                         }
+                    });
+
+                    if let Some(entity) = this.upgrade() {
+                        let _ = cx.update(|cx| {
+                            entity.update(cx, |panel, cx| {
+                                panel.provider_id = Some(first_provider_id.clone());
+                                cx.notify();
+                            });
+                        });
                     }
                 }
             }

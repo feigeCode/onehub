@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use db::{FieldType, TableColumnMeta};
 use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Window};
-use gpui_component::{button::{Button, ButtonVariants}, h_flex, table::{Column, ColumnFilterValue, TableDelegate, TableState}, IconName, Sizable, Size};
 use gpui_component::input::InputState;
+use gpui_component::table::Column;
+use gpui_component::{h_flex, table::{ColumnFilterValue, TableDelegate, TableState}};
 
 /// Represents a single cell change with old and new values
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,11 +400,11 @@ impl TableDelegate for EditorTableDelegate {
         self.filtered_row_count()
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
 
-    fn render_th(&mut self, col_ix: usize, _window: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+    fn render_th(&mut self, col_ix: usize, _window: &mut Window, _: &mut Context<TableState<Self>>) -> impl IntoElement {
         let col_name = self
             .columns
             .get(col_ix)
@@ -601,7 +602,7 @@ impl TableDelegate for EditorTableDelegate {
             .map(|(c, v)| (*c, v))
             .collect();
 
-        for (row_ix, row) in self.rows.iter().enumerate() {
+        for (_row_ix, row) in self.rows.iter().enumerate() {
             // 检查该行是否满足其他列的筛选条件
             let passes_other_filters = other_filters.iter().all(|(&other_col, selected_values)| {
                 let cell_value = row.get(other_col).map(|s| s.as_str()).unwrap_or("NULL");
@@ -743,8 +744,8 @@ impl TableDelegate for ResultsDelegate {
     fn rows_count(&self, _cx: &App) -> usize {
         self.rows.len()
     }
-    fn column(&self, col_ix: usize, _cx: &App) -> &Column {
-        &self.columns[col_ix]
+    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+        self.columns[col_ix].clone()
     }
     fn render_td(
         &mut self,
