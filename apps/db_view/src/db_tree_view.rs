@@ -1,5 +1,6 @@
 // 1. 标准库导入
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 // 2. 外部 crate 导入（按字母顺序）
@@ -20,8 +21,9 @@ use tracing::log::{error, info, trace, warn};
 use db::{GlobalDbState, DbNode, DbNodeType};
 use one_core::{
     storage::{GlobalStorageState, StoredConnection},
-    gpui_tokio::Tokio
+    gpui_tokio::Tokio,
 };
+use one_core::utils::debouncer::Debouncer;
 // ============================================================================
 // DbTreeView Events
 // ============================================================================
@@ -105,6 +107,7 @@ pub struct DbTreeView {
     search_query: String,
     // 搜索防抖序列号
     search_seq: u64,
+    search_debouncer: Arc<Debouncer>,
 }
 
 impl DbTreeView {
@@ -155,6 +158,7 @@ impl DbTreeView {
         let search_input = cx.new(|cx| {
             InputState::new(_window, cx).placeholder("搜索...")
         });
+        let search_debouncer = Arc::new(Debouncer::new(Duration::from_millis(250)));
 
         cx.subscribe_in(&search_input, _window, |this, _input, event, _window, cx| {
             if let InputEvent::Change = event {
@@ -162,17 +166,18 @@ impl DbTreeView {
 
                 this.search_seq += 1;
                 let current_seq = this.search_seq;
-                
-                // TODO 需要加防抖
-                cx.spawn(async move |view, cx| {
-                    // tokio::time::sleep(Duration::from_millis(250)).await;
+                let debouncer = Arc::clone(&this.search_debouncer);
+                let query_for_task = query.clone();
 
-                    let _ = view.update(cx, |this, cx| {
-                        if this.search_seq == current_seq {
-                            this.search_query = query;
-                            this.rebuild_tree(cx);
-                        }
-                    });
+                cx.spawn(async move |view, cx| {
+                    if debouncer.debounce().await {
+                        let _ = view.update(cx, |this, cx| {
+                            if this.search_seq == current_seq {
+                                this.search_query = query_for_task.clone();
+                                this.rebuild_tree(cx);
+                            }
+                        });
+                    }
                 }).detach();
             }
         }).detach();
@@ -192,6 +197,7 @@ impl DbTreeView {
             search_input,
             search_query: String::new(),
             search_seq: 0,
+            search_debouncer,
         }
     }
 

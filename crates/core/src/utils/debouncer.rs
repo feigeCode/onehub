@@ -1,39 +1,54 @@
-use tokio::time::{sleep, Duration};
-use tokio::sync::Mutex;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
+use gpui::Timer;
+
+/// A simple debouncer that delays execution until a period of inactivity.
+///
+/// When `debounce` is called, it waits for the delay period and returns `true`
+/// only if no newer calls have been made. This allows the caller to decide
+/// whether to proceed with the action.
+///
+/// # Example
+///
+/// ```ignore
+/// let debouncer = Arc::new(Debouncer::new(Duration::from_millis(250)));
+///
+/// cx.spawn(async move |view, cx| {
+///     if debouncer.debounce().await {
+///         // This runs after 250ms of inactivity
+///         let _ = view.update(cx, |this, cx| {
+///             this.do_something(cx);
+///         });
+///     }
+/// }).detach();
+/// ```
 pub struct Debouncer {
     delay: Duration,
-    task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    seq: AtomicU64,
 }
 
 impl Debouncer {
-    /// Create a new debouncer with a delay.
+    /// Create a new debouncer with the specified delay.
     pub fn new(delay: Duration) -> Self {
         Debouncer {
             delay,
-            task: Arc::new(Mutex::new(None)),
+            seq: AtomicU64::new(0),
         }
     }
 
-    /// Call the function after the delay.
-    pub async fn call<F, Fut, R>(&self, f: F)
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = R> + Send + 'static,
-    {
-        let mut task = self.task.lock().await;
+    /// Wait for the delay and return whether this call should proceed.
+    ///
+    /// Returns `true` if no newer calls have been made during the delay,
+    /// `false` otherwise (meaning a newer call has superseded this one).
+    pub async fn debounce(&self) -> bool {
+        // Increment sequence number to invalidate any pending calls
+        let my_seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
 
-        // Cancel existing timer if it exists
-        if let Some(handle) = task.take() {
-            handle.abort();
-        }
+        // Wait for the delay
+        Timer::after(self.delay).await;
 
-        // Set a new timer
-        let delay = self.delay;
-        *task = Some(tokio::spawn(async move {
-            sleep(delay).await;
-            f().await;
-        }));
+        // Only return true if no newer call has been made
+        self.seq.load(Ordering::SeqCst) == my_seq
     }
 }

@@ -1,1 +1,1 @@
-mod debouncer;
+pub mod debouncer;
