@@ -5,7 +5,7 @@ pub mod themes;
 pub mod storage;
 pub mod gpui_tokio;
 pub mod llm;
-
+mod utils;
 
 pub fn init(cx: &mut App){
     gpui_tokio::init(cx);

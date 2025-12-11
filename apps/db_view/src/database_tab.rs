@@ -7,6 +7,7 @@ use gpui_component::{button::ButtonVariants, h_flex, resizable::{h_resizable, re
 use crate::sql_editor_view::SqlEditorTabContent;
 use one_core::{gpui_tokio::Tokio, storage::{StoredConnection}, tab_container::{TabContainer, TabContent, TabContentType, TabItem}};
 use uuid::Uuid;
+use tracing::log::warn;
 
 // 字符集选择项
 #[derive(Clone, Debug)]
@@ -83,72 +84,164 @@ impl DatabaseEventHandler {
             let objects_panel = objects_panel_clone.clone();
             let tree_view = tree_view_clone.clone();
 
+            let get_node = |node_id: &str, cx: &mut Context<Self>| -> Option<DbNode> {
+                tree_view.read(cx).get_node(node_id).cloned()
+            };
+
             match event {
-                DbTreeViewEvent::NodeSelected { node } => {
-                    Self::handle_node_selected(node.clone(), global_state, objects_panel, cx);
+                DbTreeViewEvent::NodeSelected { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_node_selected(node, global_state, objects_panel, cx);
+                    } else {
+                        warn!("NodeSelected event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::CreateNewQuery { node } => {
-                    Self::handle_create_new_query(node.clone(), tab_container, tree_view.clone(), window, cx);
+                DbTreeViewEvent::CreateNewQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_create_new_query(node, tab_container, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("CreateNewQuery event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::OpenTableData { node } => {
-                    Self::handle_open_table_data(node.clone(), global_state, tab_container, window, cx);
+                DbTreeViewEvent::OpenTableData { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_table_data(node, global_state, tab_container, window, cx);
+                    } else {
+                        warn!("OpenTableData event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::OpenViewData { node } => {
-                    Self::handle_open_view_data(node.clone(), global_state, tab_container, window, cx);
+                DbTreeViewEvent::OpenViewData { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_view_data(node, global_state, tab_container, window, cx);
+                    } else {
+                        warn!("OpenViewData event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::OpenTableStructure { node } => {
-                    Self::handle_open_table_structure(node.clone(), global_state, tab_container, window, cx);
+                DbTreeViewEvent::OpenTableStructure { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_table_structure(node, global_state, tab_container, window, cx);
+                    } else {
+                        warn!("OpenTableStructure event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::ImportData { node } => {
-                    Self::handle_import_data(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::ImportData { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_import_data(node, global_state, window, cx);
+                    } else {
+                        warn!("ImportData event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::ExportData { node } => {
-                    Self::handle_export_data(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::ExportData { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_export_data(node, global_state, window, cx);
+                    } else {
+                        warn!("ExportData event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::CloseConnection { node } => {
-                    Self::handle_close_connection(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::CloseConnection { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_close_connection(node, global_state, window, cx);
+                    } else {
+                        warn!("CloseConnection event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::EditConnection { node } => {
-                    Self::handle_edit_connection(node.clone(), window, cx);
+                DbTreeViewEvent::EditConnection { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_edit_connection(node, window, cx);
+                    } else {
+                        warn!("EditConnection event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::DeleteConnection { node } => {
-                    Self::handle_delete_connection(node.clone(), tree_view.clone(), window, cx);
+                DbTreeViewEvent::DeleteConnection { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_connection(node, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("DeleteConnection event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::EditDatabase { node } => {
-                    Self::handle_edit_database(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::EditDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_edit_database(node, global_state, window, cx);
+                    } else {
+                        warn!("EditDatabase event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::CloseDatabase { node } => {
-                    Self::handle_close_database(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::CloseDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_close_database(node, global_state, window, cx);
+                    } else {
+                        warn!("CloseDatabase event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::DeleteDatabase { node } => {
-                    Self::handle_delete_database(node.clone(), global_state, tree_view.clone(), window, cx);
+                DbTreeViewEvent::DeleteDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_database(node, global_state, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("DeleteDatabase event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::DeleteTable { node } => {
-                    Self::handle_delete_table(node.clone(), global_state, tree_view.clone(), window, cx);
+                DbTreeViewEvent::DeleteTable { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_table(node, global_state, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("DeleteTable event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::RenameTable { node } => {
-                    Self::handle_rename_table(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::RenameTable { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_rename_table(node, global_state, window, cx);
+                    } else {
+                        warn!("RenameTable event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::TruncateTable { node } => {
-                    Self::handle_truncate_table(node.clone(), global_state, tree_view.clone(), window, cx);
+                DbTreeViewEvent::TruncateTable { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_truncate_table(node, global_state, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("TruncateTable event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::DeleteView { node } => {
-                    Self::handle_delete_view(node.clone(), global_state, tree_view.clone(), window, cx);
+                DbTreeViewEvent::DeleteView { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_view(node, global_state, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("DeleteView event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::OpenNamedQuery { node } => {
-                    Self::handle_open_named_query(node.clone(), tab_container, window, cx);
+                DbTreeViewEvent::OpenNamedQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_named_query(node, tab_container, window, cx);
+                    } else {
+                        warn!("OpenNamedQuery event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::RenameQuery { node } => {
-                    Self::handle_rename_query(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::RenameQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_rename_query(node, global_state, window, cx);
+                    } else {
+                        warn!("RenameQuery event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::DeleteQuery { node } => {
-                    Self::handle_delete_query(node.clone(), tree_view.clone(), window, cx);
+                DbTreeViewEvent::DeleteQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_query(node, tree_view.clone(), window, cx);
+                    } else {
+                        warn!("DeleteQuery event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::RunSqlFile { node } => {
-                    Self::handle_run_sql_file(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::RunSqlFile { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_run_sql_file(node, global_state, window, cx);
+                    } else {
+                        warn!("RunSqlFile event with missing node: {}", node_id);
+                    }
                 }
-                DbTreeViewEvent::DumpSqlFile { node } => {
-                    Self::handle_dump_sql_file(node.clone(), global_state, window, cx);
+                DbTreeViewEvent::DumpSqlFile { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_dump_sql_file(node, global_state, window, cx);
+                    } else {
+                        warn!("DumpSqlFile event with missing node: {}", node_id);
+                    }
                 }
             }
         });

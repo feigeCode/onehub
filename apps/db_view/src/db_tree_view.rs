@@ -14,7 +14,7 @@ use gpui_component::{
     spinner::Spinner,
     context_menu_tree::{context_menu_tree, ContextMenuTreeState}
 };
-use tracing::log::{error, info, trace};
+use tracing::log::{error, info, trace, warn};
 
 // 3. 当前 crate 导入（按模块分组）
 use db::{GlobalDbState, DbNode, DbNodeType};
@@ -30,49 +30,49 @@ use one_core::{
 #[derive(Debug, Clone)]
 pub enum DbTreeViewEvent {
     /// 打开表数据标签页
-    OpenTableData { node: DbNode },
+    OpenTableData { node_id: String },
     /// 打开视图数据标签页
-    OpenViewData { node: DbNode },
+    OpenViewData { node_id: String },
     /// 打开表结构标签页
-    OpenTableStructure { node: DbNode },
+    OpenTableStructure { node_id: String },
     /// 为指定数据库创建新查询
-    CreateNewQuery { node: DbNode },
+    CreateNewQuery { node_id: String },
     /// 打开命名查询
-    OpenNamedQuery { node: DbNode },
+    OpenNamedQuery { node_id: String },
     /// 重命名查询
-    RenameQuery { node: DbNode },
+    RenameQuery { node_id: String },
     /// 删除查询
-    DeleteQuery { node: DbNode },
+    DeleteQuery { node_id: String },
     /// 节点被选中（用于更新 objects panel）
-    NodeSelected { node: DbNode },
+    NodeSelected { node_id: String },
     /// 导入数据
-    ImportData { node: DbNode },
+    ImportData { node_id: String },
     /// 导出数据
-    ExportData { node: DbNode },
+    ExportData { node_id: String },
     /// 关闭连接
-    CloseConnection { node: DbNode },
+    CloseConnection { node_id: String },
     /// 编辑连接
-    EditConnection { node: DbNode },
+    EditConnection { node_id: String },
     /// 删除连接
-    DeleteConnection { node: DbNode },
+    DeleteConnection { node_id: String },
     /// 编辑数据库
-    EditDatabase { node: DbNode },
+    EditDatabase { node_id: String },
     /// 关闭数据库
-    CloseDatabase { node: DbNode },
+    CloseDatabase { node_id: String },
     /// 删除数据库
-    DeleteDatabase { node: DbNode },
+    DeleteDatabase { node_id: String },
     /// 删除表
-    DeleteTable { node: DbNode },
+    DeleteTable { node_id: String },
     /// 重命名表
-    RenameTable { node: DbNode },
+    RenameTable { node_id: String },
     /// 清空表
-    TruncateTable { node: DbNode },
+    TruncateTable { node_id: String },
     /// 删除视图
-    DeleteView { node: DbNode },
+    DeleteView { node_id: String },
     /// 运行SQL文件
-    RunSqlFile { node: DbNode },
+    RunSqlFile { node_id: String },
     /// 转储SQL文件（导出结构和/或数据）
-    DumpSqlFile { node: DbNode },
+    DumpSqlFile { node_id: String },
 }
 
 // ============================================================================
@@ -108,6 +108,23 @@ pub struct DbTreeView {
 }
 
 impl DbTreeView {
+    /// 创建菜单项的辅助函数，避免重复克隆
+    fn create_menu_item<F>(
+        node_id: &str,
+        label: String,
+        view_clone: &Entity<Self>,
+        window: &Window,
+        event_creator: F,
+    ) -> PopupMenuItem
+    where
+        F: Fn(String) -> DbTreeViewEvent + 'static,
+    {
+        let node_id = node_id.to_string();
+        PopupMenuItem::new(label).on_click(window.listener_for(view_clone, move |_this, _, _, cx| {
+            cx.emit(event_creator(node_id.clone()));
+        }))
+    }
+
     pub fn new(connections: &Vec<StoredConnection>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let mut db_nodes = HashMap::new();
@@ -145,7 +162,7 @@ impl DbTreeView {
 
                 this.search_seq += 1;
                 let current_seq = this.search_seq;
-
+                
                 // TODO 需要加防抖
                 cx.spawn(async move |view, cx| {
                     // tokio::time::sleep(Duration::from_millis(250)).await;
@@ -542,7 +559,7 @@ impl DbTreeView {
                     if let Some(database) = self.find_parent_database(&node.id) {
                         info!("DbTreeView: opening table data tab: {}.{}", database, node.name);
                         cx.emit(DbTreeViewEvent::OpenTableData {
-                            node
+                            node_id: node.id.clone()
                         });
                     }
                 }
@@ -551,7 +568,7 @@ impl DbTreeView {
                     if let Some(database) = self.find_parent_database(&node.id) {
                         info!("DbTreeView: opening view data tab: {}.{}", database, node.name);
                         cx.emit(DbTreeViewEvent::OpenViewData {
-                            node
+                            node_id: node.id.clone()
                         });
                     }
                 }
@@ -559,7 +576,7 @@ impl DbTreeView {
                     // 打开命名查询
                     info!("DbTreeView: opening named query: {}", node.name);
                     cx.emit(DbTreeViewEvent::OpenNamedQuery {
-                        node
+                        node_id: node.id.clone()
                     });
                 }
                 DbNodeType::Connection | DbNodeType::Database |
@@ -596,10 +613,10 @@ impl DbTreeView {
     
     fn handle_item_click(&mut self, item: TreeItem, cx: &mut Context<Self>) {
         self.selected_item = Some(item.clone());
-        if let Some(node) = self.db_nodes.get(item.id.as_ref()).cloned() {
+        if self.db_nodes.contains_key(item.id.as_ref()) {
             // 发出节点选择事件
             cx.emit(DbTreeViewEvent::NodeSelected {
-                node
+                node_id: item.id.to_string()
             });
             cx.notify();
         }
@@ -835,275 +852,77 @@ impl Render for DbTreeView {
                                                             // 根据节点类型添加不同的菜单项
                                                             match node.node_type {
                                                                 DbNodeType::Connection => {
-                                                                    let node1 = node.clone();
-                                                                    let node2 = node.clone();
-                                                                    let node3 = node.clone();
-                                                                    let node4 = node.clone();
-
                                                                     menu = menu
-                                                                        .item(
-                                                                            PopupMenuItem::new("运行SQL文件")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::RunSqlFile {
-                                                                                        node: node1.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_clone, "运行SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::RunSqlFile { node_id: n }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("关闭连接")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::CloseConnection {
-                                                                                        node: node2.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("编辑连接")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::EditConnection {
-                                                                                        node: node3.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_clone, "关闭连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseConnection { node_id: n }))
+                                                                        .item(Self::create_menu_item(&node_id_clone, "编辑连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditConnection { node_id: n }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("删除连���")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::DeleteConnection {
-                                                                                        node: node4.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_clone, "删除连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteConnection { node_id: n }))
                                                                         .separator();
                                                                 }
                                                                 DbNodeType::Database => {
-                                                                    let node1 = node.clone();
-                                                                    let node2 = node.clone();
-                                                                    let node3 = node.clone();
-                                                                    let node4 = node.clone();
-                                                                    let node5 = node.clone();
-                                                                    let node6 = node.clone();
-                                                                    let node7 = node.clone();
-                                                                    let node8 = node.clone();
-                                                                    
+                                                                    let node_id_for_menu = node_id_clone.clone();
+
                                                                     menu = menu
-                                                                        .item(
-                                                                            PopupMenuItem::new("新建查询")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::CreateNewQuery {
-                                                                                        node: node1.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "新建查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateNewQuery { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("运行SQL文件")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::RunSqlFile {
-                                                                                        node: node7.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("转储SQL文件")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::DumpSqlFile {
-                                                                                        node: node8.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "运行SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::RunSqlFile { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "转储SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::DumpSqlFile { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("编辑数据库")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::EditDatabase {
-                                                                                        node: node2.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("关闭数据库")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::CloseDatabase {
-                                                                                        node: node3.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("删除数据库")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::DeleteDatabase {
-                                                                                        node: node4.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "编辑数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditDatabase { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "关闭数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseDatabase { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "删除数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteDatabase { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("导入数据")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::ImportData {
-                                                                                        node: node5.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("导出数据库")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::ExportData {
-                                                                                        node: node6.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "导入数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::ImportData { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "导出数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::ExportData { node_id: n }))
                                                                         .separator();
                                                                 }
                                                                 DbNodeType::Table => {
-                                                                    let node1 = node.clone();
-                                                                    let node2 = node.clone();
-                                                                    let node3 = node.clone();
-                                                                    let node4 = node.clone();
-                                                                    let node5 = node.clone();
-                                                                    let node6 = node.clone();
-                                                                    let node7 = node.clone();
-                                                                    
+                                                                    let node_id_for_menu = node_id_clone.clone();
+
                                                                     menu = menu
-                                                                        .item(
-                                                                            PopupMenuItem::new("查看表数据")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::OpenTableData {
-                                                                                        node: node1.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("编辑表结构")
-                                                                            .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                cx.emit(DbTreeViewEvent::OpenTableStructure {
-                                                                                    node: node2.clone()
-                                                                                });
-                                                                            }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "查看表数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableData { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "编辑表结构".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableStructure { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("重命名表")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::RenameTable {
-                                                                                        node: node3.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("清空表")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::TruncateTable {
-                                                                                        node: node4.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("删除表")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::DeleteTable {
-                                                                                        node: node5.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "重命名表".to_string(), &view_clone, window, |n| DbTreeViewEvent::RenameTable { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "清空表".to_string(), &view_clone, window, |n| DbTreeViewEvent::TruncateTable { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "删除表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteTable { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("导入数据")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::ImportData {
-                                                                                        node: node7.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("导出表")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::ExportData {
-                                                                                        node: node6.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "导入数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::ImportData { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "导出表".to_string(), &view_clone, window, |n| DbTreeViewEvent::ExportData { node_id: n }))
                                                                         .separator();
                                                                 }
                                                                 DbNodeType::View => {
-                                                                    let node1 = node.clone();
-                                                                    let node2 = node.clone();
+                                                                    let node_id_for_menu = node_id_clone.clone();
 
                                                                     menu = menu
-                                                                        .item(
-                                                                            PopupMenuItem::new("查看视图数据")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::OpenViewData {
-                                                                                        node: node1.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "查看视图数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenViewData { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("删除视图")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::DeleteView {
-                                                                                        node: node2.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "删除视图".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteView { node_id: n }))
                                                                         .separator();
                                                                 }
                                                                 DbNodeType::QueriesFolder => {
-                                                                    let node1 = node.clone();
-                                                                    let node2 = node.clone();
+                                                                    let node_id_for_menu = node_id_clone.clone();
 
                                                                     menu = menu
-                                                                        .item(
-                                                                            PopupMenuItem::new("新建查询")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::CreateNewQuery {
-                                                                                        node: node1.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "新建查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateNewQuery { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("刷新")
-                                                                                .on_click(window.listener_for(&view_clone, move |this, _, _, cx| {
-                                                                                    this.refresh_tree(node2.id.clone(), cx);
-                                                                                }))
+                                                                        .item(PopupMenuItem::new("刷新")
+                                                                            .on_click(window.listener_for(&view_clone, move |this, _, _, cx| {
+                                                                                this.refresh_tree(node_id_for_menu.clone(), cx);
+                                                                            }))
                                                                         )
                                                                         .separator();
                                                                 }
                                                                 DbNodeType::NamedQuery => {
-                                                                    let node1 = node.clone();
-                                                                    let node2 = node.clone();
-                                                                    let node3 = node.clone();
+                                                                    let node_id_for_menu = node_id_clone.clone();
 
                                                                     menu = menu
-                                                                        .item(
-                                                                            PopupMenuItem::new("打开查询")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::OpenNamedQuery {
-                                                                                        node: node1.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "打开查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenNamedQuery { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(
-                                                                            PopupMenuItem::new("重命名查询")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::RenameQuery {
-                                                                                        node: node2.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
-                                                                        .item(
-                                                                            PopupMenuItem::new("删除查询")
-                                                                                .on_click(window.listener_for(&view_clone, move |_this, _, _, cx| {
-                                                                                    cx.emit(DbTreeViewEvent::DeleteQuery {
-                                                                                        node: node3.clone()
-                                                                                    });
-                                                                                }))
-                                                                        )
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "重命名查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::RenameQuery { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "删除查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteQuery { node_id: n }))
                                                                         .separator();
                                                                 }
                                                                 _ => {}
