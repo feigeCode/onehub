@@ -308,7 +308,7 @@ impl LlmProvidersView {
             .rounded_lg()
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().primary_foreground)
+            .bg(cx.theme().background)
             .child(
                 v_flex()
                     .flex_1()

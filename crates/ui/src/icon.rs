@@ -130,7 +130,8 @@ pub enum IconName {
     OracleColor,
     Workspace,
     RedisColor,
-    All
+    All,
+    Edit
 }
 
 impl IconName {
@@ -249,7 +250,8 @@ impl IconNamed for IconName {
             Self::OracleColor => "icons/oracle_color.svg",
             Self::Workspace => "icons/workspace.svg",
             Self::RedisColor => "icons/redis_color.svg",
-            Self::All => "icons/all.svg"
+            Self::All => "icons/all.svg",
+            Self::Edit => "icons/edit.svg"
         }
         .into()
     }

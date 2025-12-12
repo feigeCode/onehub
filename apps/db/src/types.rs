@@ -593,6 +593,47 @@ pub struct SortCondition {
     pub direction: SortDirection,
 }
 
+/// Represents a single cell change when persisting table edits
+#[derive(Debug, Clone)]
+pub struct TableCellChange {
+    pub column_index: usize,
+    pub column_name: String,
+    pub old_value: String,
+    pub new_value: String,
+}
+
+/// Represents a table row change for persistence operations
+#[derive(Debug, Clone)]
+pub enum TableRowChange {
+    Added {
+        data: Vec<String>,
+    },
+    Updated {
+        original_data: Vec<String>,
+        changes: Vec<TableCellChange>,
+    },
+    Deleted {
+        original_data: Vec<String>,
+    },
+}
+
+/// Request payload for saving table edits back to the database
+#[derive(Debug, Clone)]
+pub struct TableSaveRequest {
+    pub database: String,
+    pub table: String,
+    pub column_names: Vec<String>,
+    pub primary_key_indices: Vec<usize>,
+    pub changes: Vec<TableRowChange>,
+}
+
+/// Response from applying table edits
+#[derive(Debug, Clone)]
+pub struct TableSaveResponse {
+    pub success_count: usize,
+    pub errors: Vec<String>,
+}
+
 /// Request for querying table data with pagination and filtering
 #[derive(Debug, Clone, Default)]
 pub struct TableDataRequest {

@@ -13,6 +13,7 @@ use db_view::ai_chat_panel::AiChatPanel;
 use db_view::database_tab::DatabaseTabContent;
 use db_view::db_connection_form::{DbConnectionForm, DbConnectionFormEvent, DbFormConfig};
 use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
+use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::DropdownMenu;
 use one_core::gpui_tokio::Tokio;
 
@@ -175,6 +176,7 @@ impl HomePage {
                 .child(
                     Input::new(&form).size_full()
                 )
+                .content_center()
                 .confirm()
                 .on_ok(move |_, _window, cx| {
                     let name = form_clone.read(cx).text().to_string();
@@ -329,11 +331,12 @@ impl HomePage {
                 .h(px(550.0))
                 .child(form_clone.clone())
                 .close_button(true)
-                .footer(move |_ok_btn, cancel_btn, window, cx| {
+                .overlay(false)
+                .content_center()
+                .button_props(DialogButtonProps::default().ok_text("好"))
+                .footer(move |ok_btn, cancel_btn, window, cx| {
                     let is_testing = form_footer.read(cx).is_testing(cx);
                     let form_t = form_test.clone();
-                    let form_s = form_save.clone();
-                    
                     vec![
                         cancel_btn(window, cx),
                         Button::new("test")
@@ -342,17 +345,18 @@ impl HomePage {
                             .disabled(is_testing)
                             .on_click(window.listener_for(&form_t, |form, _, _, cx| {
                                 form.trigger_test_connection(cx);
+                                cx.notify();
                             }))
                             .into_any_element(),
-                        Button::new("save")
-                            .primary()
-                            .label("好")
-                            .disabled(is_testing)
-                            .on_click(window.listener_for(&form_s, |form, _, _, cx| {
-                                form.trigger_save(cx);
-                            }))
-                            .into_any_element(),
+                        ok_btn(window, cx)
                     ]
+                })
+                .on_ok(move |_, _, cx| {
+                    form_save.update(cx, |this, cx| {
+                        this.trigger_save(cx);
+                        cx.notify()
+                    });
+                    true
                 })
                 .on_cancel(move |_, _, cx| {
                     let _ = view_for_cancel.update(cx, |this, cx| {
@@ -519,7 +523,7 @@ impl HomePage {
                             .icon(IconName::Plus)
                             .label("新建连接")
                             .text_color(cx.theme().primary_foreground)
-                            .bg(cx.theme().chart_2)
+                            .bg(cx.theme().primary)
                             .with_size(Size::Large)
                             .with_variant(ButtonVariant::Custom(ButtonCustomVariant::new(cx).hover(cx.theme().primary)))
                             .dropdown_menu(move |menu, window, _cx| {
@@ -550,7 +554,7 @@ impl HomePage {
                     .when(has_selection, |this| {
                         this.child(
                             Button::new("edit-selected")
-                                .icon(IconName::Settings)
+                                .icon(IconName::Edit)
                                 .tooltip("编辑连接")
                                 .with_size(Size::Medium)
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -612,10 +616,12 @@ impl HomePage {
                                 .cursor_pointer()
                                 .when(is_selected, |this| {
                                     this.bg(cx.theme().primary)
+                                        .rounded_lg()
+                                        .shadow_md()
                                 })
                                 .when(!is_selected, |this| {
                                     this.bg(cx.theme().background)
-                                        .hover(|style| style.bg(cx.theme().accent))
+                                        .hover(|style| style.bg(cx.theme().accent).rounded_lg())
                                 })
                                 .on_click(cx.listener(move |this: &mut HomePage, _, _, cx| {
                                     this.selected_filter = filter_type_clone.clone();
@@ -806,34 +812,42 @@ impl HomePage {
             .gap_2()
             .child(
                 h_flex()
-                    .id(ElementId::Name(SharedString::from(format!("workspace-name-{}", workspace_id.unwrap()))))
                     .items_center()
                     .gap_2()
                     .px_2()
                     .py_1()
                     .rounded(px(6.0))
                     .bg(cx.theme().muted)
-                    .cursor_pointer()
-                    .hover(|style| style.bg(cx.theme().accent.opacity(0.1)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(ws_id) = workspace_id {
-                            this.open_workspace_tab(ws_id, workspace_name.clone(), window, cx);
-                        }
-                    }))
+                    .text_color(cx.theme().chart_2)
+                    .hover(|style| {
+                        style
+                            .bg(cx.theme().accent.opacity(0.1))
+                            .text_color(cx.theme().primary)
+                    })
                     .child(
                         Icon::new(IconName::Workspace).color()
                     )
                     .child(
                         div()
-                            .text_sm()
+                            .id(ElementId::Name(SharedString::from(format!("workspace-name-{}", workspace_id.unwrap()))))
+                            .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().foreground)
+                            .hover(|style| {
+                                style.text_color(cx.theme().primary)
+                            })
+                            .cursor_pointer()
                             .child(workspace.name.clone())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(ws_id) = workspace_id {
+                                    this.open_workspace_tab(ws_id, workspace_name.clone(), window, cx);
+                                }
+                            }))
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
+                            .hover(|style| {style.text_color(cx.theme().primary)})
                             .child(format!("({} 个连接)", connections.len()))
                     )
                     .child(
@@ -841,19 +855,13 @@ impl HomePage {
                     )
                     .child(
                         Button::new(SharedString::from(format!("edit-workspace-{}", workspace_id.unwrap_or(0))))
-                            .icon(IconName::Settings)
+                            .icon(IconName::Edit)
                             .with_size(Size::Small)
                             .tooltip("编辑工作区")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.show_workspace_form(workspace_id, window, cx);
                             }))
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("open-workspace-{}", workspace_id.unwrap_or(0))))
-                            .icon(IconName::ExternalLink)
-                            .with_size(Size::Small)
-                            .tooltip("打开工作区")
                     )
             )
             .when(!connections.is_empty(), |this| {
@@ -940,11 +948,12 @@ impl HomePage {
             .w_full()
             .rounded(px(8.0))
             .bg(cx.theme().background)
-            .p_2()
+            .p_3()
             .border_1()
             .rounded_lg()
             .when(is_selected, |this| {
                 this.border_color(cx.theme().primary)
+                    .shadow_md()
                     .bg(cx.theme().primary_foreground)
             })
             .when(!is_selected, |this| {
@@ -953,7 +962,7 @@ impl HomePage {
             .cursor_pointer()
             .hover(|style| {
                 style
-                    // .bg(cx.theme().primary_foreground)
+                    .shadow_md()
                     .border_color(cx.theme().primary)
             })
             .on_double_click(cx.listener(move |this, _, w, cx| {
@@ -971,7 +980,7 @@ impl HomePage {
                         h_flex()
                             .items_center()
                             .justify_between()
-                            .p_3()
+                            .pb_2()
                             .child(
                                 h_flex()
                                     .items_center()

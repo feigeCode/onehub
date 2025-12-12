@@ -438,55 +438,34 @@ where
 
     /// 切换筛选面板中的值（实时应用筛选）
     pub fn toggle_filter_value_realtime(&mut self, col_ix: usize, value: &str, window: &mut Window, cx: &mut Context<Self>) {
-        // 1. 更新 FilterPanel 中的选中状态
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().toggle_value(value);
-                cx.notify();
-            });
-        }
-
-        // 2. 立即应用筛选
-        self.apply_filter_realtime(col_ix, window, cx);
+        // 更新 FilterPanel 并立即应用筛选
+        self.modify_filter_panel_realtime(col_ix, window, cx, |panel| {
+            panel.toggle_value(value);
+        });
     }
 
     /// 全选筛选项（实时应用筛选）
     pub fn filter_panel_select_all_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        // 1. 更新 FilterPanel 中的选中状态
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().select_all();
-                cx.notify();
-            });
-        }
-
-        // 2. 立即应用筛选
-        self.apply_filter_realtime(col_ix, window, cx);
+        // 更新 FilterPanel 并立即应用筛选
+        self.modify_filter_panel_realtime(col_ix, window, cx, |panel| {
+            panel.select_all();
+        });
     }
 
     /// 清空筛选项（实时应用筛选）
     pub fn filter_panel_deselect_all_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        // 1. 更新 FilterPanel 中的选中状态
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().deselect_all();
-                cx.notify();
-            });
-        }
-
-        // 2. 立即应用筛选
-        self.apply_filter_realtime(col_ix, window, cx);
+        // 更新 FilterPanel 并立即应用筛选
+        self.modify_filter_panel_realtime(col_ix, window, cx, |panel| {
+            panel.deselect_all();
+        });
     }
 
     /// 重置筛选（实时应用筛选）
     pub fn filter_panel_reset_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         // 1. 重置 FilterPanel 为全选状态
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().select_all();
-                cx.notify();
-            });
-        }
+        self.update_filter_panel(cx, |panel| {
+            panel.select_all();
+        });
 
         // 2. 清空搜索查询
         self.filter_search_query.clear();
@@ -497,11 +476,7 @@ where
 
     /// 立即应用筛选（从 FilterPanel 获取当前选中的值）
     fn apply_filter_realtime(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(filter_list) = &self.filter_list {
-            let selected = filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
-                list_state.delegate().get_selected_values()
-            });
-
+        if let Some(selected) = self.read_filter_panel_with_ctx(cx, |panel| panel.get_selected_values()) {
             if selected.is_empty() {
                 self.clear_column_filter(col_ix, cx);
                 // 通知 delegate 筛选已清除
@@ -519,12 +494,9 @@ where
 
     /// 切换筛选面板中的值（旧方法，保留向后兼容）
     pub fn toggle_filter_value(&mut self, value: &str, cx: &mut Context<Self>) {
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().toggle_value(value);
-                cx.notify();
-            });
-        }
+        self.update_filter_panel(cx, |panel| {
+            panel.toggle_value(value);
+        });
     }
 
     /// 获取筛选面板中的搜索查询
@@ -537,65 +509,52 @@ where
         self.filter_search_query = query.clone();
 
         // 更新FilterPanel中的搜索查询和过滤后的值列表
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().set_search_query(query);
-                cx.notify();
-            });
-        }
+        let query_for_panel = query;
+        self.update_filter_panel(cx, move |panel| {
+            panel.set_search_query(query_for_panel.clone());
+        });
 
         cx.notify();
     }
 
     /// 获取筛选面板中的值（根据搜索过滤）
     pub fn get_filtered_panel_values(&self, cx: &App) -> Vec<filter_panel::FilterValue> {
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
-                let panel = list_state.delegate();
-                if self.filter_search_query.is_empty() {
-                    panel.values.clone()
-                } else {
-                    let query_lower = self.filter_search_query.to_lowercase();
-                    panel.values
-                        .iter()
-                        .filter(|v| v.value.to_lowercase().contains(&query_lower))
-                        .cloned()
-                        .collect()
-                }
-            })
-        } else {
-            Vec::new()
-        }
+        let query_lower = self.filter_search_query.to_lowercase();
+
+        self.read_filter_panel_with_app(cx, move |panel| {
+            if query_lower.is_empty() {
+                panel.values.clone()
+            } else {
+                panel
+                    .values
+                    .iter()
+                    .filter(|v| v.value.to_lowercase().contains(&query_lower))
+                    .cloned()
+                    .collect()
+            }
+        })
+        .unwrap_or_default()
     }
 
     /// 在筛选面板中全选
     pub fn filter_panel_select_all(&mut self, cx: &mut Context<Self>) {
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().select_all();
-                cx.notify();
-            });
-        }
+        self.update_filter_panel(cx, |panel| {
+            panel.select_all();
+        });
     }
 
     /// 在筛选面板中清空选择
     pub fn filter_panel_deselect_all(&mut self, cx: &mut Context<Self>) {
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().deselect_all();
-                cx.notify();
-            });
-        }
+        self.update_filter_panel(cx, |panel| {
+            panel.deselect_all();
+        });
     }
 
     /// 重置筛选面板为全选状态
     pub fn filter_panel_reset(&mut self, cx: &mut Context<Self>) {
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.update(cx, |list_state, cx| {
-                list_state.delegate_mut().select_all();
-                cx.notify();
-            });
-        }
+        self.update_filter_panel(cx, |panel| {
+            panel.select_all();
+        });
         self.filter_search_query.clear();
         cx.notify();
     }
@@ -603,11 +562,7 @@ where
     /// 确认筛选面板的选择
     pub fn confirm_filter_panel(&mut self, cx: &mut Context<Self>) {
         if let Some(col_ix) = self.active_filter_col {
-            if let Some(filter_list) = &self.filter_list {
-                let selected = filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
-                    list_state.delegate().get_selected_values()
-                });
-
+            if let Some(selected) = self.read_filter_panel_with_ctx(cx, |panel| panel.get_selected_values()) {
                 if selected.is_empty() {
                     self.clear_column_filter(col_ix, cx);
                 } else {
@@ -621,24 +576,61 @@ where
 
     /// 获取筛选面板中选中的值数量
     pub fn filter_panel_selected_count(&self, cx: &App) -> usize {
-        if let Some(filter_list) = &self.filter_list {
-            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
-                list_state.delegate().get_selected_values().len()
-            })
-        } else {
-            0
-        }
+        self.read_filter_panel_with_app(cx, |panel| panel.get_selected_values().len())
+            .unwrap_or(0)
     }
 
     /// 获取筛选面板中的总值数量
     pub fn filter_panel_total_count(&self, cx: &App) -> usize {
+        self.read_filter_panel_with_app(cx, |panel| panel.values.len())
+            .unwrap_or(0)
+    }
+
+    fn modify_filter_panel_realtime<F>(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>, f: F)
+    where
+        F: FnOnce(&mut FilterPanel),
+    {
+        let mut action = Some(f);
+        self.update_filter_panel(cx, move |panel| {
+            if let Some(func) = action.take() {
+                func(panel);
+            }
+        });
+
+        self.apply_filter_realtime(col_ix, window, cx);
+    }
+
+    /// 内部方法：更新筛选面板委托
+    fn update_filter_panel<F>(&mut self, cx: &mut Context<Self>, mut f: F)
+    where
+        F: FnMut(&mut FilterPanel),
+    {
         if let Some(filter_list) = &self.filter_list {
-            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| {
-                list_state.delegate().values.len()
-            })
-        } else {
-            0
+            filter_list.update(cx, |list_state, cx| {
+                f(list_state.delegate_mut());
+                cx.notify();
+            });
         }
+    }
+
+    /// 内部方法：在 Table 上下文中读取筛选面板
+    fn read_filter_panel_with_ctx<R, F>(&self, cx: &mut Context<Self>, f: F) -> Option<R>
+    where
+        F: FnOnce(&FilterPanel) -> R,
+    {
+        self.filter_list.as_ref().map(|filter_list| {
+            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| f(list_state.delegate()))
+        })
+    }
+
+    /// 内部方法：在 App 上下文中读取筛选面板
+    fn read_filter_panel_with_app<R, F>(&self, cx: &App, f: F) -> Option<R>
+    where
+        F: FnOnce(&FilterPanel) -> R,
+    {
+        self.filter_list.as_ref().map(|filter_list| {
+            filter_list.read_with(cx, |list_state: &ListState<FilterPanel>, _| f(list_state.delegate()))
+        })
     }
 
     fn prepare_col_groups(&mut self, cx: &mut Context<Self>) {

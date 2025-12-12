@@ -626,15 +626,27 @@ pub trait DatabasePlugin: Send + Sync {
         };
 
         // Build data query with pagination
-        let data_sql = format!(
-            "SELECT * FROM {}{}{}.{}{}{}{}{} LIMIT {} OFFSET {}",
-            quote, request.database, quote,
-            quote, request.table, quote,
-            where_clause,
-            order_clause,
-            request.page_size,
-            offset
-        );
+        let data_sql = if request.page_size == 0 {
+            // Query all records without pagination
+            format!(
+                "SELECT * FROM {}{}{}.{}{}{}{}{}",
+                quote, request.database, quote,
+                quote, request.table, quote,
+                where_clause,
+                order_clause
+            )
+        } else {
+            // Query with pagination
+            format!(
+                "SELECT * FROM {}{}{}.{}{}{}{}{} LIMIT {} OFFSET {}",
+                quote, request.database, quote,
+                quote, request.table, quote,
+                where_clause,
+                order_clause,
+                request.page_size,
+                offset
+            )
+        };
 
         // Execute data query
         let rows = match self.execute_query(connection, &request.database, &data_sql, None).await? {
@@ -651,6 +663,165 @@ pub trait DatabasePlugin: Send + Sync {
             primary_key_indices,
             executed_sql: data_sql,
         })
+    }
+
+    /// Apply table data changes (insert/update/delete)
+    async fn apply_table_changes(
+        &self,
+        connection: &dyn DbConnection,
+        request: TableSaveRequest,
+    ) -> Result<TableSaveResponse> {
+        let mut success_count = 0;
+        let mut errors = Vec::new();
+
+        for change in &request.changes {
+            let Some(sql) = self.build_table_change_sql(&request, change) else {
+                continue;
+            };
+
+            match self.execute_query(connection, &request.database, &sql, None).await {
+                Ok(SqlResult::Exec(_)) => {
+                    success_count += 1;
+                }
+                Ok(SqlResult::Error(err)) => {
+                    errors.push(err.message);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    errors.push(e.to_string());
+                }
+            }
+        }
+
+        Ok(TableSaveResponse {
+            success_count,
+            errors,
+        })
+    }
+
+    fn build_table_change_sql(
+        &self,
+        request: &TableSaveRequest,
+        change: &TableRowChange,
+    ) -> Option<String> {
+        let quote = self.identifier_quote();
+        let table_ident = format!(
+            "{}{}{}.{}{}{}",
+            quote, request.database, quote, quote, request.table, quote
+        );
+
+        match change {
+            TableRowChange::Added { data } => {
+                if data.is_empty() {
+                    return None;
+                }
+                let columns: Vec<String> = request
+                    .column_names
+                    .iter()
+                    .map(|name| self.quote_identifier(name))
+                    .collect();
+                let values: Vec<String> = data
+                    .iter()
+                    .map(|value| {
+                        if value == "NULL" || value.is_empty() {
+                            "NULL".to_string()
+                        } else {
+                            format!("'{}'", value.replace('\'', "''"))
+                        }
+                    })
+                    .collect();
+
+                Some(format!(
+                    "INSERT INTO {} ({}) VALUES ({})",
+                    table_ident,
+                    columns.join(", "),
+                    values.join(", ")
+                ))
+            }
+            TableRowChange::Updated {
+                original_data,
+                changes,
+            } => {
+                if changes.is_empty() {
+                    return None;
+                }
+
+                let set_clause: Vec<String> = changes
+                    .iter()
+                    .map(|change| {
+                        let column_name = if change.column_name.is_empty() {
+                            request
+                                .column_names
+                                .get(change.column_index)
+                                .cloned()
+                                .unwrap_or_default()
+                        } else {
+                            change.column_name.clone()
+                        };
+                        let ident = self.quote_identifier(&column_name);
+                        let value = if change.new_value == "NULL" {
+                            "NULL".to_string()
+                        } else {
+                            format!("'{}'", change.new_value.replace('\'', "''"))
+                        };
+                        format!("{} = {}", ident, value)
+                    })
+                    .collect();
+
+                let where_clause = self.build_table_change_where_clause(request, original_data);
+
+                Some(format!(
+                    "UPDATE {} SET {}{}{}",
+                    table_ident,
+                    set_clause.join(", "),
+                    if where_clause.is_empty() { "" } else { " WHERE " },
+                    where_clause
+                ))
+            }
+            TableRowChange::Deleted { original_data } => {
+                let where_clause = self.build_table_change_where_clause(request, original_data);
+
+                Some(format!(
+                    "DELETE FROM {}{}{}",
+                    table_ident,
+                    if where_clause.is_empty() { "" } else { " WHERE " },
+                    where_clause
+                ))
+            }
+        }
+    }
+
+    fn build_table_change_where_clause(
+        &self,
+        request: &TableSaveRequest,
+        original_data: &[String],
+    ) -> String {
+        let indices: Vec<usize> = if request.primary_key_indices.is_empty() {
+            (0..request.column_names.len()).collect()
+        } else {
+            request.primary_key_indices.clone()
+        };
+
+        let mut parts = Vec::new();
+        for index in indices {
+            if let (Some(column), Some(value)) = (
+                request.column_names.get(index),
+                original_data.get(index),
+            ) {
+                let ident = self.quote_identifier(column);
+                if value == "NULL" {
+                    parts.push(format!("{} IS NULL", ident));
+                } else {
+                    parts.push(format!(
+                        "{} = '{}'",
+                        ident,
+                        value.replace('\'', "''")
+                    ));
+                }
+            }
+        }
+
+        parts.join(" AND ")
     }
 
     // === Data Types ===

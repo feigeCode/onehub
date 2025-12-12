@@ -13,8 +13,8 @@ use gpui_component::{
 
 use crate::filter_editor::{ColumnSchema, TableFilterEditor, TableSchema};
 use crate::multi_text_editor::{create_multi_text_editor_with_content, MultiTextEditor};
-use crate::results_delegate::{EditorTableDelegate};
-use db::{GlobalDbState, TableDataRequest};
+use crate::results_delegate::{EditorTableDelegate, RowChange};
+use db::{GlobalDbState, TableCellChange, TableDataRequest, TableRowChange, TableSaveRequest};
 use one_core::tab_container::{TabContent, TabContentType};
 // ============================================================================
 // Table Data Tab Content - Display table rows
@@ -305,17 +305,29 @@ impl TableDataTabContent {
             return;
         }
 
-        let changes_count = changes.len();
+        let table_changes = Self::convert_row_changes(changes, &column_names);
+        if table_changes.is_empty() {
+            Self::update_status(&self.status_msg, "No valid changes to save".to_string(), cx);
+            return;
+        }
+
+        let save_request = Self::create_table_save_request(
+            self.database_name.clone(),
+            self.table_name.clone(),
+            column_names,
+            pk_columns,
+            table_changes,
+        );
+
+        let change_count = save_request.changes.len();
         Self::update_status(
             &self.status_msg,
-            format!("Saving {} changes...", changes_count),
+            format!("Saving {} changes...", change_count),
             cx,
         );
 
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.connection_id.clone();
-        let table_name = self.table_name.clone();
-        let database_name = self.database_name.clone();
         let status_msg = self.status_msg.clone();
         let table_state = self.table.clone();
 
@@ -331,149 +343,92 @@ impl TableDataTabContent {
             };
 
             let conn = conn_arc.read().await;
-            let mut success_count = 0;
-            let mut error_messages = Vec::new();
 
-            for change in changes {
-                let sql = Self::generate_sql(&change, &database_name, &table_name, &column_names, &pk_columns);
-                if sql.is_empty() {
-                    continue;
+            match plugin.apply_table_changes(&**conn, save_request).await {
+                Ok(response) => {
+                    cx.update(|cx| {
+                        if response.errors.is_empty() {
+                            table_state.update(cx, |state, cx| {
+                                state.delegate_mut().clear_changes();
+                                cx.notify();
+                            });
+                            Self::update_status(
+                                &status_msg,
+                                format!("Successfully saved {} changes", response.success_count),
+                                cx,
+                            );
+                        } else {
+                            Self::update_status(
+                                &status_msg,
+                                format!(
+                                    "Saved {} changes, {} errors: {}",
+                                    response.success_count,
+                                    response.errors.len(),
+                                    response.errors.first().unwrap_or(&String::new())
+                                ),
+                                cx,
+                            );
+                        }
+                    }).ok();
                 }
-
-                match plugin.execute_query(&**conn, &database_name, &sql, None).await {
-                    Ok(db::SqlResult::Exec(result)) => {
-                        success_count += 1;
-                        let _ = result.rows_affected;
-                    }
-                    Ok(db::SqlResult::Error(err)) => {
-                        error_messages.push(err.message);
-                    }
-                    Err(e) => {
-                        error_messages.push(e.to_string());
-                    }
-                    _ => {}
+                Err(e) => {
+                    cx.update(|cx| {
+                        Self::update_status(&status_msg, format!("Failed to save changes: {}", e), cx);
+                    }).ok();
                 }
             }
-
-            cx.update(|cx| {
-                if error_messages.is_empty() {
-                    table_state.update(cx, |state, cx| {
-                        state.delegate_mut().clear_changes();
-                        cx.notify();
-                    });
-                    Self::update_status(
-                        &status_msg,
-                        format!("Successfully saved {} changes", success_count),
-                        cx,
-                    );
-                } else {
-                    Self::update_status(
-                        &status_msg,
-                        format!(
-                            "Saved {} changes, {} errors: {}",
-                            success_count,
-                            error_messages.len(),
-                            error_messages.first().unwrap_or(&String::new())
-                        ),
-                        cx,
-                    );
-                }
-            }).ok();
         })
         .detach();
     }
 
-    fn generate_sql(
-        change: &crate::results_delegate::RowChange,
-        database_name: &str,
-        table_name: &str,
-        column_names: &[String],
-        pk_columns: &[usize],
-    ) -> String {
-        use crate::results_delegate::RowChange;
-
-        match change {
-            RowChange::Added { data } => {
-                let columns = column_names.join("`, `");
-                let values: Vec<String> = data
-                    .iter()
-                    .map(|v| {
-                        if v == "NULL" || v.is_empty() {
-                            "NULL".to_string()
-                        } else {
-                            format!("'{}'", v.replace('\'', "''"))
-                        }
-                    })
-                    .collect();
-                format!(
-                    "INSERT INTO `{}`.`{}` (`{}`) VALUES ({})",
-                    database_name,
-                    table_name,
-                    columns,
-                    values.join(", ")
-                )
-            }
-            RowChange::Updated { original_data, changes } => {
-                if changes.is_empty() {
-                    return String::new();
-                }
-
-                let set_clause: Vec<String> = changes
-                    .iter()
-                    .map(|c| {
-                        let value = if c.new_value == "NULL" {
-                            "NULL".to_string()
-                        } else {
-                            format!("'{}'", c.new_value.replace('\'', "''"))
-                        };
-                        format!("`{}` = {}", c.col_name, value)
-                    })
-                    .collect();
-
-                let where_clause = Self::build_where_clause(original_data, column_names, pk_columns);
-
-                format!(
-                    "UPDATE `{}`.`{}` SET {} WHERE {}",
-                    database_name,
-                    table_name,
-                    set_clause.join(", "),
-                    where_clause
-                )
-            }
-            RowChange::Deleted { original_data } => {
-                let where_clause = Self::build_where_clause(original_data, column_names, pk_columns);
-                format!(
-                    "DELETE FROM `{}`.`{}` WHERE {}",
-                    database_name, table_name, where_clause
-                )
-            }
+    fn create_table_save_request(
+        database_name: String,
+        table_name: String,
+        column_names: Vec<String>,
+        pk_columns: Vec<usize>,
+        changes: Vec<TableRowChange>,
+    ) -> TableSaveRequest {
+        TableSaveRequest {
+            database: database_name,
+            table: table_name,
+            column_names,
+            primary_key_indices: pk_columns,
+            changes,
         }
     }
 
-    fn build_where_clause(original_data: &[String], column_names: &[String], pk_columns: &[usize]) -> String {
-        // If we have primary keys, only use those columns
-        let indices: Vec<usize> = if pk_columns.is_empty() {
-            (0..column_names.len()).collect()
-        } else {
-            pk_columns.to_vec()
-        };
+    fn convert_row_changes(changes: Vec<RowChange>, column_names: &[String]) -> Vec<TableRowChange> {
+        changes
+            .into_iter()
+            .filter_map(|change| match change {
+                RowChange::Added { data } => Some(TableRowChange::Added { data }),
+                RowChange::Updated { original_data, changes } => {
+                    let converted_changes: Vec<TableCellChange> = changes
+                        .into_iter()
+                        .map(|c| TableCellChange {
+                            column_index: c.col_ix,
+                            column_name: if c.col_name.is_empty() {
+                                column_names.get(c.col_ix).cloned().unwrap_or_default()
+                            } else {
+                                c.col_name
+                            },
+                            old_value: c.old_value,
+                            new_value: c.new_value,
+                        })
+                        .collect();
 
-        indices
-            .iter()
-            .filter_map(|&i| {
-                let col_name = column_names.get(i)?;
-                let value = original_data.get(i)?;
-                Some((col_name, value))
-            })
-            .map(|(col_name, value)| {
-                if value == "NULL" {
-                    format!("`{}` IS NULL", col_name)
-                } else {
-                    format!("`{}` = '{}'", col_name, value.replace('\'', "''"))
+                    if converted_changes.is_empty() {
+                        None
+                    } else {
+                        Some(TableRowChange::Updated {
+                            original_data,
+                            changes: converted_changes,
+                        })
+                    }
                 }
+                RowChange::Deleted { original_data } => Some(TableRowChange::Deleted { original_data }),
             })
-            .collect::<Vec<_>>()
-            .join(" AND ")
+            .collect()
     }
 
     fn load_cell_to_editor(&self, window: &mut Window, cx: &mut App) {
