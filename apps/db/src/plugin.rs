@@ -665,6 +665,23 @@ pub trait DatabasePlugin: Send + Sync {
         })
     }
 
+    /// Generate SQL preview for table changes without executing them
+    fn generate_table_changes_sql(&self, request: &TableSaveRequest) -> String {
+        let mut sql_statements = Vec::new();
+        
+        for change in &request.changes {
+            if let Some(sql) = self.build_table_change_sql(request, change) {
+                sql_statements.push(sql);
+            }
+        }
+
+        if sql_statements.is_empty() {
+            "-- 没有变更数据".to_string()
+        } else {
+            sql_statements.join(";\n\n") + ";"
+        }
+    }
+
     /// Apply table data changes (insert/update/delete)
     async fn apply_table_changes(
         &self,

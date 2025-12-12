@@ -401,6 +401,7 @@ impl DatabaseEventHandler {
                             database_clone,
                             table_clone,
                             config_id,
+                            config.database_type,
                             window,
                             cx,
                         );
@@ -447,6 +448,7 @@ impl DatabaseEventHandler {
                             database_clone,
                             view_clone,
                             config_id,
+                            config.database_type,
                             window,
                             cx,
                         );

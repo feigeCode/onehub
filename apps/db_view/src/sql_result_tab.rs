@@ -1,11 +1,19 @@
+// 1. 标准库导入
 use std::sync::{Arc, RwLock};
-use gpui::{div, px, AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+
+// 2. 外部 crate 导入（按字母顺序）
+use gpui::{div, px, AnyElement, App, Context, IntoElement, ParentElement, Render, Styled, Window};
+use gpui_component::{
+    h_flex, v_flex,
+    list::ListItem,
+    tab::{Tab, TabBar},
+    table::Column,
+    ActiveTheme, IconName, Sizable, Size, StyledExt,
+};
+
+// 3. 当前 crate 导入（按模块分组）
 use db::SqlResult;
-use gpui_component::table::{Column, Table, TableState};
-use gpui_component::{h_flex, v_flex, ActiveTheme, IconName, Sizable, Size, StyledExt};
-use gpui_component::list::ListItem;
-use gpui_component::tab::{Tab, TabBar};
-use crate::results_delegate::ResultsDelegate;
+use crate::data_grid::{DataGrid, DataGridConfig};
 
 // Structure to hold a single SQL result with its metadata
 #[derive(Clone)]
@@ -14,7 +22,7 @@ pub struct SqlResultTab {
     pub result: SqlResult,
     pub execution_time: String,
     pub rows_count: String,
-    pub table: Entity<TableState<ResultsDelegate>>,
+    pub data_grid: Option<DataGrid>,
 }
 
 
@@ -59,6 +67,20 @@ impl SqlResultTabContainer {
 
             match result {
                 SqlResult::Query(query_result) => {
+                    // 创建DataGrid配置（只读模式，但显示工具栏）
+                    let config = DataGridConfig::new(
+                        "query_result",
+                        format!("result_{}", idx),
+                        "sql_result",
+                        one_core::storage::DatabaseType::MySQL, // 默认类型，实际不影响只读模式
+                    )
+                    .editable(false)
+                    .show_toolbar(true)
+                    .show_pagination(false);
+
+                    let data_grid = DataGrid::new(config, window, cx);
+
+                    // 准备数据
                     let columns = query_result.columns.iter()
                         .map(|h| Column::new(h.clone(), h.clone()))
                         .collect();
@@ -69,17 +91,38 @@ impl SqlResultTabContainer {
                                 .collect()
                         })
                         .collect();
-                    let delegate = ResultsDelegate::new(columns, rows);
-                    let table = cx.new(|cx| TableState::new(delegate, window, cx));
+
+                    // 更新DataGrid数据
+                    data_grid.update_data(columns, rows, vec![], cx);
+                    data_grid.update_query_info(
+                        query_result.elapsed_ms as u128,
+                        sql_text.clone(),
+                        cx,
+                    );
+
                     new_tabs.push(SqlResultTab {
                         sql: sql_text,
                         result: result.clone(),
                         execution_time: format!("{}ms", query_result.elapsed_ms),
                         rows_count: format!("{} rows", query_result.rows.len()),
-                        table,
+                        data_grid: Some(data_grid),
                     });
                 }
                 SqlResult::Exec(exec_result) => {
+                    // 创建DataGrid配置（只读模式，但显示工具栏）
+                    let config = DataGridConfig::new(
+                        "exec_result",
+                        format!("result_{}", idx),
+                        "sql_result",
+                        one_core::storage::DatabaseType::MySQL,
+                    )
+                    .editable(false)
+                    .show_toolbar(true)
+                    .show_pagination(false);
+
+                    let data_grid = DataGrid::new(config, window, cx);
+
+                    // 准备执行结果数据
                     let columns = vec![
                         Column::new("Status", "Status"),
                         Column::new("Rows Affected", "Rows Affected"),
@@ -88,27 +131,51 @@ impl SqlResultTabContainer {
                         exec_result.message.clone().unwrap_or_else(|| "Success".to_string()),
                         format!("{}", exec_result.rows_affected),
                     ]];
-                    let delegate = ResultsDelegate::new(columns, rows);
-                    let table = cx.new(|cx| TableState::new(delegate, window, cx));
+
+                    // 更新DataGrid数据
+                    data_grid.update_data(columns, rows, vec![], cx);
+                    data_grid.update_query_info(
+                        exec_result.elapsed_ms as u128,
+                        sql_text.clone(),
+                        cx,
+                    );
+
                     new_tabs.push(SqlResultTab {
                         sql: sql_text,
                         result: result.clone(),
                         execution_time: format!("{}ms", exec_result.elapsed_ms),
                         rows_count: format!("{} rows affected", exec_result.rows_affected),
-                        table,
+                        data_grid: Some(data_grid),
                     });
                 }
                 SqlResult::Error(error) => {
+                    // 创建DataGrid配置（只读模式，但显示工具栏）
+                    let config = DataGridConfig::new(
+                        "error_result",
+                        format!("result_{}", idx),
+                        "sql_result",
+                        one_core::storage::DatabaseType::MySQL,
+                    )
+                    .editable(false)
+                    .show_toolbar(true)
+                    .show_pagination(false);
+
+                    let data_grid = DataGrid::new(config, window, cx);
+
+                    // 准备错误数据
                     let columns = vec![Column::new("Error", "Error")];
                     let rows = vec![vec![error.message.clone()]];
-                    let delegate = ResultsDelegate::new(columns, rows);
-                    let table = cx.new(|cx| TableState::new(delegate, window, cx));
+
+                    // 更新DataGrid数据
+                    data_grid.update_data(columns, rows, vec![], cx);
+                    data_grid.update_query_info(0, sql_text.clone(), cx);
+
                     new_tabs.push(SqlResultTab {
                         sql: sql_text,
                         result: result.clone(),
                         execution_time: "Error".to_string(),
                         rows_count: "Error".to_string(),
-                        table,
+                        data_grid: Some(data_grid),
                     });
                 }
             }
@@ -129,7 +196,7 @@ impl SqlResultTabContainer {
 }
 
 impl Render for SqlResultTabContainer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.result_tabs.read().unwrap();
         let active_idx = *self.active_result_tab.read().unwrap();
 
@@ -175,30 +242,51 @@ impl Render for SqlResultTabContainer {
                         }))
                 )
                 .child(
-                    // Active tab content
-                    v_flex()
-                        .flex_1()
-                        .bg(cx.theme().background)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .rounded_md()
-                        .overflow_hidden()
-                        .child(
-                            if active_idx == 0 {
-                                // Show summary view
-                                render_summary_view(&tabs, cx)
-                            } else {
-                                // Show individual result table
-                                tabs.get(active_idx - 1)
-                                    .map(|tab| {
-                                        div()
-                                            .size_full()
-                                            .child(Table::new(&tab.table.clone()))
-                                            .into_any_element()
-                                    })
-                                    .unwrap_or_else(|| div().into_any_element())
-                            }
-                        )
+                    // Active tab content - 优化布局以支持大文本编辑器
+                    if active_idx == 0 {
+                        // Show summary view
+                        div()
+                            .flex_1()
+                            .bg(cx.theme().background)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .rounded_md()
+                            .overflow_hidden()
+                            .child(render_summary_view(&tabs, cx))
+                    } else {
+                        // Show individual result table with toolbar - 给DataGrid完整的空间
+                        tabs.get(active_idx - 1)
+                            .and_then(|tab| tab.data_grid.as_ref())
+                            .map(|data_grid| {
+                                v_flex()
+                                    .flex_1()
+                                    .w_full()
+                                    .bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .rounded_md()
+                                    .gap_0()
+                                    // 工具栏（只读模式，提供基本功能）
+                                    .child(
+                                        data_grid.render_toolbar(
+                                            |_cx| {}, // 刷新功能（只读模式下无操作）
+                                            |_cx| {}, // 保存功能（只读模式下无操作）
+                                            window,
+                                            cx,
+                                        )
+                                    )
+                                    // 表格区域 - 移除额外的容器包装，给编辑器更多空间
+                                    .child(data_grid.render_table_area(window, cx))
+                            })
+                            .unwrap_or_else(|| {
+                                div()
+                                    .flex_1()
+                                    .bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .rounded_md()
+                            })
+                    }
                 )
         }
     }

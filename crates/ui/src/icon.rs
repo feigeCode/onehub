@@ -132,7 +132,9 @@ pub enum IconName {
     RedisColor,
     All,
     Edit,
-    Filter
+    Filter,
+    Refresh,
+    EditBorder
 }
 
 impl IconName {
@@ -253,7 +255,9 @@ impl IconNamed for IconName {
             Self::RedisColor => "icons/redis_color.svg",
             Self::All => "icons/all.svg",
             Self::Edit => "icons/edit.svg",
-            Self::Filter => "icons/filter.svg"
+            Self::Filter => "icons/filter.svg",
+            Self::Refresh => "icons/refresh.svg",
+            Self::EditBorder => "icons/edit_border.svg",
         }
         .into()
     }
