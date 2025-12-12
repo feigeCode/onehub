@@ -156,7 +156,7 @@ impl DbTreeView {
             ContextMenuTreeState::new(cx).items(items)
         });
         let search_input = cx.new(|cx| {
-            InputState::new(_window, cx).placeholder("搜索...")
+            InputState::new(_window, cx).placeholder("搜索...").clean_on_escape()
         });
         let search_debouncer = Arc::new(Debouncer::new(Duration::from_millis(250)));
 
@@ -686,6 +686,40 @@ impl Render for DbTreeView {
             .id("db-tree-view")
             .size_full()
             .bg(cx.theme().background)
+            .child({
+                let view_for_collapse = cx.entity();
+                h_flex()
+                    .w_full()
+                    .p_1()
+                    .gap_1()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.search_input)
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .cleanable(true)
+                                .small()
+                                .w_full())
+                    )
+                    .child(
+                        Button::new("collapse-all")
+                            .icon(IconName::ChevronsUpDown)
+                            .ghost()
+                            .small()
+                            .tooltip("折叠所有")
+                            .on_click(move |_, _, cx| {
+                                view_for_collapse.update(cx, |this, cx| {
+                                    this.collapse_all(cx);
+                                });
+                            })
+                    )
+            })
             .child(
                 // 树形视图
                 v_flex()
@@ -764,7 +798,7 @@ impl Render for DbTreeView {
                                         let view_clone = view.clone();
                                         let node_id_clone = node_id.clone();
                                         trace!("node_id: {}, item: {}", &node_id, &item.label);
-                                        let highlight_color = cx.theme().warning;
+                                        let highlight_color = cx.theme().primary;
                                         
                                         // 构建带高亮的 label
                                         let label_element = if !search_query.is_empty() {
@@ -968,34 +1002,6 @@ impl Render for DbTreeView {
                             })
                     )
             )
-            // 底部搜索框
-            .child({
-                let view_for_collapse = cx.entity();
-                h_flex()
-                    .w_full()
-                    .p_1()
-                    .gap_1()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&self.search_input).small().w_full())
-                    )
-                    .child(
-                        Button::new("collapse-all")
-                            .icon(IconName::ChevronsUpDown)
-                            .ghost()
-                            .small()
-                            .tooltip("折叠所有")
-                            .on_click(move |_, _, cx| {
-                                view_for_collapse.update(cx, |this, cx| {
-                                    this.collapse_all(cx);
-                                });
-                            })
-                    )
-            })
     }
 }
 
