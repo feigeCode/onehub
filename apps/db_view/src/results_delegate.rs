@@ -4,7 +4,8 @@ use db::{FieldType, TableColumnMeta};
 use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Window};
 use gpui_component::input::InputState;
 use gpui_component::table::Column;
-use gpui_component::{h_flex, table::{ColumnFilterValue, TableDelegate, TableState}};
+use gpui_component::{h_flex, table::{ TableDelegate, TableState}};
+use gpui_component::table::filter_panel::FilterValue;
 
 /// Represents a single cell change with old and new values
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,7 +591,7 @@ impl TableDelegate for EditorTableDelegate {
         true
     }
 
-    fn get_column_filter_values(&self, col_ix: usize, _cx: &App) -> Vec<ColumnFilterValue> {
+    fn get_column_filter_values(&self, col_ix: usize, _cx: &App) -> Vec<FilterValue> {
         use std::collections::HashMap;
 
         let mut value_counts: HashMap<String, usize> = HashMap::new();
@@ -620,7 +621,7 @@ impl TableDelegate for EditorTableDelegate {
 
         let mut result: Vec<_> = value_counts
             .into_iter()
-            .map(|(value, count)| ColumnFilterValue::new(value, count))
+            .map(|(value, count)| FilterValue::new(value, count))
             .collect();
         result.sort_by(|a, b| a.value.cmp(&b.value));
         result

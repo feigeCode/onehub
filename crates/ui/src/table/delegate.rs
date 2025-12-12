@@ -5,10 +5,11 @@ use gpui::{div, App, Context, Div, Entity, InteractiveElement as _, IntoElement,
 use crate::{
     h_flex,
     menu::PopupMenu,
-    table::{filter::ColumnFilterValue, loading::Loading, Column, ColumnSort, TableState},
+    table::{ loading::Loading, Column, ColumnSort, TableState},
     ActiveTheme as _, Icon, IconName, Size,
 };
 use crate::input::InputState;
+use crate::table::filter_panel::FilterValue;
 
 /// A delegate trait for providing data and rendering for a table.
 #[allow(unused)]
@@ -242,7 +243,7 @@ pub trait TableDelegate: Sized + 'static {
 
     /// Get unique values for a column with their occurrence counts.
     /// Used to populate the filter UI.
-    fn get_column_filter_values(&self, col_ix: usize, cx: &App) -> Vec<ColumnFilterValue> {
+    fn get_column_filter_values(&self, col_ix: usize, cx: &App) -> Vec<FilterValue> {
         vec![]
     }
 

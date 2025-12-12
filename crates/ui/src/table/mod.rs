@@ -9,7 +9,6 @@ use gpui::{
 
 mod column;
 mod delegate;
-mod filter;
 mod loading;
 mod state;
 pub mod filter_panel;
@@ -17,7 +16,6 @@ pub mod filter_state;
 
 pub use column::*;
 pub use delegate::*;
-pub use filter::*;
 pub use state::*;
 
 actions!(table, [SelectPrevColumn, SelectNextColumn]);

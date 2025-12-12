@@ -136,10 +136,6 @@ pub struct TableState<D: TableDelegate> {
 
     /// 当前打开的筛选面板的列索引（用于跟踪哪个筛选面板是打开的）
     active_filter_col: Option<usize>,
-    /// 搜索查询（用于筛选面板中的搜索）
-    filter_search_query: String,
-    /// 筛选面板的搜索输入框状态
-    filter_search_input: Option<Entity<InputState>>,
 
     _measure: Vec<Duration>,
     _load_more_task: Task<()>,
@@ -172,8 +168,6 @@ where
             filter_state: FilterState::new(),
             filter_list: None,
             active_filter_col: None,
-            filter_search_query: String::new(),
-            filter_search_input: None,
             loop_selection: true,
             col_selectable: true,
             row_selectable: true,
@@ -349,11 +343,6 @@ where
         &mut self.filter_state
     }
 
-    /// Check if a column has an active filter.
-    pub fn is_column_filtered(&self, col_ix: usize) -> bool {
-        self.filter_state.is_column_filtered(col_ix)
-    }
-
     /// Set filter for a column.
     pub fn set_column_filter(&mut self, col_ix: usize, selected_values: HashSet<String>, cx: &mut Context<Self>) {
         self.filter_state.set_filter(col_ix, selected_values);
@@ -389,21 +378,15 @@ where
     pub fn open_filter_panel(&mut self, col_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let filter_values = self.delegate.get_column_filter_values(col_ix, cx);
         let current_filter = self.filter_state.get_filter(col_ix);
-
         let values = filter_values
-            .iter()
-            .map(|fv| {
-                let selected = current_filter
-                    .map(|f| f.selected_values.contains(fv.value.as_ref()))
-                    .unwrap_or(true);
-                filter_panel::FilterValue {
-                    value: fv.value.to_string(),
-                    count: fv.count,
-                    checked: selected,
-                    selected,
-                }
-            })
-            .collect();
+            .into_iter()
+            .map(|mut fv| {
+                let checked = current_filter
+                    .map(|f| f.selected_values.contains(&fv.value))
+                    .unwrap_or(false);
+                fv.checked = checked;
+                fv
+            }).collect();
 
         // 创建FilterPanel并设置实时筛选回调
         let table_entity = cx.entity().clone();
@@ -418,12 +401,6 @@ where
         // 创建ListState并包装FilterPanel
         self.filter_list = Some(cx.new(|cx| ListState::new(filter_panel, window, cx).searchable(true)));
         self.active_filter_col = Some(col_ix);
-        self.filter_search_query.clear();
-        // 创建搜索输入框状态
-        self.filter_search_input = Some(cx.new(|cx| {
-            InputState::new(window, cx).placeholder("搜索...")
-        }));
-
         cx.notify();
     }
 
@@ -431,8 +408,6 @@ where
     pub fn close_filter_panel(&mut self, cx: &mut Context<Self>) {
         self.active_filter_col = None;
         self.filter_list = None;
-        self.filter_search_query.clear();
-        self.filter_search_input = None;
         cx.notify();
     }
 
@@ -466,10 +441,6 @@ where
         self.update_filter_panel(cx, |panel| {
             panel.select_all();
         });
-
-        // 2. 清空搜索查询
-        self.filter_search_query.clear();
-
         // 3. 立即应用筛选
         self.apply_filter_realtime(col_ix, window, cx);
     }
@@ -499,43 +470,6 @@ where
         });
     }
 
-    /// 获取筛选面板中的搜索查询
-    pub fn filter_search_query(&self) -> &str {
-        &self.filter_search_query
-    }
-
-    /// 设置筛选面板中的搜索查询
-    pub fn set_filter_search_query(&mut self, query: String, cx: &mut Context<Self>) {
-        self.filter_search_query = query.clone();
-
-        // 更新FilterPanel中的搜索查询和过滤后的值列表
-        let query_for_panel = query;
-        self.update_filter_panel(cx, move |panel| {
-            panel.set_search_query(query_for_panel.clone());
-        });
-
-        cx.notify();
-    }
-
-    /// 获取筛选面板中的值（根据搜索过滤）
-    pub fn get_filtered_panel_values(&self, cx: &App) -> Vec<filter_panel::FilterValue> {
-        let query_lower = self.filter_search_query.to_lowercase();
-
-        self.read_filter_panel_with_app(cx, move |panel| {
-            if query_lower.is_empty() {
-                panel.values.clone()
-            } else {
-                panel
-                    .values
-                    .iter()
-                    .filter(|v| v.value.to_lowercase().contains(&query_lower))
-                    .cloned()
-                    .collect()
-            }
-        })
-        .unwrap_or_default()
-    }
-
     /// 在筛选面板中全选
     pub fn filter_panel_select_all(&mut self, cx: &mut Context<Self>) {
         self.update_filter_panel(cx, |panel| {
@@ -555,7 +489,6 @@ where
         self.update_filter_panel(cx, |panel| {
             panel.select_all();
         });
-        self.filter_search_query.clear();
         cx.notify();
     }
 
@@ -1328,7 +1261,7 @@ where
         &self,
         col_ix: usize,
         col_group: &ColGroup,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
         if !self.sortable {
@@ -1377,7 +1310,7 @@ where
             return None;
         }
 
-        let is_filtered = self.is_column_filtered(col_ix);
+        let is_filtered = self.filter_state.is_column_filtered(col_ix);
         let is_open = self.active_filter_col == Some(col_ix);
         let table_entity = cx.entity().clone();
 
@@ -1393,7 +1326,7 @@ where
             Popover::new(("filter-popover", col_ix))
                 .trigger(
                     Button::new(("filter-btn", col_ix))
-                        .icon(IconName::Settings)
+                        .icon(IconName::Filter)
                         .ghost()
                         .with_size(Size::XSmall)
                         .when(is_filtered, |this| this.primary())
@@ -1433,36 +1366,11 @@ where
             None => return div().into_any_element(),
         };
 
-        let search_input = match &self.filter_search_input {
-            Some(input) => input.clone(),
-            None => return div().into_any_element(),
-        };
-
-        // 同步搜索输入框的值到FilterPanel
-        let current_input_value = search_input.read(cx).value().to_string();
-        if current_input_value != self.filter_search_query {
-            let entity = table_entity.clone();
-            let value = current_input_value.clone();
-            cx.defer(move |cx| {
-                entity.update(cx, |table, cx| {
-                    table.set_filter_search_query(value, cx);
-                });
-            });
-        }
-
-        let filtered_count = filter_list.read(cx).delegate().filtered_values().len();
-        let has_search_query = !self.filter_search_query.is_empty();
-
         v_flex()
             .w(px(280.))
             .max_h(px(400.))
             .gap_2()
             .p_2()
-            // 搜索输入框
-            .child(
-                Input::new(&search_input)
-                    .cleanable(true)
-            )
             // 统计行
             .child(
                 h_flex()
@@ -1494,7 +1402,7 @@ where
                             )
                             .child(
                                 Button::new("filter-deselect-all")
-                                    .label("清空")
+                                    .label("清除筛选")
                                     .ghost()
                                     .with_size(Size::XSmall)
                                     .on_click({
@@ -1512,49 +1420,14 @@ where
             .child(div().h(px(1.)).w_full().bg(cx.theme().border))
             // 列表
             .child(
-                if filtered_count == 0 && has_search_query {
-                    div()
-                        .h(px(100.))
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("无匹配结果")
-                        )
-                        .into_any_element()
-                } else {
-                    List::new(&filter_list)
-                        .max_h(px(200.))
-                        .w_full()
-                        .into_any_element()
-                }
-            )
-            // 底部分隔线
-            .child(div().h(px(1.)).w_full().bg(cx.theme().border))
-            // 底部按钮
-            .child(
-                h_flex()
+                List::new(&filter_list)
+                    .max_h(px(200.))
+                    .p(px(8.))
+                    .flex_1()
                     .w_full()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        Button::new("filter-reset")
-                            .label("重置")
-                            .ghost()
-                            .with_size(Size::Small)
-                            .on_click({
-                                let entity = table_entity.clone();
-                                move |_, window, cx| {
-                                    entity.update(cx, |table, cx| {
-                                        table.filter_panel_reset_realtime(col_ix, window, cx);
-                                    });
-                                }
-                            }),
-                    ),
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
             )
             .into_any_element()
     }

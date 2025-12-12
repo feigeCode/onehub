@@ -131,7 +131,8 @@ pub enum IconName {
     Workspace,
     RedisColor,
     All,
-    Edit
+    Edit,
+    Filter
 }
 
 impl IconName {
@@ -251,7 +252,8 @@ impl IconNamed for IconName {
             Self::Workspace => "icons/workspace.svg",
             Self::RedisColor => "icons/redis_color.svg",
             Self::All => "icons/all.svg",
-            Self::Edit => "icons/edit.svg"
+            Self::Edit => "icons/edit.svg",
+            Self::Filter => "icons/filter.svg"
         }
         .into()
     }

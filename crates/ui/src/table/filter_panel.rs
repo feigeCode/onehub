@@ -1,4 +1,4 @@
-use gpui::{div, App, Context, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window};
+use gpui::{div, App, AsyncApp, Context, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -12,6 +12,18 @@ pub struct FilterValue {
     pub count: usize,
     pub checked: bool,
     pub selected: bool,
+}
+
+
+impl FilterValue {
+    pub fn new(value: String, count: usize) -> Self {
+        Self {
+            value,
+            count,
+            checked: false,
+            selected: false,
+        }
+    }
 }
 
 
@@ -113,8 +125,6 @@ pub struct FilterPanel {
     confirmed_index: Option<IndexPath>,
     /// 回调：当筛选值被切换时
     on_toggle: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
-    /// 搜索查询
-    search_query: String,
     /// 过滤后的值列表
     filtered_values: Vec<FilterValue>,
 }
@@ -128,7 +138,6 @@ impl FilterPanel {
             selected_index: None,
             confirmed_index: None,
             on_toggle: None,
-            search_query: String::new(),
             filtered_values,
         }
     }
@@ -166,7 +175,7 @@ impl FilterPanel {
     /// 全选（只选中当前可见的筛选项）
     pub fn select_all(&mut self) {
         // 获取当前可见项的值
-        let visible_values: std::collections::HashSet<String> = self.filtered_values
+        let visible_values: HashSet<String> = self.filtered_values
             .iter()
             .map(|v| v.value.clone())
             .collect();
@@ -189,7 +198,7 @@ impl FilterPanel {
     /// 清空选择（只清空当前可见的筛选项）
     pub fn deselect_all(&mut self) {
         // 获取当前可见项的值
-        let visible_values: std::collections::HashSet<String> = self.filtered_values
+        let visible_values: HashSet<String> = self.filtered_values
             .iter()
             .map(|v| v.value.clone())
             .collect();
@@ -208,24 +217,13 @@ impl FilterPanel {
             v.checked = false;
         }
     }
-
-    /// 设置搜索查询并更新过滤后的值列表
-    pub fn set_search_query(&mut self, query: String) {
-        self.search_query = query.clone();
-        self.update_filtered_values();
-    }
-
-    /// 获取当前搜索查询
-    pub fn search_query(&self) -> &str {
-        &self.search_query
-    }
-
+    
     /// 更新过滤后的值列表（不区分大小写）
-    fn update_filtered_values(&mut self) {
-        if self.search_query.is_empty() {
+    fn update_filtered_values(&mut self, search_query: String) {
+        if search_query.is_empty() {
             self.filtered_values = self.values.clone();
         } else {
-            let query_lower = self.search_query.to_lowercase();
+            let query_lower = search_query.to_lowercase();
             self.filtered_values = self.values
                 .iter()
                 .filter(|v| v.value.to_lowercase().contains(&query_lower))
@@ -249,6 +247,18 @@ impl ListDelegate for FilterPanel {
         self.filtered_values.len()
     }
 
+    fn perform_search(&mut self, query: &str, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> Task<()> {
+        let query = query.to_string();
+        cx.spawn(async move |entity: WeakEntity<ListState<Self>>, cx: &mut AsyncApp| {
+            let result = entity.update(cx, move |this, _cx| {
+                this.delegate_mut().update_filtered_values(query);
+            });
+            result.unwrap_or_else(|_| {
+               eprint!("Failed to update search query");
+                ()
+            })
+        })
+    }
     fn render_item(
         &mut self,
         ix: IndexPath,
