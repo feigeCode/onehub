@@ -506,8 +506,7 @@ impl HomePage {
 
     fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
-        let has_selection = self.selected_connection_id.is_some();
-        
+
         h_flex()
             .p_4()
             .border_b_1()
@@ -551,24 +550,6 @@ impl HomePage {
                                 )
                             })
                     )
-                    .when(has_selection, |this| {
-                        this.child(
-                            Button::new("edit-selected")
-                                .icon(IconName::Edit)
-                                .tooltip("编辑连接")
-                                .with_size(Size::Medium)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(conn_id) = this.selected_connection_id {
-                                        if let Some(conn) = this.connections.iter().find(|c| c.id == Some(conn_id)) {
-                                            this.editing_connection_id = Some(conn_id);
-                                            if let Ok(params) = conn.to_database_params() {
-                                                this.show_connection_form(params.db_type, window, cx);
-                                            }
-                                        }
-                                    }
-                                }))
-                        )
-                    })
             )
             .child(
                 h_flex()
@@ -941,6 +922,7 @@ impl HomePage {
     ) -> impl IntoElement {
         let conn_id = conn.id;
         let clone_conn = conn.clone();
+        let edit_conn = conn.clone();
         let is_selected = selected_id == conn.id;
 
         div()
@@ -951,6 +933,8 @@ impl HomePage {
             .p_3()
             .border_1()
             .rounded_lg()
+            .relative()
+            .group("")
             .when(is_selected, |this| {
                 this.border_color(cx.theme().primary)
                     .shadow_md()
@@ -973,6 +957,30 @@ impl HomePage {
                 this.selected_connection_id = conn_id;
                 cx.notify();
             }))
+            .child(
+                // hover时显示的编辑按钮
+                div()
+                    .absolute()
+                    .top_2()
+                    .right_2()
+                    .group_hover("", |style| style.opacity(1.0))
+                    .opacity(0.0)
+                    .child(
+                        Button::new(SharedString::from(format!("edit-conn-{}", conn.id.unwrap_or(0))))
+                            .icon(IconName::Edit)
+                            .with_size(Size::Small)
+                            .tooltip("编辑连接")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(conn_id) = edit_conn.id {
+                                    this.editing_connection_id = Some(conn_id);
+                                    if let Ok(params) = edit_conn.to_database_params() {
+                                        this.show_connection_form(params.db_type, window, cx);
+                                    }
+                                }
+                            }))
+                    )
+            )
             .child(
                 v_flex()
                     .w_full()
