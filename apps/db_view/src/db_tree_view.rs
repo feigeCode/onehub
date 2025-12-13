@@ -412,29 +412,6 @@ impl DbTreeView {
             });
         }
     }
-
-    /// 检查节点或其子节点是否匹配搜索关键字
-    fn node_matches_search(node: &DbNode, db_nodes: &HashMap<String, DbNode>, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        // 检查当前节点名称
-        if node.name.to_lowercase().contains(query) {
-            return true;
-        }
-        // 递归检查子节点
-        for child in &node.children {
-            if let Some(child_node) = db_nodes.get(&child.id) {
-                if Self::node_matches_search(child_node, db_nodes, query) {
-                    return true;
-                }
-            } else if Self::node_matches_search(child, db_nodes, query) {
-                return true;
-            }
-        }
-        false
-    }
-
     /// 递归构建过滤后的 TreeItem
     /// 已加载的节点：如果有匹配的子节点则自动展开
     /// 未加载的节点：不搜索、不展开
@@ -487,37 +464,6 @@ impl DbTreeView {
         } else {
             None
         }
-    }
-
-    /// 递归构建 TreeItem，使用 db_nodes 映射
-    fn db_node_to_tree_item_recursive(
-        node: &DbNode,
-        db_nodes: &HashMap<String, DbNode>,
-        expanded_nodes: &HashSet<String>,
-    ) -> TreeItem {
-        let mut item = TreeItem::new(node.id.clone(), node.name.clone());
-
-        // 保持展开状态
-        if expanded_nodes.contains(&node.id) {
-            item = item.expanded(true);
-        }
-
-        if  node.children_loaded && !node.children.is_empty() {
-            let children: Vec<TreeItem> = node
-                .children
-                .iter()
-                .map(|child_node| {
-                    // 优先使用 db_nodes 中的最新版本，避免使用过期的克隆
-                    if let Some(updated) = db_nodes.get::<str>(child_node.id.as_ref()) {
-                        Self::db_node_to_tree_item_recursive(updated, db_nodes, expanded_nodes)
-                    } else {
-                        Self::db_node_to_tree_item_recursive(child_node, db_nodes, expanded_nodes)
-                    }
-                })
-                .collect();
-            item = item.children(children);
-        }
-        item
     }
 
     /// 根据节点类型获取图标
@@ -933,12 +879,7 @@ impl Render for DbTreeView {
                                             .context_menu(move |menu, window, cx| {
                                                         // 从 db_nodes 获取节点信息
                                                         if let Some(node) = view_clone.read(cx).db_nodes.get(&node_id_clone).cloned() {
-                                                            let node_type = format!("{:?}", node.node_type);
-
-                                                            let mut menu = menu
-                                                                .label(format!("Type: {}", node_type))
-                                                                .separator();
-                                                            
+                                                            let mut menu = menu;
                                                             // 根据节点类型添加不同的菜单项
                                                             match node.node_type {
                                                                 DbNodeType::Connection => {
@@ -1021,7 +962,7 @@ impl Render for DbTreeView {
                                                             let view_ref2 = view_clone.clone();
                                                             let id_clone = node_id_clone.clone();
                                                             menu.item(
-                                                                PopupMenuItem::new("Refresh")
+                                                                PopupMenuItem::new("刷新")
                                                                     .on_click(window.listener_for(&view_ref2, move |this, _, _, cx| {
                                                                         this.refresh_tree(id_clone.clone(), cx);
                                                                     }))

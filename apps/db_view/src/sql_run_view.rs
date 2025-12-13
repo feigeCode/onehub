@@ -12,7 +12,7 @@ use one_core::gpui_tokio::Tokio;
 
 pub struct SqlRunView {
     connection_id: String,
-    database: Entity<InputState>,
+    database: Option<String>,
     file_path: Entity<InputState>,
     pending_file_path: Entity<Option<String>>,
     stop_on_error: Entity<bool>,
@@ -29,17 +29,10 @@ impl SqlRunView {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let database_input = cx.new(|cx| {
-                let mut state = InputState::new(window, cx);
-                if let Some(db) = database {
-                    state.set_value(db, window, cx);
-                }
-                state
-            });
 
             Self {
                 connection_id: connection_id.into(),
-                database: database_input,
+                database,
                 file_path: cx.new(|cx| InputState::new(window, cx)),
                 pending_file_path: cx.new(|_| None),
                 stop_on_error: cx.new(|_| true),
@@ -87,7 +80,7 @@ impl SqlRunView {
     fn start_run(&mut self, _window: &mut Window, cx: &mut App) {
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.connection_id.clone();
-        let database = self.database.read(cx).text().to_string();
+        let database = self.database.clone();
         let file_path_str = self.file_path.read(cx).text().to_string();
         let stop_on_error = *self.stop_on_error.read(cx);
         let use_transaction = *self.use_transaction.read(cx);
@@ -143,7 +136,7 @@ impl SqlRunView {
                     .collect();
 
                 let conn_id = connection_id.clone();
-                let db = database.clone();
+                let db = database.clone().unwrap_or("".to_string());
                 let global = global_state.clone();
 
                 let result = Tokio::spawn_result(cx, async move {
@@ -263,14 +256,6 @@ impl Render for SqlRunView {
         v_flex()
             .gap_3()
             .p_4()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w_24().child("数据库:"))
-                    .child(Input::new(&self.database).w_64())
-                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child("(可选，留空使用默认)")),
-            )
             .child(
                 h_flex()
                     .gap_2()

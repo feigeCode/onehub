@@ -1395,27 +1395,19 @@ impl DatabaseEventHandler {
 
         let connection_id = node.connection_id.clone();
         // 获取数据库名：如果是数据库节点则用 name，否则为空（连接级别）
-        let database = if node.node_type == db::DbNodeType::Database {
+        let database = if node.node_type == DbNodeType::Database {
             Some(node.name.clone())
         } else {
             None
         };
-
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+        let run_view = SqlRunView::new(connection_id, database, window, cx);
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            dialog
+                .title("运行SQL文件")
+                .child(run_view.clone())
+                .width(px(800.0))
+                .on_cancel(|_, _window, _cx| true)
         });
-
-        if let Some(config) = config {
-            let run_view = SqlRunView::new(config.id, database, window, cx);
-
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                dialog
-                    .title("运行SQL文件")
-                    .child(run_view.clone())
-                    .width(px(800.0))
-                    .on_cancel(|_, _window, _cx| true)
-            });
-        }
     }
 
     /// 处理转储SQL文件事件
