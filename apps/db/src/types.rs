@@ -715,5 +715,7 @@ pub struct TableDataResponse {
     pub primary_key_indices: Vec<usize>,
     /// The SQL query that was executed
     pub executed_sql: String,
+    /// Duration of the query
+    pub duration: u128
 }
 

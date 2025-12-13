@@ -1,5 +1,4 @@
 use std::any::Any;
-
 use gpui::{actions, div, AnyElement, App, AppContext, AsyncApp, Context, Corner, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window};
 use gpui_component::{h_flex, table::Column, v_flex, ActiveTheme, IconName, Sizable, Size};
 
@@ -8,6 +7,7 @@ use crate::filter_editor::{ColumnSchema, FilterEditorEvent, TableFilterEditor, T
 use db::{GlobalDbState, TableDataRequest};
 use gpui_component::button::Button;
 use gpui_component::menu::DropdownMenu;
+use one_core::gpui_tokio::Tokio;
 use one_core::tab_container::{TabContent, TabContentType};
 
 // ============================================================================
@@ -15,6 +15,28 @@ use one_core::tab_container::{TabContent, TabContentType};
 // ============================================================================
 
 actions!([Page500, Page1000, Page2000, PageAll]);
+
+
+#[derive(Clone)]
+pub struct TableDataInfo {
+    pub current_page: usize,
+    pub page_size: usize,
+    pub total_count: usize,
+    pub duration: u128,
+    pub current_sql: String,
+}
+
+impl Default for TableDataInfo {
+    fn default() -> Self {
+        Self {
+            current_page: 1,
+            page_size: 500,
+            total_count: 0,
+            duration: 0,
+            current_sql: String::new(),
+        }
+    }
+}
 
 pub struct TableData {
     database_name: String,
@@ -25,17 +47,8 @@ pub struct TableData {
     data_grid: Entity<DataGrid>,
     status_msg: Entity<String>,
     focus_handle: FocusHandle,
-    /// Current page (1-based)
-    current_page: Entity<usize>,
-    /// Page size
-    page_size: Entity<usize>,
-    /// Total row count
-    total_count: Entity<usize>,
-
-    /// Query duration in milliseconds
-    query_duration: Entity<u128>,
-    /// Current query SQL
-    current_sql: Entity<String>,
+    /// Table data info - 统一的状态管理
+    table_data_info: Entity<TableDataInfo>,
     /// Filter editor with WHERE and ORDER BY inputs
     filter_editor: Entity<TableFilterEditor>,
 
@@ -73,13 +86,8 @@ impl TableData {
         let filter_editor = cx.new(|cx| {
             TableFilterEditor::new(window, cx)
         });
-
-        let current_page = cx.new(|_| 1usize);
-        let page_size = cx.new(|_| 500usize);
-        let total_count = cx.new(|_| 0usize);
-
-        let query_duration = cx.new(|_| 0u128);
-        let current_sql = cx.new(|_| String::new());
+        
+        let table_data_info = cx.new(|_| TableDataInfo::default());
 
         let mut result = Self {
             database_name: database_name.clone(),
@@ -91,11 +99,7 @@ impl TableData {
             focus_handle,
             filter_editor,
             _filter_sub: None,
-            current_page,
-            page_size,
-            total_count,
-            query_duration,
-            current_sql,
+            table_data_info,
         };
 
         result.bind_query_apply(window, cx);
@@ -131,140 +135,138 @@ impl TableData {
         let table_name = self.table_name.clone();
         let database_name = self.database_name.clone();
         let data_grid = self.data_grid.clone();
-        let page_size = *self.page_size.read(cx);
+        let table_data_info = self.table_data_info.clone();
         let where_clause = self.filter_editor.read(cx).get_where_clause(cx);
         let order_by_clause = self.filter_editor.read(cx).get_order_by_clause(cx);
         let filter_editor = self.filter_editor.clone();
-
-        let this = self.clone();
+        
+        // 在进入异步块前获取 page_size
+        let page_size = self.table_data_info.read(cx).page_size;
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let start_time = std::time::Instant::now();
+            let table_name_for_schema = table_name.clone();
+            
+            let result = Tokio::spawn_result(cx, async move {
+                let (plugin, conn_arc) = global_state.get_plugin_and_connection(&connection_id).await?;
+                let conn = conn_arc.read().await;
 
-            let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
-                Ok(result) => result,
-                Err(e) => {
+                // Build request with raw where/order by clauses
+                let request = if page_size == 0 {
+                    TableDataRequest::new(&database_name, &table_name)
+                        .with_where_clause(where_clause.clone())
+                        .with_order_by_clause(order_by_clause.clone())
+                } else {
+                    TableDataRequest::new(&database_name, &table_name)
+                        .with_page(page, page_size)
+                        .with_where_clause(where_clause.clone())
+                        .with_order_by_clause(order_by_clause.clone())
+                };
+                plugin.query_table_data(&**conn, &request).await
+            }).ok();
+            
+            
+            match result {
+                None => {
                     cx.update(|cx| {
-                        notification(cx,format!("Failed to get connection: {}", e));
-                    }).ok();
-                    return;
-                }
-            };
-
-
-
-            let conn = conn_arc.read().await;
-
-            // Build request with raw where/order by clauses
-            let request = if page_size == 0 {
-                TableDataRequest::new(&database_name, &table_name)
-                    .with_where_clause(where_clause.clone())
-                    .with_order_by_clause(order_by_clause.clone())
-            } else {
-                TableDataRequest::new(&database_name, &table_name)
-                    .with_page(page, page_size)
-                    .with_where_clause(where_clause.clone())
-                    .with_order_by_clause(order_by_clause.clone())
-            };
-            match plugin.query_table_data(&**conn, &request).await {
-                Ok(response) => {
-                    let columns: Vec<Column> = response
-                        .columns
-                        .iter()
-                        .map(|col| Column::new(col.name.clone(), col.name.clone()))
-                        .collect();
-
-                    let rows: Vec<Vec<String>> = response
-                        .rows
-                        .iter()
-                        .map(|row| {
-                            row.iter()
-                                .map(|cell| cell.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "NULL".to_string()))
-                                .collect()
-                        })
-                        .collect();
-
-                    let total = response.total_count;
-                    let pk_columns = response.primary_key_indices;
-                    let duration = start_time.elapsed().as_millis();
-                    let sql_str = response.executed_sql;
-
-                    // Build column schema for completion providers
-                    let column_schemas: Vec<ColumnSchema> = response
-                        .columns
-                        .iter()
-                        .map(|col| ColumnSchema {
-                            name: col.name.clone(),
-                            data_type: col.db_type.clone(),
-                            is_nullable: col.nullable,
-                        })
-                        .collect();
-
-                    cx.update(|cx| {
-                        // Update filter editor schema
-                        filter_editor.update(cx, |editor, cx| {
-                            editor.set_schema(TableSchema {
-                                table_name: table_name.clone(),
-                                columns: column_schemas,
-                            }, cx);
-                        });
-
-                        // Debug: 打印数据信息
-                        eprintln!("Loading data: {} columns, {} rows", columns.len(), rows.len());
-                        if !columns.is_empty() {
-                            eprintln!("First column: {}", columns[0].name);
-                        }
-                        if !rows.is_empty() && !rows[0].is_empty() {
-                            eprintln!("First row first cell: {}", rows[0][0]);
-                        }
-
-                        // Update DataGrid
-                        data_grid.update(cx, |grid, cx| {
-                            grid.update_data(columns, rows, pk_columns, cx)
-                        });
-                        this.current_page.update(cx, |p, cx| {
-                            *p = page;
-                            cx.notify();
-                        });
-                        this.total_count.update(cx, |t, cx| {
-                            *t = total;
-                            cx.notify();
-                        });
-                        this.query_duration.update(cx, |d, cx| {
-                            *d = duration;
-                            cx.notify();
-                        });
-                        this.current_sql.update(cx, |s, cx| {
-                            *s = sql_str;
-                            cx.notify();
-                        });
+                        notification(cx, "Failed to get connection".to_string());
                     }).ok();
                 }
-                Err(e) => {
-                    cx.update(|cx| {
-                        notification(cx, format!("Query failed: {}", e))
-                    }).ok();
+                Some(task) => {
+                    match task.await {
+                        Ok(response) => {
+                            let columns: Vec<Column> = response
+                                .columns
+                                .iter()
+                                .map(|col| Column::new(col.name.clone(), col.name.clone()))
+                                .collect();
+
+                            let rows: Vec<Vec<String>> = response
+                                .rows
+                                .iter()
+                                .map(|row| {
+                                    row.iter()
+                                        .map(|cell| cell.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "NULL".to_string()))
+                                        .collect()
+                                })
+                                .collect();
+
+                            let pk_columns = response.primary_key_indices;
+                            
+                            // 更新统一的状态信息
+                            cx.update(|cx| {
+                                table_data_info.update(cx, |info, cx| {
+                                    info.total_count = response.total_count;
+                                    info.current_sql = response.executed_sql;
+                                    info.duration = response.duration;
+                                    info.current_page = response.page;
+                                    cx.notify();
+                                });
+                            }).ok();
+                            
+                            // Build column schema for completion providers
+                            let column_schemas: Vec<ColumnSchema> = response
+                                .columns
+                                .iter()
+                                .map(|col| ColumnSchema {
+                                    name: col.name.clone(),
+                                    data_type: col.db_type.clone(),
+                                    is_nullable: col.nullable,
+                                })
+                                .collect();
+
+                            cx.update(|cx| {
+                                // Update filter editor schema
+                                filter_editor.update(cx, |editor, cx| {
+                                    editor.set_schema(TableSchema {
+                                        table_name: table_name_for_schema.clone(),
+                                        columns: column_schemas,
+                                    }, cx);
+                                });
+
+                                // Debug: 打印数据信息
+                                eprintln!("Loading data: {} columns, {} rows", columns.len(), rows.len());
+                                if !columns.is_empty() {
+                                    eprintln!("First column: {}", columns[0].name);
+                                }
+                                if !rows.is_empty() && !rows[0].is_empty() {
+                                    eprintln!("First row first cell: {}", rows[0][0]);
+                                }
+
+                                // Update DataGrid
+                                data_grid.update(cx, |grid, cx| {
+                                    grid.update_data(columns, rows, pk_columns, cx)
+                                });
+                            }).ok();
+                        }
+                        Err(e) => {
+                            cx.update(|cx| {
+                                notification(cx, format!("Query failed: {}", e))
+                            }).ok();
+                        }
+                    }
                 }
             }
         }).detach();
     }
 
     fn handle_refresh(&self, cx: &mut App) {
-        let page = *self.current_page.read(cx);
+        let page = self.table_data_info.read(cx).current_page;
         self.load_data_with_clauses(page, cx);
     }
 
     fn handle_prev_page(&self, cx: &mut App) {
-        let page = *self.current_page.read(cx);
+        let page = self.table_data_info.read(cx).current_page;
         if page > 1 {
             self.load_data_with_clauses(page - 1, cx);
         }
     }
 
     fn handle_next_page(&self, cx: &mut App) {
-        let page = *self.current_page.read(cx);
-        let total = *self.total_count.read(cx);
-        let page_size = *self.page_size.read(cx);
+        let info = self.table_data_info.read(cx);
+        let page = info.current_page;
+        let total = info.total_count;
+        let page_size = info.page_size;
+        
         if page_size == 0 {
             return;
         }
@@ -287,8 +289,8 @@ impl TableData {
         self.handle_page_size_change(0, cx)
     }
     fn handle_page_size_change(&self, new_size: usize, cx: &mut App) {
-        self.page_size.update(cx, |size, cx| {
-            *size = new_size;
+        self.table_data_info.update(cx, |info, cx| {
+            info.page_size = new_size;
             cx.notify();
         });
         self.load_data_with_clauses(1, cx);
@@ -307,6 +309,8 @@ impl Render for TableData {
         let this_refresh = self.clone();
         let this_prev = self.clone();
         let this_next = self.clone();
+        let table_data_info = self.table_data_info.read(cx);
+        let data_grid = self.data_grid.read(cx);
 
         v_flex()
             .on_action(cx.listener(Self::handle_page_change_500))
@@ -339,7 +343,7 @@ impl Render for TableData {
                     .flex_1()
                     .w_full()
                     .overflow_hidden()
-                    .child(self.data_grid.read(cx).render_table_area(window, cx))
+                    .child(data_grid.render_table_area(window, cx))
             )
             .child(
                 h_flex()
@@ -356,20 +360,20 @@ impl Render for TableData {
                             .text_sm()
                             .text_color(cx.theme().foreground)
                             .child({
-                                let filtered_count = self.data_grid.read(cx).table.read(cx).delegate().filtered_row_count();
-                                let total_rows = self.data_grid.read(cx).table.read(cx).delegate().rows.len();
+                                let filtered_count = data_grid.table.read(cx).delegate().filtered_row_count();
+                                let total_rows = data_grid.table.read(cx).delegate().rows.len();
                                 if filtered_count < total_rows {
                                     format!(
                                         "显示 {} 条（共 {} 条，总计 {} 条）",
                                         filtered_count,
                                         total_rows,
-                                        self.total_count.read(cx)
+                                        table_data_info.total_count
                                     )
                                 } else {
                                     format!(
                                         "第 {} 页（共 {} 条）",
-                                        self.current_page.read(cx),
-                                        self.total_count.read(cx)
+                                        table_data_info.current_page,
+                                        table_data_info.total_count
                                     )
                                 }
                             }),
@@ -379,7 +383,7 @@ impl Render for TableData {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("查询耗时 {}ms", self.query_duration.read(cx))),
+                            .child(format!("查询耗时 {}ms", table_data_info.duration)),
                     )
                     // SQL显示
                     .child(
@@ -389,7 +393,7 @@ impl Render for TableData {
                             .flex_1()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .child(format!("SQL: {}", self.current_sql.read(cx))),
+                            .child(table_data_info.current_sql.clone()),
                     )
                     // 分页控件
                     .child(
@@ -405,7 +409,7 @@ impl Render for TableData {
                                     }),
                             )
                             .child({
-                                let current_page_size = *self.page_size.read(cx);
+                                let current_page_size = self.table_data_info.read(cx).page_size;
                                 let label = match current_page_size {
                                     0 => "全部".to_string(),
                                     n => format!("{}", n),
@@ -446,12 +450,7 @@ impl Clone for TableData {
             focus_handle: self.focus_handle.clone(),
             filter_editor: self.filter_editor.clone(),
             _filter_sub: None,
-            current_sql: self.current_sql.clone(),
-            current_page: self.current_page.clone(),
-            page_size: self.page_size.clone(),
-            total_count: self.total_count.clone(),
-            query_duration: self.query_duration.clone(),
-
+            table_data_info: self.table_data_info.clone(),
         }
     }
 }

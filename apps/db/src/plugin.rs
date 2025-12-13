@@ -531,6 +531,7 @@ pub trait DatabasePlugin: Send + Sync {
         connection: &dyn DbConnection,
         request: &TableDataRequest,
     ) -> Result<TableDataResponse> {
+        let start_time = std::time::Instant::now();
         let quote = self.identifier_quote();
 
         // Get column metadata
@@ -661,6 +662,8 @@ pub trait DatabasePlugin: Send + Sync {
             _ => Vec::new(),
         };
 
+        let duration = start_time.elapsed().as_millis();
+
         Ok(TableDataResponse {
             columns,
             rows,
@@ -669,6 +672,7 @@ pub trait DatabasePlugin: Send + Sync {
             page_size: request.page_size,
             primary_key_indices,
             executed_sql: data_sql,
+            duration,
         })
     }
 
