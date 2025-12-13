@@ -1,5 +1,5 @@
 use one_core::gpui_tokio::Tokio;
-use gpui::{div, px, App, AppContext, Context, Entity, ParentElement, Styled, Subscription, Window};
+use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::warn;
 use uuid::Uuid;
 use db::{DbNode, DbNodeType, GlobalDbState};
@@ -617,13 +617,13 @@ impl DatabaseEventHandler {
                     let conn_name_log = conn_name.clone();
                     let tree = tree.clone();
 
-                    cx.spawn(async move |cx| {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
                         // 执行连接关闭逻辑
-                        let result = db::spawn_result(async move {
+                        let result = Tokio::spawn_result(cx,async move {
                             // 这里可以添加实际的连接清理代码
                             // 比如关闭数据库连接池中的连接
                             Ok(())
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => {
@@ -703,11 +703,42 @@ impl DatabaseEventHandler {
     }
 
     /// 处理新建数据库事件
-    fn handle_create_database(node: DbNode,
-                              global_state: GlobalDbState,
-                              window: &mut Window,
-                              cx: &mut App){
+    fn handle_create_database(
+        node: DbNode,
+        global_state: GlobalDbState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use crate::database_view_plugin::DatabaseViewPluginRegistry;
+        use gpui_component::WindowExt;
 
+        let connection_id = node.connection_id.clone();
+
+        let config = Tokio::block_on(cx, async move {
+            global_state.get_config(&connection_id).await
+        });
+
+        if let Some(config) = config {
+            let db_type = config.database_type;
+            let registry = DatabaseViewPluginRegistry::new();
+            
+            if let Some(plugin) = registry.get(&db_type) {
+                let form = plugin.create_database_form(window, cx);
+                
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    dialog
+                        .title("创建数据库")
+                        .child(form.clone())
+                        .width(px(600.0))
+                        .on_ok(move |_, _window, _cx| {
+                           true 
+                        })
+                        .on_cancel(|_, _window, _cx| {
+                             true
+                        })
+                });
+            }
+        }
     }
 
     /// 处理编辑数据库事件
@@ -717,10 +748,34 @@ impl DatabaseEventHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
+        use crate::database_view_plugin::DatabaseViewPluginRegistry;
+        use gpui_component::WindowExt;
+
         let connection_id = node.connection_id.clone();
         let database_name = node.name.clone();
 
+        let config = Tokio::block_on(cx, async move {
+            global_state.get_config(&connection_id).await
+        });
 
+        if let Some(config) = config {
+            let db_type = config.database_type;
+            let registry = DatabaseViewPluginRegistry::new();
+            
+            if let Some(plugin) = registry.get(&db_type) {
+                let form = plugin.create_database_form(window, cx);
+                
+                // TODO: 预填充现有数据库的配置信息
+                
+                window.open_dialog(cx, move |dialog, _window, _cx| {
+                    dialog
+                        .title(format!("编辑数据库: {}", database_name))
+                        .child(form.clone())
+                        .width(px(600.0))
+                        .on_cancel(|_, _window, _cx| true)
+                });
+            }
+        }
     }
 
 
@@ -760,13 +815,13 @@ impl DatabaseEventHandler {
                     let tree = tree.clone();
                     let db_node_id = format!("{}:{}", conn_id, db_name);
 
-                    cx.spawn(async move |cx| {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
                         // 执行数据库关闭逻辑
-                        let result = db::spawn_result(async move {
+                        let result = Tokio::spawn_result(cx, async move {
                             // 这里可以添加实际的数据库关闭逻辑
                             // 比如执行 USE mysql 切换到系统数据库
                             Ok(())
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => {
@@ -824,12 +879,12 @@ impl DatabaseEventHandler {
                     let tree = tree.clone();
                     let conn_id_for_refresh = conn_id.clone();
 
-                    cx.spawn(async move |cx| {
-                        let result = db::spawn_result(async move {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = Tokio::spawn_result(cx,async move {
                             let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
                             let conn = conn_arc.read().await;
                             plugin.drop_database(&**conn, &db_name).await
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => {
@@ -887,13 +942,13 @@ impl DatabaseEventHandler {
                     let tree = tree.clone();
                     let db_node_id = format!("{}:{}", conn_id, meta.as_ref().and_then(|m| m.get("database")).unwrap_or(&String::new()));
 
-                    cx.spawn(async move |cx| {
-                        let result = db::spawn_result(async move {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = Tokio::spawn_result(cx, async move {
                             let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
                             let conn = conn_arc.read().await;
                             let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
                             plugin.drop_table(&**conn, database, &tbl_name).await
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => {
@@ -990,16 +1045,16 @@ impl DatabaseEventHandler {
                     let meta = meta.clone();
                     let state = state.clone();
 
-                    cx.spawn(async move |_cx| {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
                         let old_name_log = old_name.clone();
                         let new_name_log = new_name.clone();
 
-                        let result = db::spawn_result(async move {
+                        let result = Tokio::spawn_result(cx,async move {
                             let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
                             let conn = conn_arc.read().await;
                             let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
                             plugin.rename_table(&**conn, database, &old_name, &new_name).await
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => eprintln!("Table renamed: {} -> {}", old_name_log, new_name_log),
@@ -1046,13 +1101,13 @@ impl DatabaseEventHandler {
                     let state = state.clone();
                     let tbl_name_log = tbl_name.clone();
 
-                    cx.spawn(async move |_cx| {
-                        let result = db::spawn_result(async move {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = Tokio::spawn_result(cx, async move {
                             let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
                             let conn = conn_arc.read().await;
                             let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
                             plugin.truncate_table(&**conn, database, &tbl_name).await
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => {
@@ -1105,13 +1160,13 @@ impl DatabaseEventHandler {
                     let tree = tree.clone();
                     let db_node_id = format!("{}:{}", conn_id, meta.as_ref().and_then(|m| m.get("database")).unwrap_or(&String::new()));
 
-                    cx.spawn(async move |cx| {
-                        let result = db::spawn_result(async move {
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = Tokio::spawn_result(cx, async move {
                             let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
                             let conn = conn_arc.read().await;
                             let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
                             plugin.drop_view(&**conn, database, &v_name).await
-                        }).await;
+                        }).unwrap().await;
 
                         match result {
                             Ok(_) => {

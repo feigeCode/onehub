@@ -1,4 +1,4 @@
-use gpui::{div, App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, PathPromptOptions, Render, Styled, Window};
+use gpui::{div, App, AppContext, AsyncApp, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, PathPromptOptions, Render, Styled, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
@@ -8,6 +8,7 @@ use gpui_component::{
 };
 
 use db::GlobalDbState;
+use one_core::gpui_tokio::Tokio;
 
 pub struct SqlRunView {
     connection_id: String,
@@ -105,7 +106,7 @@ impl SqlRunView {
             cx.notify();
         });
 
-        cx.spawn(async move |cx| {
+        cx.spawn(async move |cx: &mut AsyncApp| {
             let files: Vec<String> = file_path_str.split(';').map(|s| s.to_string()).collect();
             let mut success_count = 0;
             let mut error_count = 0;
@@ -145,7 +146,7 @@ impl SqlRunView {
                 let db = database.clone();
                 let global = global_state.clone();
 
-                let result = db::spawn_result(async move {
+                let result = Tokio::spawn_result(cx, async move {
                     let (plugin, conn_arc) = global.get_plugin_and_connection(&conn_id).await?;
                     let conn = conn_arc.read().await;
 
@@ -184,7 +185,7 @@ impl SqlRunView {
                     }
 
                     Ok((stmt_success, stmt_error, err_msg))
-                }).await;
+                }).unwrap().await;
 
                 match result {
                     Ok((s, e, err)) => {

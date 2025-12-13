@@ -1,15 +1,12 @@
 use std::any::Any;
 
-use gpui::{
-    div, AnyElement, App, AppContext, Context, Entity, Focusable, FocusHandle, IntoElement,
-    ParentElement, SharedString, Styled, Window,
-};
+use gpui::{div, AnyElement, App, AppContext, Context, Entity, Focusable, FocusHandle, IntoElement, ParentElement, SharedString, Styled, Window, AsyncApp};
 use db::{DbNode, DbNodeType, ObjectView};
 use gpui_component::{
     table::{Table, TableState},
     v_flex, ActiveTheme, Size,
 };
-
+use one_core::gpui_tokio::Tokio;
 use crate::{connection_list_panel::ConnectionListPanel, results_delegate::ResultsDelegate};
 use one_core::storage::{DbConnectionConfig, StoredConnection};
 use one_core::tab_container::{TabContent, TabContentType};
@@ -74,60 +71,59 @@ impl DatabaseObjectsPanel {
         let loaded_data = self.loaded_data.clone();
         let table_state = self.table_state.clone();
 
-        cx.spawn(async move |cx| {
+        cx.spawn(async move |cx: &mut AsyncApp| {
             let global_state = cx.update(|cx| cx.global::<db::GlobalDbState>().clone()).ok()?;
 
-            let plugin = global_state.db_manager.get_plugin(&config.database_type).ok()?;
-
-            let conn_arc = global_state
-                .connection_pool
-                .get_connection(config, &global_state.db_manager)
-                .await
-                .ok()?;
-
-            let conn = conn_arc.read().await;
-
-            let result = match node.node_type {
-                DbNodeType::Connection => {
-                    plugin.list_databases_view(&**conn).await.ok()
-                },
-                DbNodeType::Database | DbNodeType::TablesFolder => {
-                    let mut database = &node.name;
-                    if node.metadata.is_some() {
-                        database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+            let result = Tokio::block_on(cx, async move {
+                let plugin = global_state.db_manager.get_plugin(&config.database_type).ok()?;
+                let conn_arc = global_state
+                    .connection_pool
+                    .get_connection(config, &global_state.db_manager)
+                    .await
+                    .ok()?;
+                let conn = conn_arc.read().await;
+                match node.node_type {
+                    DbNodeType::Connection => {
+                        plugin.list_databases_view(&**conn).await.ok()
+                    },
+                    DbNodeType::Database | DbNodeType::TablesFolder => {
+                        let mut database = &node.name;
+                        if node.metadata.is_some() {
+                            database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+                        }
+                        plugin.list_tables_view(&**conn, database).await.ok()
                     }
-                    plugin.list_tables_view(&**conn, database).await.ok()
-                }
-                DbNodeType::Table | DbNodeType::ColumnsFolder => {
-                    let database = node.metadata.as_ref()?.get("database")?;
-                    let mut table = &node.name;
-                    if node.metadata.is_some() {
-                        table = node.metadata.as_ref()?.get("table").or(Some(&node.name))?;
+                    DbNodeType::Table | DbNodeType::ColumnsFolder => {
+                        let database = node.metadata.as_ref()?.get("database")?;
+                        let mut table = &node.name;
+                        if node.metadata.is_some() {
+                            table = node.metadata.as_ref()?.get("table").or(Some(&node.name))?;
+                        }
+                        plugin.list_columns_view(&**conn, database, table).await.ok()
                     }
-                    plugin.list_columns_view(&**conn, database, table).await.ok()
+                    DbNodeType::ViewsFolder => {
+                        let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+                        plugin.list_views_view(&**conn, database).await.ok()
+                    }
+                    DbNodeType::FunctionsFolder => {
+                        let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+                        plugin.list_functions_view(&**conn, database).await.ok()
+                    }
+                    DbNodeType::ProceduresFolder => {
+                        let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+                        plugin.list_procedures_view(&**conn, database).await.ok()
+                    }
+                    DbNodeType::TriggersFolder => {
+                        let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+                        plugin.list_triggers_view(&**conn, database).await.ok()
+                    }
+                    DbNodeType::SequencesFolder => {
+                        let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
+                        plugin.list_sequences_view(&**conn, database).await.ok()
+                    }
+                    _ => None,
                 }
-                DbNodeType::ViewsFolder => {
-                    let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
-                    plugin.list_views_view(&**conn, database).await.ok()
-                }
-                DbNodeType::FunctionsFolder => {
-                    let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
-                    plugin.list_functions_view(&**conn, database).await.ok()
-                }
-                DbNodeType::ProceduresFolder => {
-                    let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
-                    plugin.list_procedures_view(&**conn, database).await.ok()
-                }
-                DbNodeType::TriggersFolder => {
-                    let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
-                    plugin.list_triggers_view(&**conn, database).await.ok()
-                }
-                DbNodeType::SequencesFolder => {
-                    let database = node.metadata.as_ref()?.get("database").or(Some(&node.name))?;
-                    plugin.list_sequences_view(&**conn, database).await.ok()
-                }
-                _ => None,
-            };
+            }).unwrap();
 
             if let Some(view) = result {
                 let columns = view.columns.clone();

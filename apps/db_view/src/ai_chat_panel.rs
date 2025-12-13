@@ -1029,12 +1029,7 @@ impl AiChatPanel {
             .w_full()
             .max_w_4_5()
             .child(
-                TextView::markdown(
-                    view_id,
-                    msg.content.clone(),
-                    window,
-                    cx,
-                )
+                TextView::markdown(view_id, msg.content.clone())
                     .code_block_actions(|code_block, _window, _cx| {
                         let code = code_block.code();
                         let lang = code_block.lang();

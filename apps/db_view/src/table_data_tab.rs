@@ -166,7 +166,6 @@ impl TableData {
                     .with_where_clause(where_clause.clone())
                     .with_order_by_clause(order_by_clause.clone())
             };
-
             match plugin.query_table_data(&**conn, &request).await {
                 Ok(response) => {
                     let columns: Vec<Column> = response
