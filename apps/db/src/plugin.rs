@@ -964,26 +964,6 @@ pub trait DatabasePlugin: Send + Sync {
         Ok(())
     }
 
-    // === Database Form Operations ===
-    /// Get form configuration for creating a new database
-    fn get_create_database_form_config(&self) -> DatabaseFormConfig {
-        DatabaseFormConfig {
-            title: "创建数据库".to_string(),
-            fields: vec![
-                DatabaseFormField::new("name", "数据库名称", DatabaseFormFieldType::Text)
-                    .required()
-                    .placeholder("输入数据库名称"),
-            ],
-        }
-    }
-
-    /// Get form configuration for editing an existing database
-    fn get_edit_database_form_config(&self, _database_name: &str) -> DatabaseFormConfig {
-        DatabaseFormConfig {
-            title: "编辑数据库".to_string(),
-            fields: vec![],
-        }
-    }
 
     /// Create a new database
     async fn create_database(&self, connection: &dyn DbConnection, request: &DatabaseOperationRequest) -> Result<()> {

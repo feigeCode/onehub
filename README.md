@@ -1,150 +1,58 @@
-# GPUI Component
+# OneHub
 
-[![Build Status](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml/badge.svg)](https://github.com/longbridge/gpui-component/actions/workflows/ci.yml) [![Docs](https://docs.rs/gpui-component/badge.svg)](https://docs.rs/gpui-component/) [![Crates.io](https://img.shields.io/crates/v/gpui-component.svg)](https://crates.io/crates/gpui-component)
-
-UI components for building fantastic desktop applications using [GPUI](https://gpui.rs).
+OneHub 是一款基于 Rust + GPUI 构建的现代化多协议连接工具。它支持数据库连接（MySQL / PostgreSQL / SQLite 等）、SSH 连接、Redis、MongoDB 以及 LLM 服务（OpenAI, Claude, Ollama, Qwen, DeepSeek 等）等多种协议，旨在为开发者提供统一、快速、稳定的连接与管理体验。
 
 ## Features
 
-- **Richness**: 60+ cross-platform desktop UI components.
-- **Native**: Inspired by macOS and Windows controls, combined with shadcn/ui design for a modern experience.
-- **Ease of Use**: Stateless `RenderOnce` components, simple and user-friendly.
-- **Customizable**: Built-in `Theme` and `ThemeColor`, supporting multi-theme and variable-based configurations.
-- **Versatile**: Supports sizes like `xs`, `sm`, `md`, and `lg`.
-- **Flexible Layout**: Dock layout for panel arrangements, resizing, and freeform (Tiles) layouts.
-- **High Performance**: Virtualized Table and List components for smooth large-data rendering.
-- **Content Rendering**: Native support for Markdown and simple HTML.
-- **Charting**: Built-in charts for visualizing your data.
-- **Editor**: High performance code editor (support up to 200K lines) with LSP (diagnostics, completion, hover, etc).
-- **Syntax Highlighting**: Syntax highlighting for editor and markdown components using Tree Sitter.
+- **多协议支持**: 支持数据库连接（MySQL / PostgreSQL / SQLite 等）、SSH 连接、Redis、MongoDB 等多种协议。
+- **LLM 集成**: 内置对多种大语言模型服务的支持（OpenAI, Claude, Ollama, Qwen, DeepSeek 等）。
+- **现代化界面**: 基于 GPUI 构建，提供流畅的用户体验。
+- **高性能**: 利用 Rust 的性能优势，确保稳定高效的连接管理。
+- **统一管理**: 提供统一的界面来管理各种类型的连接和服务。
+- **跨平台**: 支持在多个操作系统上运行。
+- **可扩展架构**: 模块化设计，易于扩展新的连接类型和服务。
 
-## Showcase
+## Development Todo
 
-Here is the first application: [Longbridge Pro](https://longbridge.com/desktop), built using GPUI Component.
+Here's a checklist of features and enhancements planned for OneHub:
 
-<img width="1763" alt="Image" src="https://github.com/user-attachments/assets/e1ecb9c3-2dd3-431e-bd97-5a819c30e551" />
+- [x] 基础应用框架 (Application Framework)
+- [x] 统一标签页管理 (Tab Container)
+- [x] 主页界面 (Home Interface)
+- [x] 设置面板 (Settings Panel)
+- [ ] 数据库连接支持 (MySQL, PostgreSQL, SQLite)
+- [ ] SSH 连接功能
+- [ ] Redis 连接管理
+- [ ] MongoDB 连接支持
+- [ ] LLM 服务连接 (OpenAI, Claude, Ollama, Qwen, DeepSeek)
+- [ ] 连接配置保存与加载
+- [ ] 连接历史记录管理
+- [ ] 安全认证机制
+- [ ] 用户自定义主题
+- [ ] 详细的文档和教程
 
-## Usage
+## Architecture
 
-```toml
-gpui = "0.2.2"
-gpui-component = "0.4.0"
-```
+OneHub 采用模块化架构设计：
 
-### Basic Example
+- **main**: 主应用程序入口点，负责初始化应用和创建主窗口
+- **crates/core**: 核心业务逻辑和数据结构
+- **crates/ui**: UI 组件和界面相关功能
+- **apps/db**: 数据库连接相关功能
+- **crates/provider-***: 不同 LLM 服务提供商的实现
+- **examples**: 各种功能示例和演示
 
-```rs
-use gpui::*;
-use gpui_component::{button::*, *};
+## Building
 
-pub struct HelloWorld;
-impl Render for HelloWorld {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .v_flex()
-            .gap_2()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .child("Hello, World!")
-            .child(
-                Button::new("ok")
-                    .primary()
-                    .label("Let's Go!")
-                    .on_click(|_, _, _| println!("Clicked!")),
-            )
-    }
-}
-
-fn main() {
-    let app = Application::new();
-
-    app.run(move |cx| {
-        // This must be called before using any GPUI Component features.
-        gpui_component::init(cx);
-
-        cx.spawn(async move |cx| {
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                let view = cx.new(|_| HelloWorld);
-                // This first level on the window, should be a Root.
-                cx.new(|cx| Root::new(view, window, cx))
-            })?;
-
-            Ok::<_, anyhow::Error>(())
-        })
-        .detach();
-    });
-}
-```
-
-### Icons
-
-GPUI Component has an `Icon` element, but it does not include SVG files by default.
-
-The example uses [Lucide](https://lucide.dev) icons, but you can use any icons you like. Just name the SVG files as defined in [IconName](https://github.com/longbridge/gpui-component/blob/main/crates/ui/src/icon.rs#L86). You can add any icons you need to your project.
-
-## Development
-
-We have a gallery of applications built with GPUI Component.
+要构建 OneHub，请确保您已安装最新版本的 Rust：
 
 ```bash
-cargo run
+# 克隆仓库后，使用 cargo 构建
+cargo build --release
 ```
-
-More examples can be found in the `examples` directory. You can run them with `cargo run --example <example_name>`.
-
-Check out [CONTRIBUTING.md](CONTRIBUTING.md) for more details.
-
-## Compare to others
-
-| Features              | GPUI Component                 | [Iced]             | [egui]                | [Qt 6]                                            |
-| --------------------- | ------------------------------ | ------------------ | --------------------- | ------------------------------------------------- |
-| Language              | Rust                           | Rust               | Rust                  | C++/QML                                           |
-| Core Render           | GPUI                           | wgpu               | wgpu                  | QT                                                |
-| License               | Apache 2.0                     | MIT                | MIT/Apache 2.0        | [Commercial/LGPL](https://www.qt.io/qt-licensing) |
-| Min Binary Size [^1]  | 12MB                           | 11MB               | 5M                    | 20MB [^2]                                         |
-| Cross-Platform        | Yes                            | Yes                | Yes                   | Yes                                               |
-| Documentation         | Simple                         | Simple             | Simple                | Good                                              |
-| Web                   | No                             | Yes                | Yes                   | Yes                                               |
-| UI Style              | Modern                         | Basic              | Basic                 | Basic                                             |
-| CJK Support           | Yes                            | Yes                | Bad                   | Yes                                               |
-| Chart                 | Yes                            | No                 | No                    | Yes                                               |
-| Table (Large dataset) | Yes<br>(Virtual Rows, Columns) | No                 | Yes<br>(Virtual Rows) | Yes<br>(Virtual Rows, Columns)                    |
-| Table Column Resize   | Yes                            | No                 | Yes                   | Yes                                               |
-| Text base             | Rope                           | [COSMIC Text] [^3] | trait TextBuffer [^4] | [QTextDocument]                                   |
-| CodeEditor            | Simple                         | Simple             | Simple                | Basic API                                         |
-| Dock Layout           | Yes                            | Yes                | Yes                   | Yes                                               |
-| Syntax Highlight      | [Tree Sitter]                  | [Syntect]          | [Syntect]             | [QSyntaxHighlighter]                              |
-| Markdown Rendering    | Yes                            | Yes                | Basic                 | No                                                |
-| Markdown mix HTML     | Yes                            | No                 | No                    | No                                                |
-| HTML Rendering        | Basic                          | No                 | No                    | Basic                                             |
-| Text Selection        | TextView                       | No                 | Any Label             | Yes                                               |
-| Custom Theme          | Yes                            | Yes                | Yes                   | Yes                                               |
-| Built Themes          | Yes                            | No                 | No                    | No                                                |
-| I18n                  | Yes                            | Yes                | Yes                   | Yes                                               |
-
-> Please submit an issue or PR if any mistakes or outdated are found.
-
-[Iced]: https://github.com/iced-rs/iced
-[egui]: https://github.com/emilk/egui
-[QT 6]: https://www.qt.io/product/qt6
-[Tree Sitter]: https://tree-sitter.github.io/tree-sitter/
-[Syntect]: https://github.com/trishume/syntect
-[QSyntaxHighlighter]: https://doc.qt.io/qt-6/qsyntaxhighlighter.html
-[QTextDocument]: https://doc.qt.io/qt-6/qtextdocument.html
-[COSMIC Text]: https://github.com/pop-os/cosmic-text
-
-[^1]: Release builds by use simple hello world example.
-
-[^2]: [Reducing Binary Size of Qt Applications](https://www.qt.io/blog/reducing-binary-size-of-qt-applications-part-3-more-platforms)
-
-[^3]: Iced Editor: https://github.com/iced-rs/iced/blob/db5a1f6353b9f8520c4f9633d1cdc90242c2afe1/graphics/src/text/editor.rs#L65-L68
-
-[^4]: egui TextBuffer: https://github.com/emilk/egui/blob/0a81372cfd3a4deda640acdecbbaf24bf78bb6a2/crates/egui/src/widgets/text_edit/text_buffer.rs#L20
 
 ## License
 
-Apache-2.0
+The primary license used by this software is the Apache License 2.0, supplemented by the OneHub License.
 
-- UI design based on [shadcn/ui](https://ui.shadcn.com).
-- Icons from [Lucide](https://lucide.dev).
+Apache-2.0

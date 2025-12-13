@@ -788,59 +788,6 @@ impl DatabasePlugin for MySqlPlugin {
         ]
     }
     
-    // === Database Form Operations ===
-    fn get_create_database_form_config(&self) -> crate::plugin::DatabaseFormConfig {
-        crate::plugin::DatabaseFormConfig {
-            title: "创建数据库 (MySQL)".to_string(),
-            fields: vec![
-                crate::plugin::DatabaseFormField::new("name", "数据库名称", crate::plugin::DatabaseFormFieldType::Text)
-                    .required()
-                    .placeholder("输入数据库名称"),
-                crate::plugin::DatabaseFormField::new("charset", "字符集", crate::plugin::DatabaseFormFieldType::Select(vec![
-                    "utf8mb4".to_string(),
-                    "utf8mb3".to_string(),
-                    "utf8".to_string(),
-                    "latin1".to_string(),
-                    "gbk".to_string(),
-                ]))
-                    .default_value("utf8mb4"),
-                crate::plugin::DatabaseFormField::new("collation", "排序规则", crate::plugin::DatabaseFormFieldType::Select(vec![
-                    "utf8mb4_general_ci".to_string(),
-                    "utf8mb4_unicode_ci".to_string(),
-                    "utf8mb4_bin".to_string(),
-                    "utf8mb3_general_ci".to_string(),
-                    "utf8mb3_unicode_ci".to_string(),
-                    "latin1_swedish_ci".to_string(),
-                    "gbk_chinese_ci".to_string(),
-                ]))
-                    .default_value("utf8mb4_general_ci"),
-            ],
-        }
-    }
-
-    fn get_edit_database_form_config(&self, _database_name: &str) -> crate::plugin::DatabaseFormConfig {
-        crate::plugin::DatabaseFormConfig {
-            title: "编辑数据库 (MySQL)".to_string(),
-            fields: vec![
-                crate::plugin::DatabaseFormField::new("charset", "字符集", crate::plugin::DatabaseFormFieldType::Select(vec![
-                    "utf8mb4".to_string(),
-                    "utf8mb3".to_string(),
-                    "utf8".to_string(),
-                    "latin1".to_string(),
-                    "gbk".to_string(),
-                ])),
-                crate::plugin::DatabaseFormField::new("collation", "排序规则", crate::plugin::DatabaseFormFieldType::Select(vec![
-                    "utf8mb4_general_ci".to_string(),
-                    "utf8mb4_unicode_ci".to_string(),
-                    "utf8mb4_bin".to_string(),
-                    "utf8mb3_general_ci".to_string(),
-                    "utf8mb3_unicode_ci".to_string(),
-                    "latin1_swedish_ci".to_string(),
-                    "gbk_chinese_ci".to_string(),
-                ])),
-            ],
-        }
-    }
 
     async fn create_database(&self, connection: &dyn DbConnection, request: &crate::plugin::DatabaseOperationRequest) -> Result<()> {
         let mut sql = format!("CREATE DATABASE {}", self.quote_identifier(&request.database_name));
