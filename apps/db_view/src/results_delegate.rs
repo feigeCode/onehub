@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use db::{FieldType, TableColumnMeta};
-use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Window};
-use gpui_component::input::InputState;
+use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Subscription, Window};
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::table::Column;
 use gpui_component::{h_flex, table::{ TableDelegate, TableState}};
 use gpui_component::table::filter_panel::FilterValue;
@@ -443,7 +443,7 @@ impl TableDelegate for EditorTableDelegate {
             .unwrap_or_default()
     }
 
-    fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) -> Option<Entity<InputState>> {
+    fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut Context<TableState<Self>>) -> Option<(Entity<InputState>, Subscription)> {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
 
@@ -460,9 +460,19 @@ impl TableDelegate for EditorTableDelegate {
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).multi_line(true).rows(1).auto_grow(1,1);
             state.set_value(value, window, cx);
+            state.focus(window, cx);
             state
         });
-        Some(input)
+
+        let _sub = cx.subscribe_in(&input, window,move |table, _, evt: &InputEvent, window, cx| {
+            match evt {
+                InputEvent::Blur => {
+                    table.cancel_cell_edit(cx)
+                }
+                _ => {}
+            }
+        });
+        Some((input, _sub))
     }
 
     fn on_cell_edited(
@@ -481,6 +491,7 @@ impl TableDelegate for EditorTableDelegate {
             if let Some(cell) = row.get_mut(col_ix) {
                 // Only mark as modified if value actually changed
                 if *cell == new_value {
+                    self.modified_cells.retain(|&(row_ix, col_ix)| row_ix != actual_row || col_ix != col_ix);
                     return false;
                 }
 
@@ -526,7 +537,7 @@ impl TableDelegate for EditorTableDelegate {
         self.modified_cells.contains(&(actual_row, col_ix))
     }
 
-    fn on_row_added(&mut self, _window: &mut Window, cx: &mut Context<TableState<Self>>) {
+    fn on_row_added(&mut self, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> usize {
         // Add a new empty row
         let new_row = vec!["".to_string(); self.columns.len()];
         let row_ix = self.rows.len();
@@ -541,7 +552,7 @@ impl TableDelegate for EditorTableDelegate {
         // Map the new row index to the new_row_id (using high number as marker)
         self.row_index_map.insert(row_ix, new_row_id);
 
-        cx.notify();
+        self.next_new_row_id
     }
 
     fn on_row_deleted(

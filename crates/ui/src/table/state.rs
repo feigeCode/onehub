@@ -2,7 +2,7 @@
 use std::{collections::HashSet, ops::Range, rc::Rc, time::Duration};
 
 // 2. 外部 crate 导入
-use gpui::{canvas, div, prelude::FluentBuilder, px, uniform_list, AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Task, UniformListScrollHandle, Window};
+use gpui::{canvas, div, prelude::FluentBuilder, px, uniform_list, AppContext, Axis, Bounds, ClickEvent, Context, Div, DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ListSizingBehavior, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled, Subscription, Task, UniformListScrollHandle, Window};
 
 // 3. 当前 crate 导入
 use crate::{
@@ -126,6 +126,8 @@ pub struct TableState<D: TableDelegate> {
     /// The input state for the cell being edited.
     editing_input: Option<Entity<InputState>>,
 
+    _sub: Option<Subscription>,
+
     /// The visible range of the rows and columns.
     visible_range: TableVisibleRange,
 
@@ -178,6 +180,7 @@ where
             col_filterable: true,
             _load_more_task: Task::ready(()),
             _measure: Vec::new(),
+            _sub: None,
         };
 
         this.prepare_col_groups(cx);
@@ -682,7 +685,9 @@ where
         let input = self.delegate.build_input(row_ix, delegate_col_ix, window, cx);
         if input.is_some() {
             self.editing_cell = Some((row_ix, col_ix));
-            self.editing_input = Some(input.unwrap());
+            let (input, _sub) = input.unwrap();
+            self.editing_input = Some(input);
+            self._sub = Some(_sub);
             cx.emit(TableEvent::CellEditing(row_ix, col_ix));
             cx.notify();
         }
@@ -714,6 +719,7 @@ where
             }
             self.editing_cell = None;
             self.editing_input = None;
+            self._sub = None;
             cx.notify();
         }
     }
@@ -723,6 +729,7 @@ where
         if self.editing_cell.is_some() {
             self.editing_cell = None;
             self.editing_input = None;
+            self._sub = None;
             cx.notify();
         }
     }
@@ -739,9 +746,11 @@ where
 
     /// Add a new row.
     pub fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.delegate.on_row_added(window, cx);
+        let row_ix = self.delegate.on_row_added(window, cx);
+        self.scroll_to_row(row_ix, cx);
         cx.emit(TableEvent::RowAdded);
         self.refresh(cx);
+        cx.notify();
     }
 
     /// Delete a row.
@@ -1067,7 +1076,7 @@ where
         row_ix: Option<usize>,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<Div> {
+    ) -> Stateful<Div> {
         let Some(col_group) = self.col_groups.get(col_ix) else {
             return div().id("empty-cell");
         };
@@ -1116,7 +1125,7 @@ where
                     .border_1()
                     .border_color(if is_editing { cx.theme().ring } else {cx.theme().table_active_border})
             })
-            .when(is_modified, |this| {
+            .when(is_modified && !is_editing, |this| {
                 this.bg(cx.theme().warning.opacity(0.15))
             });
 

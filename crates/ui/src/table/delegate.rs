@@ -1,6 +1,6 @@
 use std::{collections::HashSet, ops::Range};
 
-use gpui::{div, App, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Stateful, Styled as _, Window};
+use gpui::{div, App, Context, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Stateful, Styled as _, Subscription, Window};
 
 use crate::{
     h_flex,
@@ -196,7 +196,7 @@ pub trait TableDelegate: Sized + 'static {
     }
 
     /// Build an input element for editing a cell.
-    fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) -> Option<Entity<InputState>> {
+    fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut Context<TableState<Self>>) -> Option<(Entity<InputState>, Subscription)> {
         None
     }
 
@@ -221,7 +221,9 @@ pub trait TableDelegate: Sized + 'static {
     }
 
     /// Called when a row is added.
-    fn on_row_added(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) {}
+    fn on_row_added(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) -> usize {
+        0
+    }
 
     /// Called when a row is deleted.
     fn on_row_deleted(
