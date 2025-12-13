@@ -124,13 +124,6 @@ impl TableData {
         self
     }
 
-    fn update_status(&self, message: String, cx: &mut App) {
-        self.status_msg.update(cx, |s, cx| {
-            *s = message;
-            cx.notify();
-        });
-    }
-
     fn load_data_with_clauses(&self, page: usize, cx: &mut App) {
         eprintln!("load_data_with_clauses called for page: {}, table: {}.{}", page, self.database_name, self.table_name);
         let global_state = cx.global::<GlobalDbState>().clone();
@@ -323,75 +316,7 @@ impl TableData {
     fn handle_apply_query(&self, cx: &mut App) {
         self.load_data_with_clauses(1, cx);
     }
-
-    fn handle_save_changes(&self, cx: &mut App) {
-        let save_request = match self.data_grid.read(cx).create_save_request(cx) {
-            Some(req) => req,
-            None => {
-                self.update_status("No changes to save".to_string(), cx);
-                return;
-            }
-        };
-
-        let change_count = save_request.changes.len();
-        self.update_status(format!("Saving {} changes...", change_count), cx);
-
-        let global_state = cx.global::<GlobalDbState>().clone();
-        let connection_id = self.connection_id.clone();
-        let status_msg = self.status_msg.clone();
-        let data_grid = self.data_grid.clone();
-
-        cx.spawn(async move |cx| {
-            let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
-                Ok(result) => result,
-                Err(e) => {
-                    cx.update(|cx| {
-                        status_msg.update(cx, |s, cx| {
-                            *s = format!("Failed to get connection: {}", e);
-                            cx.notify();
-                        });
-                    }).ok();
-                    return;
-                }
-            };
-
-            let conn = conn_arc.read().await;
-
-            match plugin.apply_table_changes(&**conn, save_request).await {
-                Ok(response) => {
-                    cx.update(|cx| {
-                        if response.errors.is_empty() {
-                            data_grid.update(cx, |grid, cx| {
-                                grid.clear_changes(cx);
-                            });
-                            status_msg.update(cx, |s, cx| {
-                                *s = format!("Successfully saved {} changes", response.success_count);
-                                cx.notify();
-                            });
-                        } else {
-                            status_msg.update(cx, |s, cx| {
-                                *s = format!(
-                                    "Saved {} changes, {} errors: {}",
-                                    response.success_count,
-                                    response.errors.len(),
-                                    response.errors.first().unwrap_or(&String::new())
-                                );
-                                cx.notify();
-                            });
-                        }
-                    }).ok();
-                }
-                Err(e) => {
-                    cx.update(|cx| {
-                        status_msg.update(cx, |s, cx| {
-                            *s = format!("Failed to save changes: {}", e);
-                            cx.notify();
-                        });
-                    }).ok();
-                }
-            }
-        }).detach();
-    }
+    
 }
 
 
@@ -399,7 +324,6 @@ impl Render for TableData {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
 
         let this_refresh = self.clone();
-        let this_save = self.clone();
         let this_prev = self.clone();
         let this_next = self.clone();
 
@@ -415,7 +339,6 @@ impl Render for TableData {
             .child(
                 self.data_grid.read(cx).render_toolbar(
                     move |cx| this_refresh.handle_refresh(cx),
-                    move |cx| this_save.handle_save_changes(cx),
                     window,
                     cx,
                 )

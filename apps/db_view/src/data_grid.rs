@@ -1,4 +1,4 @@
-use gpui::{div, px, AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Subscription, Window};
+use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, Pixels, SharedString, Styled, Subscription, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex
@@ -10,7 +10,7 @@ use gpui_component::{
 
 use crate::multi_text_editor::{create_multi_text_editor_with_content, MultiTextEditor};
 use crate::results_delegate::{EditorTableDelegate, RowChange};
-use db::{TableCellChange, TableRowChange, TableSaveRequest};
+use db::{GlobalDbState, TableCellChange, TableRowChange, TableSaveRequest};
 use gpui_component::table::TableEvent;
 // ============================================================================
 // DataGrid - 可复用的数据表格组件
@@ -263,6 +263,70 @@ impl DataGrid {
         })
     }
 
+    fn handle_save_changes(&self, _: &ClickEvent, _window: &mut Window, cx: &mut App) {
+        if  let Some (save_request) = self.create_save_request(cx) {
+            let change_count = save_request.changes.len();
+            self.update_status(format!("Saving {} changes...", change_count), cx);
+
+            let global_state = cx.global::<GlobalDbState>().clone();
+            let connection_id = self.config.connection_id.clone();
+            let status_msg = self.status_msg.clone();
+            let clone_self = self.clone();
+
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        cx.update(|cx| {
+                            status_msg.update(cx, |s, cx| {
+                                *s = format!("Failed to get connection: {}", e);
+                                cx.notify();
+                            });
+                        }).ok();
+                        return;
+                    }
+                };
+
+                let conn = conn_arc.read().await;
+
+                match plugin.apply_table_changes(&**conn, save_request).await {
+                    Ok(response) => {
+                        cx.update(|cx| {
+                            if response.errors.is_empty() {
+                                clone_self.clear_changes(cx);
+                                status_msg.update(cx, |s, cx| {
+
+                                    *s = format!("Successfully saved {} changes", response.success_count);
+                                    cx.notify();
+                                });
+                            } else {
+                                status_msg.update(cx, |s, cx| {
+                                    *s = format!(
+                                        "Saved {} changes, {} errors: {}",
+                                        response.success_count,
+                                        response.errors.len(),
+                                        response.errors.first().unwrap_or(&String::new())
+                                    );
+                                    cx.notify();
+                                });
+                            }
+                        }).ok();
+                    }
+                    Err(e) => {
+                        cx.update(|cx| {
+                            status_msg.update(cx, |s, cx| {
+                                *s = format!("Failed to save changes: {}", e);
+                                cx.notify();
+                            });
+                        }).ok();
+                    }
+                }
+            }).detach();
+        }
+
+
+    }
+
     /// 生成变更SQL
     pub fn generate_changes_sql(&self, cx: &mut App) -> String {
         let save_request = match self.create_save_request(cx) {
@@ -270,7 +334,7 @@ impl DataGrid {
             None => return "-- 没有变更数据".to_string(),
         };
 
-        let global_state = cx.global::<db::GlobalDbState>().clone();
+        let global_state = cx.global::<GlobalDbState>().clone();
 
         if let Ok(plugin) = global_state.db_manager.get_plugin(&self.config.database_type) {
             plugin.generate_table_changes_sql(&save_request)
@@ -412,22 +476,20 @@ impl DataGrid {
 
 
     /// 渲染工具栏
-    pub fn render_toolbar<F, G>(
+    pub fn render_toolbar<F>(
         &self,
         on_refresh: F,
-        on_save: G,
         _window: &mut Window,
         cx: & App,
     ) -> AnyElement
     where
         F: Fn(&mut App) + Clone + 'static,
-        G: Fn(&mut App) + Clone + 'static,
     {
         let table = self.table.clone();
         let this_for_sql = self.clone();
         let this_for_editor = self.clone();
         let on_refresh_clone = on_refresh.clone();
-        let on_save_clone = on_save.clone();
+        let on_save_clone = self.clone();
 
         h_flex()
             .gap_1()
@@ -511,8 +573,8 @@ impl DataGrid {
                     .with_size(Size::Medium)
                     .icon(IconName::ArrowUp)
                     .tooltip("提交更改")
-                    .on_click(move |_, _, cx| {
-                        on_save_clone(cx);
+                    .on_click(move |c, window, cx| {
+                        on_save_clone.handle_save_changes(c, window, cx)
                     }),
             )
             // 分隔线
@@ -594,13 +656,12 @@ impl DataGrid {
                 .bg(cx.theme().background)
                 .border_1()
                 .border_color(cx.theme().border)
-                // .overflow_hidden()
                 .child(Table::new(&self.table).stripe(true).bordered(true))
                 .into_any_element()
         }
     }
 }
-//
+
 // impl Render for DataGrid {
 //     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
 //

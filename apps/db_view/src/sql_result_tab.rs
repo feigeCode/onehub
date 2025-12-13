@@ -262,7 +262,6 @@ impl Render for SqlResultTabContainer {
                                     .child(
                                         data_grid.read(cx).render_toolbar(
                                             |_cx| {}, // 刷新功能（只读模式下无操作）
-                                            |_cx| {}, // 保存功能（只读模式下无操作）
                                             window,
                                             cx,
                                         )
