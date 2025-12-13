@@ -1,61 +1,15 @@
-use gpui::{div, px, App, AppContext, Context, Entity, ParentElement, SharedString, Styled, Subscription, Window};
+use one_core::gpui_tokio::Tokio;
+use gpui::{div, px, App, AppContext, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::warn;
 use uuid::Uuid;
 use db::{DbNode, DbNodeType, GlobalDbState};
 use gpui_component::{h_flex, v_flex, WindowExt};
-use one_core::gpui_tokio::Tokio;
 use one_core::tab_container::{TabContainer, TabItem};
 use crate::{database_objects_tab::DatabaseObjectsPanel, db_tree_view::{DbTreeView, DbTreeViewEvent}};
 use crate::sql_editor_view::SqlEditorTabContent;
 
 
-// 字符集选择项
-#[derive(Clone, Debug)]
-struct CharsetItem {
-    name: String,
-}
 
-impl CharsetItem {
-    fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
-    }
-}
-
-impl gpui_component::select::SelectItem for CharsetItem {
-    type Value = String;
-
-    fn title(&self) -> SharedString {
-        self.name.clone().into()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.name
-    }
-}
-
-// 排序规则选择项
-#[derive(Clone, Debug)]
-struct CollationItem {
-    name: String,
-}
-
-impl CollationItem {
-    fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
-    }
-}
-
-impl gpui_component::select::SelectItem for CollationItem {
-    type Value = String;
-
-    fn title(&self) -> SharedString {
-        self.name.clone().into()
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.name
-    }
-}
 
 
 // Event handler for database tree view events
@@ -149,6 +103,13 @@ impl DatabaseEventHandler {
                         Self::handle_delete_connection(node, tree_view.clone(), window, cx);
                     } else {
                         warn!("DeleteConnection event with missing node: {}", node_id);
+                    }
+                }
+                DbTreeViewEvent::CreateDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_create_database(node, global_state, window, cx);
+                    } else {
+                        warn!("EditDatabase event with missing node: {}", node_id);
                     }
                 }
                 DbTreeViewEvent::EditDatabase { node_id } => {
@@ -741,6 +702,14 @@ impl DatabaseEventHandler {
         });
     }
 
+    /// 处理新建数据库事件
+    fn handle_create_database(node: DbNode,
+                              global_state: GlobalDbState,
+                              window: &mut Window,
+                              cx: &mut App){
+
+    }
+
     /// 处理编辑数据库事件
     fn handle_edit_database(
         node: DbNode,
@@ -751,148 +720,9 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
         let database_name = node.name.clone();
 
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
-        });
 
-        if let Some(config) = config {
-            Self::show_edit_database_dialog(database_name, config, window, cx);
-        }
     }
 
-    /// 显示编辑数据库对话框
-    fn show_edit_database_dialog(
-        database_name: String,
-        config: one_core::storage::DbConnectionConfig,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        use gpui_component::select::{Select, SelectState};
-
-        // 创建字符集选择器
-        let charset_items = vec![
-            CharsetItem::new("utf8mb3"),
-            CharsetItem::new("utf8mb4"),
-            CharsetItem::new("latin1"),
-            CharsetItem::new("gbk"),
-            CharsetItem::new("utf8"),
-        ];
-        let charset_select = cx.new(|cx| {
-            SelectState::new(charset_items, Some(Default::default()), window, cx)
-        });
-
-        // 创建排序规则选择器
-        let collation_items = vec![
-            CollationItem::new("utf8mb4_general_ci"),
-            CollationItem::new("utf8mb4_unicode_ci"),
-            CollationItem::new("utf8mb4_bin"),
-            CollationItem::new("utf8mb3_general_ci"),
-            CollationItem::new("utf8mb3_unicode_ci"),
-            CollationItem::new("latin1_swedish_ci"),
-            CollationItem::new("gbk_chinese_ci"),
-        ];
-        let collation_select = cx.new(|cx| {
-            SelectState::new(collation_items, Some(Default::default()), window, cx)
-        });
-
-        let db_name = database_name.clone();
-        let config_id = config.id.clone();
-
-        window.open_dialog(cx, move |dialog, _window, _cx| {
-            let charset_sel = charset_select.clone();
-            let collation_sel = collation_select.clone();
-            let db_name_display = db_name.clone();
-            let db_name_for_update = db_name.clone();
-            let cfg_id = config_id.clone();
-
-            dialog
-                .title("编辑数据库")
-                .confirm()
-                .child(
-                    v_flex()
-                        .gap_4()
-                        .p_4()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .w(px(100.))
-                                        .child("数据库名称:")
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(db_name_display.clone())
-                                )
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .w(px(100.))
-                                        .child("字符集:")
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Select::new(&charset_sel))
-                                )
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .w(px(100.))
-                                        .child("排序规则:")
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Select::new(&collation_sel))
-                                )
-                        )
-                )
-                .on_ok(move |_, _, cx| {
-                    let charset = charset_sel.read(cx).selected_value().cloned();
-                    let collation = collation_sel.read(cx).selected_value().cloned();
-                    let db_name = db_name_for_update.clone();
-                    let config_id = cfg_id.clone();
-                    let global_state = cx.global::<GlobalDbState>().clone();
-                    let db_name_log = db_name.clone();
-
-                    cx.spawn(async move |_cx| {
-                        let result = db::spawn_result(async move {
-                            let (plugin, conn_arc) = global_state.get_plugin_and_connection(&config_id).await?;
-                            let conn = conn_arc.read().await;
-
-                            // 构建 ALTER DATABASE 语句
-                            let mut sql = format!("ALTER DATABASE {} ", plugin.quote_identifier(&db_name));
-                            if let Some(cs) = charset {
-                                sql.push_str(&format!("CHARACTER SET {} ", cs));
-                            }
-                            if let Some(col) = collation {
-                                sql.push_str(&format!("COLLATE {}", col));
-                            }
-
-                            plugin.execute_query(&**conn, "", &sql, None).await?;
-                            Ok(())
-                        }).await;
-
-                        match result {
-                            Ok(_) => eprintln!("Database updated: {}", db_name_log),
-                            Err(e) => eprintln!("Failed to update database: {}", e),
-                        }
-                    }).detach();
-                    true
-                })
-        });
-    }
 
     /// 处理关闭数据库事件
     fn handle_close_database(

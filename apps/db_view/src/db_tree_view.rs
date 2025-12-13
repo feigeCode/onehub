@@ -55,6 +55,8 @@ pub enum DbTreeViewEvent {
     CloseConnection { node_id: String },
     /// 删除连接
     DeleteConnection { node_id: String },
+    /// 新建数据库
+    CreateDatabase { node_id: String },
     /// 编辑数据库
     EditDatabase { node_id: String },
     /// 关闭数据库
@@ -946,7 +948,8 @@ impl Render for DbTreeView {
                                                                         .item(Self::create_menu_item(&node_id_clone, "关闭连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseConnection { node_id: n }))
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_clone, "删除连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteConnection { node_id: n }))
-                                                                        .separator();
+                                                                        .separator()
+                                                                        .item(Self::create_menu_item(&node_id_clone, "新建数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateDatabase { node_id: n }))
                                                                 }
                                                                 DbNodeType::Database => {
                                                                     let node_id_for_menu = node_id_clone.clone();

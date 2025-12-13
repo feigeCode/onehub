@@ -787,6 +787,96 @@ impl DatabasePlugin for MySqlPlugin {
             DataTypeInfo::new("SET('value1','value2')", "Set of values").with_category(DataTypeCategory::Other),
         ]
     }
+    
+    // === Database Form Operations ===
+    fn get_create_database_form_config(&self) -> crate::plugin::DatabaseFormConfig {
+        crate::plugin::DatabaseFormConfig {
+            title: "创建数据库 (MySQL)".to_string(),
+            fields: vec![
+                crate::plugin::DatabaseFormField::new("name", "数据库名称", crate::plugin::DatabaseFormFieldType::Text)
+                    .required()
+                    .placeholder("输入数据库名称"),
+                crate::plugin::DatabaseFormField::new("charset", "字符集", crate::plugin::DatabaseFormFieldType::Select(vec![
+                    "utf8mb4".to_string(),
+                    "utf8mb3".to_string(),
+                    "utf8".to_string(),
+                    "latin1".to_string(),
+                    "gbk".to_string(),
+                ]))
+                    .default_value("utf8mb4"),
+                crate::plugin::DatabaseFormField::new("collation", "排序规则", crate::plugin::DatabaseFormFieldType::Select(vec![
+                    "utf8mb4_general_ci".to_string(),
+                    "utf8mb4_unicode_ci".to_string(),
+                    "utf8mb4_bin".to_string(),
+                    "utf8mb3_general_ci".to_string(),
+                    "utf8mb3_unicode_ci".to_string(),
+                    "latin1_swedish_ci".to_string(),
+                    "gbk_chinese_ci".to_string(),
+                ]))
+                    .default_value("utf8mb4_general_ci"),
+            ],
+        }
+    }
+
+    fn get_edit_database_form_config(&self, _database_name: &str) -> crate::plugin::DatabaseFormConfig {
+        crate::plugin::DatabaseFormConfig {
+            title: "编辑数据库 (MySQL)".to_string(),
+            fields: vec![
+                crate::plugin::DatabaseFormField::new("charset", "字符集", crate::plugin::DatabaseFormFieldType::Select(vec![
+                    "utf8mb4".to_string(),
+                    "utf8mb3".to_string(),
+                    "utf8".to_string(),
+                    "latin1".to_string(),
+                    "gbk".to_string(),
+                ])),
+                crate::plugin::DatabaseFormField::new("collation", "排序规则", crate::plugin::DatabaseFormFieldType::Select(vec![
+                    "utf8mb4_general_ci".to_string(),
+                    "utf8mb4_unicode_ci".to_string(),
+                    "utf8mb4_bin".to_string(),
+                    "utf8mb3_general_ci".to_string(),
+                    "utf8mb3_unicode_ci".to_string(),
+                    "latin1_swedish_ci".to_string(),
+                    "gbk_chinese_ci".to_string(),
+                ])),
+            ],
+        }
+    }
+
+    async fn create_database(&self, connection: &dyn DbConnection, request: &crate::plugin::DatabaseOperationRequest) -> Result<()> {
+        let mut sql = format!("CREATE DATABASE {}", self.quote_identifier(&request.database_name));
+        
+        if let Some(charset) = request.field_values.get("charset") {
+            sql.push_str(&format!(" CHARACTER SET {}", charset));
+        }
+        
+        if let Some(collation) = request.field_values.get("collation") {
+            sql.push_str(&format!(" COLLATE {}", collation));
+        }
+        
+        self.execute_query(connection, "", &sql, None).await?;
+        Ok(())
+    }
+
+    async fn update_database(&self, connection: &dyn DbConnection, request: &crate::plugin::DatabaseOperationRequest) -> Result<()> {
+        let mut sql = format!("ALTER DATABASE {}", self.quote_identifier(&request.database_name));
+        
+        let mut parts = Vec::new();
+        if let Some(charset) = request.field_values.get("charset") {
+            parts.push(format!("CHARACTER SET {}", charset));
+        }
+        
+        if let Some(collation) = request.field_values.get("collation") {
+            parts.push(format!("COLLATE {}", collation));
+        }
+        
+        if !parts.is_empty() {
+            sql.push(' ');
+            sql.push_str(&parts.join(" "));
+            self.execute_query(connection, "", &sql, None).await?;
+        }
+        
+        Ok(())
+    }
 }
 
 impl Default for MySqlPlugin {

@@ -72,6 +72,66 @@ pub struct SqlCompletionInfo {
     pub snippets: Vec<(&'static str, &'static str, &'static str)>, // (label, insert_text, doc)
 }
 
+/// Database form field type
+#[derive(Clone, Debug, PartialEq)]
+pub enum DatabaseFormFieldType {
+    Text,
+    Select(Vec<String>), // Options for select dropdown
+}
+
+/// Database form field definition
+#[derive(Clone, Debug)]
+pub struct DatabaseFormField {
+    pub name: String,
+    pub label: String,
+    pub field_type: DatabaseFormFieldType,
+    pub required: bool,
+    pub default_value: Option<String>,
+    pub placeholder: Option<String>,
+}
+
+impl DatabaseFormField {
+    pub fn new(name: impl Into<String>, label: impl Into<String>, field_type: DatabaseFormFieldType) -> Self {
+        Self {
+            name: name.into(),
+            label: label.into(),
+            field_type,
+            required: false,
+            default_value: None,
+            placeholder: None,
+        }
+    }
+
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    pub fn default_value(mut self, value: impl Into<String>) -> Self {
+        self.default_value = Some(value.into());
+        self
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = Some(placeholder.into());
+        self
+    }
+}
+
+/// Database form configuration for create/edit operations
+#[derive(Clone, Debug)]
+pub struct DatabaseFormConfig {
+    pub title: String,
+    pub fields: Vec<DatabaseFormField>,
+}
+
+/// Database operation request
+#[derive(Clone, Debug)]
+pub struct DatabaseOperationRequest {
+    pub database_name: String,
+    pub field_values: HashMap<String, String>,
+}
+
 impl SqlCompletionInfo {
     /// Create completion info with standard SQL functions and keywords included
     pub fn with_standard_sql(mut self) -> Self {
@@ -901,6 +961,40 @@ pub trait DatabasePlugin: Send + Sync {
     async fn drop_view(&self, connection: &dyn DbConnection, database: &str, view: &str) -> Result<()> {
         let query = format!("DROP VIEW IF EXISTS {}", self.quote_identifier(view));
         self.execute_query(connection, database, &query, None).await?;
+        Ok(())
+    }
+
+    // === Database Form Operations ===
+    /// Get form configuration for creating a new database
+    fn get_create_database_form_config(&self) -> DatabaseFormConfig {
+        DatabaseFormConfig {
+            title: "创建数据库".to_string(),
+            fields: vec![
+                DatabaseFormField::new("name", "数据库名称", DatabaseFormFieldType::Text)
+                    .required()
+                    .placeholder("输入数据库名称"),
+            ],
+        }
+    }
+
+    /// Get form configuration for editing an existing database
+    fn get_edit_database_form_config(&self, _database_name: &str) -> DatabaseFormConfig {
+        DatabaseFormConfig {
+            title: "编辑数据库".to_string(),
+            fields: vec![],
+        }
+    }
+
+    /// Create a new database
+    async fn create_database(&self, connection: &dyn DbConnection, request: &DatabaseOperationRequest) -> Result<()> {
+        let query = format!("CREATE DATABASE {}", self.quote_identifier(&request.database_name));
+        self.execute_query(connection, "", &query, None).await?;
+        Ok(())
+    }
+
+    /// Update database properties
+    async fn update_database(&self, _connection: &dyn DbConnection, _request: &DatabaseOperationRequest) -> Result<()> {
+        // Default implementation does nothing - databases may override
         Ok(())
     }
 }
