@@ -53,6 +53,6 @@ cargo build --release
 
 ## License
 
-The primary license used by this software is the Apache License 2.0, supplemented by the OneHub License.
+The primary license used by this software is the [Apache License 2.0](./LICENSE-APACHE), supplemented by the [OneHub License](./OneHub_LICENSE).
 
 Apache-2.0
