@@ -13,7 +13,7 @@ pub enum ConnectionType {
 }
 
 /// Database type enumeration
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DatabaseType {
     MySQL,
     PostgreSQL,

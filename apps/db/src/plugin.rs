@@ -72,59 +72,6 @@ pub struct SqlCompletionInfo {
     pub snippets: Vec<(&'static str, &'static str, &'static str)>, // (label, insert_text, doc)
 }
 
-/// Database form field type
-#[derive(Clone, Debug, PartialEq)]
-pub enum DatabaseFormFieldType {
-    Text,
-    Select(Vec<String>), // Options for select dropdown
-}
-
-/// Database form field definition
-#[derive(Clone, Debug)]
-pub struct DatabaseFormField {
-    pub name: String,
-    pub label: String,
-    pub field_type: DatabaseFormFieldType,
-    pub required: bool,
-    pub default_value: Option<String>,
-    pub placeholder: Option<String>,
-}
-
-impl DatabaseFormField {
-    pub fn new(name: impl Into<String>, label: impl Into<String>, field_type: DatabaseFormFieldType) -> Self {
-        Self {
-            name: name.into(),
-            label: label.into(),
-            field_type,
-            required: false,
-            default_value: None,
-            placeholder: None,
-        }
-    }
-
-    pub fn required(mut self) -> Self {
-        self.required = true;
-        self
-    }
-
-    pub fn default_value(mut self, value: impl Into<String>) -> Self {
-        self.default_value = Some(value.into());
-        self
-    }
-
-    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.placeholder = Some(placeholder.into());
-        self
-    }
-}
-
-/// Database form configuration for create/edit operations
-#[derive(Clone, Debug)]
-pub struct DatabaseFormConfig {
-    pub title: String,
-    pub fields: Vec<DatabaseFormField>,
-}
-
 /// Database operation request
 #[derive(Clone, Debug)]
 pub struct DatabaseOperationRequest {

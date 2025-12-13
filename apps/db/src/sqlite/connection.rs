@@ -10,7 +10,7 @@ use crate::executor::{
     ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter,
     SqlStatementClassifier,
 };
-use crate::runtime::TOKIO_HANDLE;
+
 use crate::types::{SqlValue};
 
 pub struct SqliteDbConnection {
@@ -116,17 +116,10 @@ impl DbConnection for SqliteDbConnection {
 
         let url = format!("sqlite://{}", database_path);
 
-        let pool = TOKIO_HANDLE
-            .spawn(async move {
-                SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect(&url)
-                    .await
-            })
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
             .await
-            .map_err(|e| {
-                DbError::ConnectionError(format!("Failed to spawn connection task: {}", e))
-            })?
             .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
         {
@@ -185,11 +178,9 @@ impl DbConnection for SqliteDbConnection {
                 let sql_to_exec = modified_sql.clone();
                 let original_sql = sql.to_string();
 
-                match TOKIO_HANDLE
-                    .spawn(async move { sqlx::raw_sql(&sql_to_exec).fetch_all(&pool).await })
-                    .await
+                match sqlx::raw_sql(&sql_to_exec).fetch_all(&pool).await
                 {
-                    Ok(Ok(rows)) => {
+                    Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
 
                         if rows.is_empty() {
@@ -223,7 +214,7 @@ impl DbConnection for SqliteDbConnection {
                             })
                         }
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         let result = SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
                             message: e.to_string(),
@@ -255,11 +246,9 @@ impl DbConnection for SqliteDbConnection {
                 let sql_to_exec = modified_sql.clone();
                 let original_sql = sql.to_string();
 
-                match TOKIO_HANDLE
-                    .spawn(async move { sqlx::raw_sql(&sql_to_exec).execute(&pool).await })
-                    .await
+                match sqlx::raw_sql(&sql_to_exec).execute(&pool).await
                 {
-                    Ok(Ok(exec_result)) => {
+                    Ok(exec_result) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         let rows_affected = exec_result.rows_affected();
                         let message =
@@ -272,7 +261,7 @@ impl DbConnection for SqliteDbConnection {
                             message: Some(message),
                         })
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         let result = SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
                             message: e.to_string(),
@@ -322,11 +311,9 @@ impl DbConnection for SqliteDbConnection {
             let query_str = query.to_string();
             let query_str_clone = query_str.clone();
 
-            match TOKIO_HANDLE
-                .spawn(async move { sqlx::raw_sql(&query_str_clone).fetch_all(&pool).await })
-                .await
+            match sqlx::raw_sql(&query_str_clone).fetch_all(&pool).await
             {
-                Ok(Ok(rows)) => {
+                Ok(rows) => {
                     let elapsed_ms = start.elapsed().as_millis();
 
                     if rows.is_empty() {
@@ -360,7 +347,7 @@ impl DbConnection for SqliteDbConnection {
                         })
                     }
                 }
-                Ok(Err(e)) => SqlResult::Error(SqlErrorInfo {
+                Err(e) => SqlResult::Error(SqlErrorInfo {
                     sql: query.to_string(),
                     message: e.to_string(),
                 }),
@@ -374,11 +361,9 @@ impl DbConnection for SqliteDbConnection {
             let query_str = query.to_string();
             let query_str_clone = query_str.clone();
 
-            match TOKIO_HANDLE
-                .spawn(async move { sqlx::raw_sql(&query_str_clone).execute(&pool).await })
-                .await
+            match sqlx::raw_sql(&query_str_clone).execute(&pool).await
             {
-                Ok(Ok(exec_result)) => {
+                Ok(exec_result) => {
                     let elapsed_ms = start.elapsed().as_millis();
                     let rows_affected = exec_result.rows_affected();
                     let message =
@@ -391,10 +376,6 @@ impl DbConnection for SqliteDbConnection {
                         message: Some(message),
                     })
                 }
-                Ok(Err(e)) => SqlResult::Error(SqlErrorInfo {
-                    sql: query.to_string(),
-                    message: e.to_string(),
-                }),
                 Err(e) => SqlResult::Error(SqlErrorInfo {
                     sql: query.to_string(),
                     message: e.to_string(),

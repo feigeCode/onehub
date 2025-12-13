@@ -1,8 +1,8 @@
 use crate::connection::{DbConnection, DbError};
 use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
-use crate::runtime::TOKIO_HANDLE;
+
 use sqlx::mysql::{MySqlArguments, MySqlPoolOptions, MySqlRow};
-use sqlx::{Column, MySql, MySqlPool, Row, ValueRef};
+use sqlx::{query, Column, MySql, MySqlPool, Row, ValueRef};
 use std::time::Instant;
 use async_trait::async_trait;
 use std::sync::RwLock;
@@ -198,15 +198,11 @@ impl DbConnection for MysqlDbConnection {
                 )
             };
 
-            let pool = TOKIO_HANDLE.spawn(async move {
-                MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect(&url)
-                    .await
-            })
-            .await
-            .map_err(|e| DbError::ConnectionError(format!("Failed to spawn connection task: {}", e)))?
-            .map_err(|e| DbError::ConnectionError(format!("Failed to connect to database: {}", e)))?;
+            let pool = MySqlPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await
+                .map_err(|e| DbError::ConnectionError(format!("Failed to connect to database: {}", e)))?;
             // Persist pool and current database
             {
                 let mut guard = self.pool.write().unwrap();
@@ -270,11 +266,9 @@ impl DbConnection for MysqlDbConnection {
                 // Execute USE statement on current connection
                 let pool = active_pool.clone();
                 let sql_to_exec = sql.to_string();
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&sql_to_exec).execute(&pool).await
-                }).await
+                match sqlx::raw_sql(&sql_to_exec).execute(&pool).await
                 {
-                    Ok(Ok(_exec_result)) => {
+                    Ok(_exec_result) => {
                         // Update current database property
                         {
                             let mut db_guard = self.current_database.write().unwrap();
@@ -287,16 +281,6 @@ impl DbConnection for MysqlDbConnection {
                             elapsed_ms,
                             message: Some(format!("Database changed to '{}'", db_name)),
                         }));
-                        continue;
-                    }
-                    Ok(Err(e)) => {
-                        results.push(SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        }));
-                        if options.stop_on_error {
-                            break;
-                        }
                         continue;
                     }
                     Err(e) => {
@@ -333,10 +317,8 @@ impl DbConnection for MysqlDbConnection {
                 let sql_to_exec = modified_sql.clone();
                 let original_sql = sql.to_string();
 
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&sql_to_exec).fetch_all(&pool).await
-                }).await {
-                    Ok(Ok(rows)) => {
+                match sqlx::raw_sql(&sql_to_exec).fetch_all(&pool).await {
+                    Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
 
                         if rows.is_empty() {
@@ -372,19 +354,6 @@ impl DbConnection for MysqlDbConnection {
                             })
                         }
                     }
-                    Ok(Err(e)) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
                     Err(e) => {
                         let result = SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
@@ -405,10 +374,8 @@ impl DbConnection for MysqlDbConnection {
                 let sql_to_exec = modified_sql.clone();
                 let original_sql = sql.to_string();
 
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&sql_to_exec).execute(&pool).await
-                }).await {
-                    Ok(Ok(exec_result)) => {
+                match sqlx::raw_sql(&sql_to_exec).execute(&pool).await {
+                    Ok(exec_result) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         let rows_affected = exec_result.rows_affected();
                         let message = SqlStatementClassifier::format_message(&original_sql, rows_affected);
@@ -419,19 +386,6 @@ impl DbConnection for MysqlDbConnection {
                             elapsed_ms,
                             message: Some(message),
                         })
-                    }
-                    Ok(Err(e)) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
                     }
                     Err(e) => {
                         let result = SqlResult::Error(SqlErrorInfo {
@@ -486,10 +440,8 @@ impl DbConnection for MysqlDbConnection {
                 }
 
                 let pool = pool.clone();
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&final_query).fetch_all(&pool).await
-                }).await {
-                    Ok(Ok(rows)) => {
+                match sqlx::raw_sql(&final_query).fetch_all(&pool).await {
+                    Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
 
                         if rows.is_empty() {
@@ -525,10 +477,6 @@ impl DbConnection for MysqlDbConnection {
                             })
                         }
                     }
-                    Ok(Err(e)) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
-                        message: e.to_string(),
-                    }),
                     Err(e) => SqlResult::Error(SqlErrorInfo {
                         sql: query.to_string(),
                         message: e.to_string(),
@@ -554,10 +502,8 @@ impl DbConnection for MysqlDbConnection {
                 }
 
                 let pool = pool.clone();
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&final_query).execute(&pool).await
-                }).await {
-                    Ok(Ok(exec_result)) => {
+                match sqlx::raw_sql(&final_query).execute(&pool).await {
+                    Ok(exec_result) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         let rows_affected = exec_result.rows_affected();
                         let message = SqlStatementClassifier::format_message(&query_str, rows_affected);
@@ -569,10 +515,6 @@ impl DbConnection for MysqlDbConnection {
                             message: Some(message),
                         })
                     }
-                    Ok(Err(e)) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
-                        message: e.to_string(),
-                    }),
                     Err(e) => SqlResult::Error(SqlErrorInfo {
                         sql: query.to_string(),
                         message: e.to_string(),
@@ -585,10 +527,8 @@ impl DbConnection for MysqlDbConnection {
                 let pool = pool.clone();
                 let query_str = query.to_string();
                 let query_str_clone = query_str.clone();
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&query_str_clone).fetch_all(&pool).await
-                }).await {
-                    Ok(Ok(rows)) => {
+                match sqlx::raw_sql(&query_str_clone).fetch_all(&pool).await {
+                    Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
 
                         if rows.is_empty() {
@@ -624,10 +564,6 @@ impl DbConnection for MysqlDbConnection {
                             })
                         }
                     }
-                    Ok(Err(e)) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
-                        message: e.to_string(),
-                    }),
                     Err(e) => SqlResult::Error(SqlErrorInfo {
                         sql: query.to_string(),
                         message: e.to_string(),
@@ -637,10 +573,8 @@ impl DbConnection for MysqlDbConnection {
                 let pool = pool.clone();
                 let query_str = query.to_string();
                 let query_str_clone = query_str.clone();
-                match TOKIO_HANDLE.spawn(async move {
-                    sqlx::raw_sql(&query_str_clone).execute(&pool).await
-                }).await {
-                    Ok(Ok(exec_result)) => {
+                match sqlx::raw_sql(&query_str_clone).execute(&pool).await {
+                    Ok(exec_result) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         let rows_affected = exec_result.rows_affected();
                         let message = SqlStatementClassifier::format_message(&query_str, rows_affected);
@@ -652,10 +586,6 @@ impl DbConnection for MysqlDbConnection {
                             message: Some(message),
                         })
                     }
-                    Ok(Err(e)) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
-                        message: e.to_string(),
-                    }),
                     Err(e) => SqlResult::Error(SqlErrorInfo {
                         sql: query.to_string(),
                         message: e.to_string(),
