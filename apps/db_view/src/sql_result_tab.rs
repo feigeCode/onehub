@@ -1,8 +1,9 @@
+use std::clone;
 // 1. 标准库导入
 use std::sync::{Arc, RwLock};
 
 // 2. 外部 crate 导入（按字母顺序）
-use gpui::{div, px, AnyElement, App, Context, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{div, px, AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 use gpui_component::{
     h_flex, v_flex,
     list::ListItem,
@@ -22,7 +23,7 @@ pub struct SqlResultTab {
     pub result: SqlResult,
     pub execution_time: String,
     pub rows_count: String,
-    pub data_grid: Option<DataGrid>,
+    pub data_grid: Option<Entity<DataGrid>>,
 }
 
 
@@ -75,10 +76,9 @@ impl SqlResultTabContainer {
                         one_core::storage::DatabaseType::MySQL, // 默认类型，实际不影响只读模式
                     )
                     .editable(false)
-                    .show_toolbar(true)
-                    .show_pagination(false);
+                    .show_toolbar(true);
 
-                    let data_grid = DataGrid::new(config, window, cx);
+                    let data_grid = cx.new(|cx| DataGrid::new(config, window, cx));
 
                     // 准备数据
                     let columns = query_result.columns.iter()
@@ -93,12 +93,9 @@ impl SqlResultTabContainer {
                         .collect();
 
                     // 更新DataGrid数据
-                    data_grid.update_data(columns, rows, vec![], cx);
-                    data_grid.update_query_info(
-                        query_result.elapsed_ms as u128,
-                        sql_text.clone(),
-                        cx,
-                    );
+                    data_grid.update(cx, |this,cx|{
+                        this.update_data(columns, rows, vec![], cx);
+                    });
 
                     new_tabs.push(SqlResultTab {
                         sql: sql_text,
@@ -117,10 +114,9 @@ impl SqlResultTabContainer {
                         one_core::storage::DatabaseType::MySQL,
                     )
                     .editable(false)
-                    .show_toolbar(true)
-                    .show_pagination(false);
+                    .show_toolbar(true);
 
-                    let data_grid = DataGrid::new(config, window, cx);
+                    let data_grid = cx.new(|cx|DataGrid::new(config, window, cx));
 
                     // 准备执行结果数据
                     let columns = vec![
@@ -133,12 +129,9 @@ impl SqlResultTabContainer {
                     ]];
 
                     // 更新DataGrid数据
-                    data_grid.update_data(columns, rows, vec![], cx);
-                    data_grid.update_query_info(
-                        exec_result.elapsed_ms as u128,
-                        sql_text.clone(),
-                        cx,
-                    );
+                    data_grid.update(cx, |this,cx|{
+                        this.update_data(columns, rows, vec![], cx);
+                    });
 
                     new_tabs.push(SqlResultTab {
                         sql: sql_text,
@@ -157,19 +150,18 @@ impl SqlResultTabContainer {
                         one_core::storage::DatabaseType::MySQL,
                     )
                     .editable(false)
-                    .show_toolbar(true)
-                    .show_pagination(false);
+                    .show_toolbar(true);
 
-                    let data_grid = DataGrid::new(config, window, cx);
+                    let data_grid = cx.new(|cx|DataGrid::new(config, window, cx));
 
                     // 准备错误数据
                     let columns = vec![Column::new("Error", "Error")];
                     let rows = vec![vec![error.message.clone()]];
 
                     // 更新DataGrid数据
-                    data_grid.update_data(columns, rows, vec![], cx);
-                    data_grid.update_query_info(0, sql_text.clone(), cx);
-
+                    data_grid.update(cx, |this, cx| {
+                        this.update_data(columns, rows, vec![], cx);
+                    });
                     new_tabs.push(SqlResultTab {
                         sql: sql_text,
                         result: result.clone(),
@@ -268,7 +260,7 @@ impl Render for SqlResultTabContainer {
                                     .gap_0()
                                     // 工具栏（只读模式，提供基本功能）
                                     .child(
-                                        data_grid.render_toolbar(
+                                        data_grid.read(cx).render_toolbar(
                                             |_cx| {}, // 刷新功能（只读模式下无操作）
                                             |_cx| {}, // 保存功能（只读模式下无操作）
                                             window,
@@ -276,7 +268,7 @@ impl Render for SqlResultTabContainer {
                                         )
                                     )
                                     // 表格区域 - 移除额外的容器包装，给编辑器更多空间
-                                    .child(data_grid.render_table_area(window, cx))
+                                    .child(data_grid.read(cx).render_table_area(window, cx))
                             })
                             .unwrap_or_else(|| {
                                 div()

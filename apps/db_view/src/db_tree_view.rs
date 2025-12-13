@@ -15,7 +15,7 @@ use gpui_component::{
     spinner::Spinner,
     context_menu_tree::{context_menu_tree, ContextMenuTreeState}
 };
-use tracing::log::{error, info, trace, warn};
+use tracing::log::{error, info, trace};
 
 // 3. 当前 crate 导入（按模块分组）
 use db::{GlobalDbState, DbNode, DbNodeType};
@@ -53,8 +53,6 @@ pub enum DbTreeViewEvent {
     ExportData { node_id: String },
     /// 关闭连接
     CloseConnection { node_id: String },
-    /// 编辑连接
-    EditConnection { node_id: String },
     /// 删除连接
     DeleteConnection { node_id: String },
     /// 编辑数据库
@@ -633,6 +631,56 @@ impl DbTreeView {
         self.db_nodes.get(node_id)
     }
 
+    /// 关闭连接并清理相关状态
+    pub fn close_connection(&mut self, connection_id: &str, cx: &mut Context<Self>) {
+        info!("Closing connection in DbTreeView: {}", connection_id);
+        
+        // 清理连接节点的所有后代
+        self.clear_node_descendants(connection_id);
+        
+        // 将连接节点重置为未连接状态
+        if let Some(node) = self.db_nodes.get_mut(connection_id) {
+            node.children.clear();
+            node.children_loaded = false;
+        }
+        
+        // 确保节点处于收起状态
+        self.expanded_nodes.remove(connection_id);
+        
+        // 清理加载和错误状态
+        self.loaded_children.remove(connection_id);
+        self.loading_nodes.remove(connection_id);
+        self.error_nodes.remove(connection_id);
+        
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 关闭数据库并清理相关状态
+    pub fn close_database(&mut self, database_node_id: &str, cx: &mut Context<Self>) {
+        info!("Closing database in DbTreeView: {}", database_node_id);
+        
+        // 清理数据库节点的所有后代
+        self.clear_node_descendants(database_node_id);
+        
+        // 将数据库节点重置为未展开状态
+        if let Some(node) = self.db_nodes.get_mut(database_node_id) {
+            node.children.clear();
+            node.children_loaded = false;
+        }
+        
+        // 确保节点处于收起状态
+        self.expanded_nodes.remove(database_node_id);
+        
+        // 清理加载和错误状态
+        self.loaded_children.remove(database_node_id);
+        self.loading_nodes.remove(database_node_id);
+        self.error_nodes.remove(database_node_id);
+        
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
     /// 获取当前选中的数据库名称
     pub fn get_selected_database(&self) -> Option<String> {
         if let Some(item) = &self.selected_item {
@@ -896,7 +944,6 @@ impl Render for DbTreeView {
                                                                         .item(Self::create_menu_item(&node_id_clone, "运行SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::RunSqlFile { node_id: n }))
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_clone, "关闭连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseConnection { node_id: n }))
-                                                                        .item(Self::create_menu_item(&node_id_clone, "编辑连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditConnection { node_id: n }))
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_clone, "删除连接".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteConnection { node_id: n }))
                                                                         .separator();

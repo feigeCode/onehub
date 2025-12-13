@@ -1,11 +1,8 @@
-use gpui::{
-    div, px, AnyElement, App, AppContext, Corner, Entity, IntoElement, ParentElement, Pixels,
-    SharedString, Styled, Window,
-};
+use gpui::{div, px, AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, Pixels, Render, SharedString, Styled, Subscription, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    h_flex
+    ,
     resizable::{resizable_panel, v_resizable},
     table::{Column, Table, TableState},
     ActiveTheme as _, IconName, Sizable as _, Size, WindowExt,
@@ -14,7 +11,7 @@ use gpui_component::{
 use crate::multi_text_editor::{create_multi_text_editor_with_content, MultiTextEditor};
 use crate::results_delegate::{EditorTableDelegate, RowChange};
 use db::{TableCellChange, TableRowChange, TableSaveRequest};
-
+use gpui_component::table::TableEvent;
 // ============================================================================
 // DataGrid - 可复用的数据表格组件
 // ============================================================================
@@ -33,9 +30,7 @@ pub struct DataGridConfig {
     /// 是否可编辑
     pub editable: bool,
     /// 是否显示工具栏
-    pub show_toolbar: bool,
-    /// 是否显示分页
-    pub show_pagination: bool,
+    pub show_toolbar: bool
 }
 
 impl DataGridConfig {
@@ -51,8 +46,7 @@ impl DataGridConfig {
             connection_id: connection_id.into(),
             database_type,
             editable: true,
-            show_toolbar: true,
-            show_pagination: true,
+            show_toolbar: true
         }
     }
 
@@ -66,63 +60,71 @@ impl DataGridConfig {
         self
     }
 
-    pub fn show_pagination(mut self, show: bool) -> Self {
-        self.show_pagination = show;
-        self
-    }
 }
 
 /// 数据表格组件
 pub struct DataGrid {
     config: DataGridConfig,
-    table: Entity<TableState<EditorTableDelegate>>,
+    pub(crate) table: Entity<TableState<EditorTableDelegate>>,
     status_msg: Entity<String>,
     /// Text editor for large text editing
     text_editor: Entity<MultiTextEditor>,
     /// Currently editing cell position
     editing_large_text: Entity<Option<(usize, usize)>>,
-    /// Current page (1-based)
-    current_page: Entity<usize>,
-    /// Page size
-    page_size: Entity<usize>,
-    /// Total row count
-    total_count: Entity<usize>,
     /// Editor visibility state
     editor_visible: Entity<bool>,
-    /// Query duration in milliseconds
-    query_duration: Entity<u128>,
-    /// Current query SQL
-    current_sql: Entity<String>,
+
+    _table_sub: Option<Subscription>
 }
 
 impl DataGrid {
-    pub fn new(config: DataGridConfig, window: &mut Window, cx: &mut App) -> Self {
+    pub fn new(config: DataGridConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let table = cx.new(|cx| {
             TableState::new(EditorTableDelegate::new(vec![], vec![], window, cx), window, cx)
         });
+
         let status_msg = cx.new(|_| "Ready".to_string());
         let editing_large_text = cx.new(|_| None);
-        let current_page = cx.new(|_| 1usize);
-        let page_size = cx.new(|_| 500usize);
-        let total_count = cx.new(|_| 0usize);
         let editor_visible = cx.new(|_| false);
         let text_editor = create_multi_text_editor_with_content(None, window, cx);
-        let query_duration = cx.new(|_| 0u128);
-        let current_sql = cx.new(|_| String::new());
 
-        Self {
+        let mut result = Self {
             config,
             table,
             status_msg,
             text_editor,
             editing_large_text,
-            current_page,
-            page_size,
-            total_count,
             editor_visible,
-            query_duration,
-            current_sql,
-        }
+            _table_sub: None,
+        };
+
+        result.bind_table_event(window, cx);
+
+        result
+    }
+
+    pub fn bind_table_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _sub = cx.subscribe_in(&self.table, window, |this, _,evt:& TableEvent , window, cx| {
+            match evt {
+                TableEvent::SelectCell(row, col) => {
+                    let is_editor_visible = *this.editor_visible().read(cx);
+                    if is_editor_visible {
+                        let last_editing_pos = *this.editing_large_text().read(cx);
+
+                        if let Some((row_ix, col_ix)) = last_editing_pos {
+
+                            if *row != row_ix || col_ix != *col {
+                                this.handle_cell_selection(*row, *col, window, cx);
+                            }
+
+                        }
+                    }
+
+                }
+                _ => {}
+            }
+        });
+        self._table_sub = Some(_sub);
     }
 
     /// 获取表格状态
@@ -135,30 +137,6 @@ impl DataGrid {
         &self.status_msg
     }
 
-    /// 获取当前页码
-    pub fn current_page(&self) -> &Entity<usize> {
-        &self.current_page
-    }
-
-    /// 获取页大小
-    pub fn page_size(&self) -> &Entity<usize> {
-        &self.page_size
-    }
-
-    /// 获取总数
-    pub fn total_count(&self) -> &Entity<usize> {
-        &self.total_count
-    }
-
-    /// 获取查询耗时
-    pub fn query_duration(&self) -> &Entity<u128> {
-        &self.query_duration
-    }
-
-    /// 获取当前SQL
-    pub fn current_sql(&self) -> &Entity<String> {
-        &self.current_sql
-    }
 
     /// 获取编辑器可见状态
     pub fn editor_visible(&self) -> &Entity<bool> {
@@ -198,31 +176,6 @@ impl DataGrid {
             eprintln!("Called state.refresh()");
         });
     }
-
-    /// 更新分页信息
-    pub fn update_pagination(&self, page: usize, total: usize, cx: &mut App) {
-        self.current_page.update(cx, |p, cx| {
-            *p = page;
-            cx.notify();
-        });
-        self.total_count.update(cx, |t, cx| {
-            *t = total;
-            cx.notify();
-        });
-    }
-
-    /// 更新查询信息
-    pub fn update_query_info(&self, duration: u128, sql: String, cx: &mut App) {
-        self.query_duration.update(cx, |d, cx| {
-            *d = duration;
-            cx.notify();
-        });
-        self.current_sql.update(cx, |s, cx| {
-            *s = sql;
-            cx.notify();
-        });
-    }
-
     /// 获取变更数据
     pub fn get_changes(&self, cx: &App) -> Vec<RowChange> {
         self.table.read(cx).delegate().get_changes()
@@ -463,8 +416,8 @@ impl DataGrid {
         &self,
         on_refresh: F,
         on_save: G,
-        window: &mut Window,
-        cx: &mut App,
+        _window: &mut Window,
+        cx: & App,
     ) -> AnyElement
     where
         F: Fn(&mut App) + Clone + 'static,
@@ -592,137 +545,8 @@ impl DataGrid {
             .into_any_element()
     }
 
-    /// 渲染底部状态栏
-    pub fn render_status_bar<F, G, H>(
-        &self,
-        on_prev_page: F,
-        on_next_page: G,
-        on_page_size_change: H,
-        cx: &mut App,
-    ) -> AnyElement
-    where
-        F: Fn(&mut App) + Clone + 'static,
-        G: Fn(&mut App) + Clone + 'static,
-        H: Fn(usize, &mut App) + Clone + 'static,
-    {
-        let filtered_count = self.table.read(cx).delegate().filtered_row_count();
-        let total_rows = self.table.read(cx).delegate().rows.len();
-        let current_page_size = *self.page_size.read(cx);
-
-        let on_prev = on_prev_page.clone();
-        let on_next = on_next_page.clone();
-
-        h_flex()
-            .gap_3()
-            .items_center()
-            .px_2()
-            .py_1()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            // 记录数显示
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .child({
-                        if filtered_count < total_rows {
-                            format!(
-                                "显示 {} 条（共 {} 条，总计 {} 条）",
-                                filtered_count,
-                                total_rows,
-                                self.total_count.read(cx)
-                            )
-                        } else {
-                            format!(
-                                "第 {} 页（共 {} 条）",
-                                self.current_page.read(cx),
-                                self.total_count.read(cx)
-                            )
-                        }
-                    }),
-            )
-            // 查询耗时
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("查询耗时 {}ms", self.query_duration.read(cx))),
-            )
-            // SQL显示
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .flex_1()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(format!("SQL: {}", self.current_sql.read(cx))),
-            )
-            // 分页控件
-            .child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        Button::new("prev-page")
-                            .with_size(Size::Small)
-                            .icon(IconName::ChevronLeft)
-                            .on_click(move |_, _, cx| on_prev(cx)),
-                    )
-                    .child({
-                        let label = match current_page_size {
-                            0 => "全部".to_string(),
-                            n => format!("{}", n),
-                        };
-                        let on_change_500 = on_page_size_change.clone();
-                        let on_change_1000 = on_page_size_change.clone();
-                        let on_change_2000 = on_page_size_change.clone();
-                        let on_change_all = on_page_size_change.clone();
-
-                        Button::new("page-size-selector")
-                            .with_size(Size::Small)
-                            .label(label)
-                            .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-                                let on_500 = on_change_500.clone();
-                                let on_1000 = on_change_1000.clone();
-                                let on_2000 = on_change_2000.clone();
-                                let on_all = on_change_all.clone();
-
-                                menu.item(
-                                    PopupMenuItem::new("500")
-                                        .checked(current_page_size == 500)
-                                        .on_click(move |_, _, cx| on_500(500, cx)),
-                                )
-                                .item(
-                                    PopupMenuItem::new("1000")
-                                        .checked(current_page_size == 1000)
-                                        .on_click(move |_, _, cx| on_1000(1000, cx)),
-                                )
-                                .item(
-                                    PopupMenuItem::new("2000")
-                                        .checked(current_page_size == 2000)
-                                        .on_click(move |_, _, cx| on_2000(2000, cx)),
-                                )
-                                .item(
-                                    PopupMenuItem::new("全部")
-                                        .checked(current_page_size == 0)
-                                        .on_click(move |_, _, cx| on_all(0, cx)),
-                                )
-                            })
-                    })
-                    .child(
-                        Button::new("next-page")
-                            .with_size(Size::Small)
-                            .icon(IconName::ChevronRight)
-                            .on_click(move |_, _, cx| on_next(cx)),
-                    ),
-            )
-            .into_any_element()
-    }
-
     /// 渲染表格区域（包含可选的编辑器）
-    pub fn render_table_area(&self, _window: &mut Window, cx: &mut App) -> AnyElement {
+    pub fn render_table_area(&self, _window: &mut Window, cx: & App) -> AnyElement {
         let is_editor_visible = *self.editor_visible.read(cx);
 
         if is_editor_visible {
@@ -776,6 +600,12 @@ impl DataGrid {
         }
     }
 }
+//
+// impl Render for DataGrid {
+//     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+//
+//     }
+// }
 
 impl Clone for DataGrid {
     fn clone(&self) -> Self {
@@ -785,12 +615,8 @@ impl Clone for DataGrid {
             status_msg: self.status_msg.clone(),
             text_editor: self.text_editor.clone(),
             editing_large_text: self.editing_large_text.clone(),
-            current_page: self.current_page.clone(),
-            page_size: self.page_size.clone(),
-            total_count: self.total_count.clone(),
             editor_visible: self.editor_visible.clone(),
-            query_duration: self.query_duration.clone(),
-            current_sql: self.current_sql.clone(),
+            _table_sub: None,
         }
     }
 }

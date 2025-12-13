@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use anyhow::Result;
-use gpui::{App, AppContext, Context, Div, Entity, IntoElement, ParentElement, Render, Styled as _, Task, Window};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, Styled as _, Subscription, Task, Window};
 use gpui_component::highlighter::Language;
-use gpui_component::input::{CompletionProvider, Input, InputState};
+use gpui_component::input::{CompletionProvider, Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme, Rope, RopeExt};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
@@ -540,15 +540,26 @@ impl CompletionProvider for OrderByCompletionProvider {
     }
 }
 
+pub enum FilterEditorEvent {
+    QueryApply
+}
+
 pub struct SimpleCodeEditor {
     editor: Entity<InputState>,
+    _sub: Subscription
 }
 
 impl SimpleCodeEditor {
 
-    pub fn new(editor: Entity<InputState>) -> Self {
+    pub fn new(editor: Entity<InputState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let _sub = cx.subscribe_in(&editor, window, | _, _, event: &InputEvent, _, cx| {
+            if let InputEvent::PressEnter { .. } = event {
+                cx.emit(FilterEditorEvent::QueryApply);
+            }
+        });
         Self {
             editor,
+            _sub
         }
     }
     pub fn input(&self) -> Entity<InputState> {
@@ -568,37 +579,39 @@ impl SimpleCodeEditor {
     }
 }
 
+impl EventEmitter<FilterEditorEvent> for  SimpleCodeEditor {
+    
+}
+
 impl Render for SimpleCodeEditor {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        Input::new(&self.editor).size_full()
+        Input::new(&self.editor).cleanable( true).size_full()
     }
 }
 
 
 pub fn create_simple_editor(
-    placeholder: &str,
     window: &mut Window,
     cx: &mut Context<SimpleCodeEditor>,
 ) -> SimpleCodeEditor {
-
-
     let editor = cx.new(|cx| {
         let editor = InputState::new(window, cx)
             .code_editor(Language::from_str("sql"))
             .multi_line(false)
-            .placeholder(placeholder.to_string());
-
+            .clean_on_escape();
 
         editor
     });
 
-    SimpleCodeEditor::new(editor)
+    SimpleCodeEditor::new(editor, window, cx)
 }
 
 // A combined component for table filtering that includes both WHERE and ORDER BY editors
 pub struct TableFilterEditor {
     where_editor: Entity<SimpleCodeEditor>,
     order_by_editor: Entity<SimpleCodeEditor>,
+    _where_sub: Subscription,
+    _order_by_sub: Subscription
 }
 
 impl TableFilterEditor {
@@ -606,12 +619,29 @@ impl TableFilterEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let where_editor = cx.new(|cx| create_simple_editor("Enter WHERE clause conditions (e.g., name = 'John' AND status = 'active')...", window, cx));
-        let order_by_editor = cx.new(|cx| create_simple_editor("Enter ORDER BY clause (e.g., name ASC, created_date DESC)...", window, cx));
+        let where_editor = cx.new(|cx| create_simple_editor(window, cx));
+        let order_by_editor = cx.new(|cx| create_simple_editor(window, cx));
+        let _where_sub = cx.subscribe_in(&where_editor, window, |_, _, evt: &FilterEditorEvent, _,cx| {
+            match evt {
+                FilterEditorEvent::QueryApply => {
+                    cx.emit(FilterEditorEvent::QueryApply);
+                },
+            }
+        });
+        let _order_by_sub = cx.subscribe_in(&order_by_editor, window, |_, _, evt: &FilterEditorEvent, _,cx| {
+            match evt {
+                FilterEditorEvent::QueryApply => {
+                    cx.emit(FilterEditorEvent::QueryApply);
+                },
+            }
+        });
+
 
         Self {
             where_editor,
             order_by_editor,
+            _where_sub,
+            _order_by_sub
         }
     }
 
@@ -650,28 +680,6 @@ impl TableFilterEditor {
             });
         });
     }
-
-    fn label_render(&self, is_where: bool, mut label: Div, cx: &mut Context<Self>) -> Div{
-        let has_content;
-        if is_where {
-            has_content = !self.where_editor.read(cx).get_text(cx).trim().is_empty();
-        }else {
-            has_content = !self.order_by_editor.read(cx).get_text(cx).trim().is_empty();
-        }
-        if has_content {
-            label = label
-                .bg(cx.theme().accent)
-                .text_color(cx.theme().accent_foreground);
-        } else {
-            label = label.text_color(cx.theme().muted_foreground);
-        }
-
-        if is_where {
-            label.child("WHERE")
-        }else {
-            label.child("ORDER BY")
-        }
-    }
 }
 
 impl Render for TableFilterEditor {
@@ -682,19 +690,18 @@ impl Render for TableFilterEditor {
         h_flex()
             .size_full()
             .gap_3()
-            .px_2()
             .child(
                 h_flex()
                     .flex_1()
                     .items_center()
                     .gap_2()
                     .child({
-                        let label = div()
+                        div()
                             .py_1()
-                            .rounded_md()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD);
-                        self.label_render(true, label, cx)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().primary)
+                            .child("WHERE")
                     })
                     .child(
                         div()
@@ -707,15 +714,14 @@ impl Render for TableFilterEditor {
                     .flex_1()
                     .items_center()
                     .gap_2()
-                    .child({
-                        let label = div()
+                    .child(
+                        div()
                             .py_1()
-                            .rounded_md()
                             .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD);
-
-                        self.label_render(false, label, cx)
-                    })
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().primary)
+                            .child("ORDER BY")
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -723,4 +729,9 @@ impl Render for TableFilterEditor {
                     ),
             )
     }
+}
+
+
+impl EventEmitter<FilterEditorEvent> for TableFilterEditor {
+    
 }
