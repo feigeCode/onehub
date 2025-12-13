@@ -1,17 +1,20 @@
-use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, Pixels, SharedString, Styled, Subscription, Window};
+use gpui::{
+    div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement,
+    Pixels, SharedString, Styled, Subscription, Window,
+};
+use gpui::prelude::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
-    h_flex
-    ,
+    h_flex,
     resizable::{resizable_panel, v_resizable},
-    table::{Column, Table, TableState},
+    table::{Column, Table, TableEvent, TableState},
     ActiveTheme as _, IconName, Sizable as _, Size, WindowExt,
 };
 
 use crate::multi_text_editor::{create_multi_text_editor_with_content, MultiTextEditor};
 use crate::results_delegate::{EditorTableDelegate, RowChange};
 use db::{GlobalDbState, TableCellChange, TableRowChange, TableSaveRequest};
-use gpui_component::table::TableEvent;
+
 // ============================================================================
 // DataGrid - 可复用的数据表格组件
 // ============================================================================
@@ -19,18 +22,12 @@ use gpui_component::table::TableEvent;
 /// 数据表格配置
 #[derive(Clone)]
 pub struct DataGridConfig {
-    /// 数据库名称
     pub database_name: String,
-    /// 表名称
     pub table_name: String,
-    /// 连接ID
     pub connection_id: String,
-    /// 数据库类型
     pub database_type: one_core::storage::DatabaseType,
-    /// 是否可编辑
     pub editable: bool,
-    /// 是否显示工具栏
-    pub show_toolbar: bool
+    pub show_toolbar: bool,
 }
 
 impl DataGridConfig {
@@ -46,7 +43,7 @@ impl DataGridConfig {
             connection_id: connection_id.into(),
             database_type,
             editable: true,
-            show_toolbar: true
+            show_toolbar: true,
         }
     }
 
@@ -59,7 +56,19 @@ impl DataGridConfig {
         self.show_toolbar = show;
         self
     }
+}
 
+/// 编辑器状态 - 合并 editing_large_text 和 editor_visible
+#[derive(Clone, Default)]
+pub struct EditorState {
+    /// 当前编辑的单元格位置，None 表示编辑器不可见
+    editing_cell: Option<(usize, usize)>,
+}
+
+impl EditorState {
+    fn is_visible(&self) -> bool {
+        self.editing_cell.is_some()
+    }
 }
 
 /// 数据表格组件
@@ -67,14 +76,9 @@ pub struct DataGrid {
     config: DataGridConfig,
     pub(crate) table: Entity<TableState<EditorTableDelegate>>,
     status_msg: Entity<String>,
-    /// Text editor for large text editing
     text_editor: Entity<MultiTextEditor>,
-    /// Currently editing cell position
-    editing_large_text: Entity<Option<(usize, usize)>>,
-    /// Editor visibility state
-    editor_visible: Entity<bool>,
-
-    _table_sub: Option<Subscription>
+    editor_state: Entity<EditorState>,
+    _table_sub: Option<Subscription>,
 }
 
 impl DataGrid {
@@ -82,10 +86,8 @@ impl DataGrid {
         let table = cx.new(|cx| {
             TableState::new(EditorTableDelegate::new(vec![], vec![], window, cx), window, cx)
         });
-
         let status_msg = cx.new(|_| "Ready".to_string());
-        let editing_large_text = cx.new(|_| None);
-        let editor_visible = cx.new(|_| false);
+        let editor_state = cx.new(|_| EditorState::default());
         let text_editor = create_multi_text_editor_with_content(None, window, cx);
 
         let mut result = Self {
@@ -93,62 +95,47 @@ impl DataGrid {
             table,
             status_msg,
             text_editor,
-            editing_large_text,
-            editor_visible,
+            editor_state,
             _table_sub: None,
         };
-
         result.bind_table_event(window, cx);
-
         result
     }
 
-    pub fn bind_table_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let _sub = cx.subscribe_in(&self.table, window, |this, _,evt:& TableEvent , window, cx| {
-            match evt {
-                TableEvent::SelectCell(row, col) => {
-                    let is_editor_visible = *this.editor_visible().read(cx);
-                    if is_editor_visible {
-                        let last_editing_pos = *this.editing_large_text().read(cx);
-
-                        if let Some((row_ix, col_ix)) = last_editing_pos {
-
-                            if *row != row_ix || col_ix != *col {
-                                this.handle_cell_selection(*row, *col, window, cx);
-                            }
-
-                        }
+    fn bind_table_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sub = cx.subscribe_in(&self.table, window, |this, _, evt: &TableEvent, window, cx| {
+            if let TableEvent::SelectCell(row, col) = evt {
+                let state = this.editor_state.read(cx);
+                if let Some((old_row, old_col)) = state.editing_cell {
+                    if *row != old_row || *col != old_col {
+                        this.switch_editing_cell(*row, *col, window, cx);
                     }
-
                 }
-                _ => {}
             }
         });
-        self._table_sub = Some(_sub);
+        self._table_sub = Some(sub);
     }
 
-    /// 获取表格状态
+    // ========== 公共访问器 ==========
+
     pub fn table(&self) -> &Entity<TableState<EditorTableDelegate>> {
         &self.table
     }
 
-    /// 获取状态消息
     pub fn status_msg(&self) -> &Entity<String> {
         &self.status_msg
     }
 
-
-    /// 获取编辑器可见状态
-    pub fn editor_visible(&self) -> &Entity<bool> {
-        &self.editor_visible
+    pub fn editor_visible(&self) -> &Entity<EditorState> {
+        &self.editor_state
     }
 
-    /// 获取当前编辑位置
-    pub fn editing_large_text(&self) -> &Entity<Option<(usize, usize)>> {
-        &self.editing_large_text
+    pub fn editing_large_text(&self) -> &Entity<EditorState> {
+        &self.editor_state
     }
 
-    /// 更新状态消息
+    // ========== 状态更新 ==========
+
     pub fn update_status(&self, message: String, cx: &mut App) {
         self.status_msg.update(cx, |s, cx| {
             *s = message;
@@ -156,7 +143,6 @@ impl DataGrid {
         });
     }
 
-    /// 更新数据
     pub fn update_data(
         &self,
         columns: Vec<Column>,
@@ -164,34 +150,116 @@ impl DataGrid {
         pk_columns: Vec<usize>,
         cx: &mut App,
     ) {
-        eprintln!("DataGrid::update_data called with {} columns, {} rows", columns.len(), rows.len());
         self.table.update(cx, |state, cx| {
-            eprintln!("Before update_data: delegate has {} columns, {} rows", 
-                state.delegate().columns.len(), state.delegate().rows.len());
             state.delegate_mut().update_data(columns, rows, cx);
-            eprintln!("After update_data: delegate has {} columns, {} rows", 
-                state.delegate().columns.len(), state.delegate().rows.len());
             state.delegate_mut().set_primary_keys(pk_columns);
             state.refresh(cx);
-            eprintln!("Called state.refresh()");
         });
     }
-    /// 获取变更数据
+
+    // ========== 编辑器操作 ==========
+
+    /// 保存当前编辑器内容到单元格
+    fn save_editor_content(&self, cx: &mut App) {
+        let state = self.editor_state.read(cx);
+        let Some((row_ix, col_ix)) = state.editing_cell else {
+            return;
+        };
+
+        let content = self.text_editor.read(cx).get_active_text(cx);
+        self.table.update(cx, |state, cx| {
+            let delegate = state.delegate_mut();
+            if let Some(row) = delegate.rows.get_mut(row_ix) {
+                if let Some(cell) = row.get_mut(col_ix - 1) {
+                    if *cell != content {
+                        *cell = content;
+                        delegate.modified_cells.insert((row_ix, col_ix - 1));
+                    }
+                }
+            }
+            state.refresh(cx);
+        });
+    }
+
+    /// 加载单元格内容到编辑器
+    fn load_cell_to_editor(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) {
+        let value = self
+            .table
+            .read(cx)
+            .delegate()
+            .rows
+            .get(row_ix)
+            .and_then(|r| r.get(col_ix - 1))
+            .cloned()
+            .unwrap_or_default();
+
+        self.text_editor.update(cx, |editor, cx| {
+            editor.set_active_text(value, window, cx);
+        });
+
+        self.editor_state.update(cx, |state, cx| {
+            state.editing_cell = Some((row_ix, col_ix));
+            cx.notify();
+        });
+    }
+
+    /// 切换编辑单元格（保存旧内容，加载新内容）
+    fn switch_editing_cell(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) {
+        if !self.editor_state.read(cx).is_visible() {
+            return;
+        }
+        self.save_editor_content(cx);
+        self.load_cell_to_editor(row_ix, col_ix, window, cx);
+    }
+
+    /// 切换编辑器显示状态
+    fn toggle_editor(&self, window: &mut Window, cx: &mut App) {
+        let is_visible = self.editor_state.read(cx).is_visible();
+
+        if is_visible {
+            // 关闭前保存内容
+            self.save_editor_content(cx);
+            self.editor_state.update(cx, |state, cx| {
+                state.editing_cell = None;
+                cx.notify();
+            });
+        } else {
+            // 打开编辑器，加载当前选中单元格
+            let (row_ix, col_ix) = {
+                let table = self.table.read(cx);
+                table
+                    .editing_cell()
+                    .or_else(|| table.selected_cell())
+                    .unwrap_or((0, 1))
+            };
+            self.load_cell_to_editor(row_ix, col_ix, window, cx);
+        }
+    }
+
+    pub fn handle_cell_selection(
+        &self,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.switch_editing_cell(row_ix, col_ix, window, cx);
+    }
+
+    // ========== 数据变更 ==========
+
     pub fn get_changes(&self, cx: &App) -> Vec<RowChange> {
         self.table.read(cx).delegate().get_changes()
     }
 
-    /// 获取列名
     pub fn column_names(&self, cx: &App) -> Vec<String> {
         self.table.read(cx).delegate().column_names()
     }
 
-    /// 获取主键列
     pub fn primary_key_columns(&self, cx: &App) -> Vec<usize> {
         self.table.read(cx).delegate().primary_key_columns().to_vec()
     }
 
-    /// 清除变更
     pub fn clear_changes(&self, cx: &mut App) {
         self.table.update(cx, |state, cx| {
             state.delegate_mut().clear_changes();
@@ -199,8 +267,10 @@ impl DataGrid {
         });
     }
 
-    /// 转换行变更为表变更
-    pub fn convert_row_changes(changes: Vec<RowChange>, column_names: &[String]) -> Vec<TableRowChange> {
+    pub fn convert_row_changes(
+        changes: Vec<RowChange>,
+        column_names: &[String],
+    ) -> Vec<TableRowChange> {
         changes
             .into_iter()
             .filter_map(|change| match change {
@@ -209,7 +279,7 @@ impl DataGrid {
                     original_data,
                     changes,
                 } => {
-                    let converted_changes: Vec<TableCellChange> = changes
+                    let converted: Vec<TableCellChange> = changes
                         .into_iter()
                         .map(|c| TableCellChange {
                             column_index: c.col_ix,
@@ -223,12 +293,12 @@ impl DataGrid {
                         })
                         .collect();
 
-                    if converted_changes.is_empty() {
+                    if converted.is_empty() {
                         None
                     } else {
                         Some(TableRowChange::Updated {
                             original_data,
-                            changes: converted_changes,
+                            changes: converted,
                         })
                     }
                 }
@@ -239,7 +309,6 @@ impl DataGrid {
             .collect()
     }
 
-    /// 创建保存请求
     pub fn create_save_request(&self, cx: &App) -> Option<TableSaveRequest> {
         let changes = self.get_changes(cx);
         if changes.is_empty() {
@@ -264,86 +333,71 @@ impl DataGrid {
     }
 
     fn handle_save_changes(&self, _: &ClickEvent, _window: &mut Window, cx: &mut App) {
-        if  let Some (save_request) = self.create_save_request(cx) {
-            let change_count = save_request.changes.len();
-            self.update_status(format!("Saving {} changes...", change_count), cx);
+        let Some(save_request) = self.create_save_request(cx) else {
+            return;
+        };
 
-            let global_state = cx.global::<GlobalDbState>().clone();
-            let connection_id = self.config.connection_id.clone();
-            let status_msg = self.status_msg.clone();
-            let clone_self = self.clone();
+        let change_count = save_request.changes.len();
+        self.update_status(format!("Saving {} changes...", change_count), cx);
 
-            cx.spawn(async move |cx: &mut AsyncApp| {
-                let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
-                    Ok(result) => result,
-                    Err(e) => {
-                        cx.update(|cx| {
-                            status_msg.update(cx, |s, cx| {
-                                *s = format!("Failed to get connection: {}", e);
-                                cx.notify();
-                            });
-                        }).ok();
-                        return;
-                    }
-                };
+        let global_state = cx.global::<GlobalDbState>().clone();
+        let connection_id = self.config.connection_id.clone();
+        let status_msg = self.status_msg.clone();
+        let this = self.clone();
 
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let result = async {
+                let (plugin, conn_arc) = global_state
+                    .get_plugin_and_connection(&connection_id)
+                    .await?;
                 let conn = conn_arc.read().await;
+                plugin.apply_table_changes(&**conn, save_request).await
+            }
+            .await;
 
-                match plugin.apply_table_changes(&**conn, save_request).await {
-                    Ok(response) => {
-                        cx.update(|cx| {
-                            if response.errors.is_empty() {
-                                clone_self.clear_changes(cx);
-                                status_msg.update(cx, |s, cx| {
-
-                                    *s = format!("Successfully saved {} changes", response.success_count);
-                                    cx.notify();
-                                });
-                            } else {
-                                status_msg.update(cx, |s, cx| {
-                                    *s = format!(
-                                        "Saved {} changes, {} errors: {}",
-                                        response.success_count,
-                                        response.errors.len(),
-                                        response.errors.first().unwrap_or(&String::new())
-                                    );
-                                    cx.notify();
-                                });
-                            }
-                        }).ok();
-                    }
-                    Err(e) => {
-                        cx.update(|cx| {
-                            status_msg.update(cx, |s, cx| {
-                                *s = format!("Failed to save changes: {}", e);
-                                cx.notify();
-                            });
-                        }).ok();
-                    }
+            cx.update(|cx| match result {
+                Ok(response) if response.errors.is_empty() => {
+                    this.clear_changes(cx);
+                    status_msg.update(cx, |s, cx| {
+                        *s = format!("Successfully saved {} changes", response.success_count);
+                        cx.notify();
+                    });
                 }
-            }).detach();
-        }
-
-
+                Ok(response) => {
+                    status_msg.update(cx, |s, cx| {
+                        *s = format!(
+                            "Saved {} changes, {} errors: {}",
+                            response.success_count,
+                            response.errors.len(),
+                            response.errors.first().unwrap_or(&String::new())
+                        );
+                        cx.notify();
+                    });
+                }
+                Err(e) => {
+                    status_msg.update(cx, |s, cx| {
+                        *s = format!("Failed to save changes: {}", e);
+                        cx.notify();
+                    });
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
-    /// 生成变更SQL
     pub fn generate_changes_sql(&self, cx: &mut App) -> String {
-        let save_request = match self.create_save_request(cx) {
-            Some(req) => req,
-            None => return "-- 没有变更数据".to_string(),
+        let Some(save_request) = self.create_save_request(cx) else {
+            return "-- 没有变更数据".to_string();
         };
 
         let global_state = cx.global::<GlobalDbState>().clone();
-
-        if let Ok(plugin) = global_state.db_manager.get_plugin(&self.config.database_type) {
-            plugin.generate_table_changes_sql(&save_request)
-        } else {
-            "-- 无法获取数据库插件".to_string()
+        match global_state.db_manager.get_plugin(&self.config.database_type) {
+            Ok(plugin) => plugin.generate_table_changes_sql(&save_request),
+            Err(_) => "-- 无法获取数据库插件".to_string(),
         }
     }
 
-    /// 显示SQL预览
     pub fn show_sql_preview(&self, window: &mut Window, cx: &mut App) {
         let sql_content = self.generate_changes_sql(cx);
         let sql_shared: SharedString = sql_content.into();
@@ -375,121 +429,16 @@ impl DataGrid {
         });
     }
 
-    fn load_cell_to_editor(&self, window: &mut Window, cx: &mut App) {
-        let table = self.table.read(cx);
-        let selected_row = table.selected_cell();
-        let editing_cell = table.editing_cell();
+    // ========== 渲染 ==========
 
-        let (row_ix, col_ix) = if let Some((r, c)) = editing_cell {
-            (r, c)
-        } else if let Some((r, c)) = selected_row {
-            (r, c)
-        } else {
-            self.update_status("Please select a cell first".to_string(), cx);
-            return;
-        };
-
-        let value = table
-            .delegate()
-            .rows
-            .get(row_ix)
-            .and_then(|r| r.get(col_ix - 1))
-            .cloned()
-            .unwrap_or_default();
-
-        self.text_editor.update(cx, |editor, cx| {
-            editor.set_active_text(value, window, cx);
-        });
-
-        self.editing_large_text.update(cx, |pos, cx| {
-            *pos = Some((row_ix, col_ix));
-            cx.notify();
-        });
-    }
-
-    pub fn handle_cell_selection(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) {
-        let is_visible = *self.editor_visible.read(cx);
-        if !is_visible {
-            return;
-        }
-
-        let old_pos = *self.editing_large_text.read(cx);
-        if let Some((old_row, old_col)) = old_pos {
-            let editor_content = self.text_editor.read(cx).get_active_text(cx);
-
-            self.table.update(cx, |state, cx| {
-                let delegate = state.delegate_mut();
-                if let Some(row) = delegate.rows.get_mut(old_row) {
-                    if let Some(cell) = row.get_mut(old_col - 1) {
-                        if *cell != editor_content {
-                            *cell = editor_content.clone();
-                            delegate.modified_cells.insert((old_row, old_col - 1));
-                        }
-                    }
-                }
-                state.refresh(cx);
-            });
-        }
-
-        let value = self
-            .table
-            .read(cx)
-            .delegate()
-            .rows
-            .get(row_ix)
-            .and_then(|r| r.get(col_ix - 1))
-            .cloned()
-            .unwrap_or_default();
-
-        self.text_editor.update(cx, |editor, cx| {
-            editor.set_active_text(value, window, cx);
-        });
-
-        self.editing_large_text.update(cx, |pos, cx| {
-            *pos = Some((row_ix, col_ix));
-            cx.notify();
-        });
-    }
-
-    fn toggle_editor(&self, window: &mut Window, cx: &mut App) {
-        let is_visible = *self.editor_visible.read(cx);
-
-        if is_visible {
-            self.editor_visible.update(cx, |visible, cx| {
-                *visible = false;
-                cx.notify();
-            });
-
-            self.editing_large_text.update(cx, |pos, cx| {
-                *pos = None;
-                cx.notify();
-            });
-        } else {
-            self.load_cell_to_editor(window, cx);
-
-            self.editor_visible.update(cx, |visible, cx| {
-                *visible = true;
-                cx.notify();
-            });
-        }
-    }
-
-
-    /// 渲染工具栏
-    pub fn render_toolbar<F>(
-        &self,
-        on_refresh: F,
-        _window: &mut Window,
-        cx: & App,
-    ) -> AnyElement
+    pub fn render_toolbar<F>(&self, on_refresh: F, _window: &mut Window, cx: &App) -> AnyElement
     where
         F: Fn(&mut App) + Clone + 'static,
     {
         let table = self.table.clone();
         let this_for_sql = self.clone();
         let this_for_editor = self.clone();
-        let on_refresh_clone = on_refresh.clone();
-        let on_save_clone = self.clone();
+        let on_save = self.clone();
 
         h_flex()
             .gap_1()
@@ -499,17 +448,16 @@ impl DataGrid {
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
-            // 刷新按钮
             .child(
                 Button::new("refresh-data")
                     .with_size(Size::Medium)
                     .icon(IconName::Refresh)
                     .tooltip("刷新")
-                    .on_click(move |_, _, cx| {
-                        on_refresh_clone(cx);
+                    .on_click({
+                        let on_refresh = on_refresh.clone();
+                        move |_, _, cx| on_refresh(cx)
                     }),
             )
-            // 添加按钮
             .child(
                 Button::new("add-row")
                     .with_size(Size::Medium)
@@ -517,14 +465,9 @@ impl DataGrid {
                     .tooltip("添加行")
                     .on_click({
                         let table = table.clone();
-                        move |_, w, cx| {
-                            table.update(cx, |state, cx| {
-                                state.add_row(w, cx);
-                            });
-                        }
+                        move |_, w, cx| table.update(cx, |state, cx| state.add_row(w, cx))
                     }),
             )
-            // 删除按钮
             .child(
                 Button::new("delete-row")
                     .with_size(Size::Medium)
@@ -537,11 +480,10 @@ impl DataGrid {
                                 if let Some(row_ix) = state.selected_row() {
                                     state.delete_row(row_ix, w, cx);
                                 }
-                            });
+                            })
                         }
                     }),
             )
-            // 撤销按钮
             .child(
                 Button::new("undo-changes")
                     .with_size(Size::Medium)
@@ -553,120 +495,98 @@ impl DataGrid {
                             table.update(cx, |state, cx| {
                                 state.delegate_mut().clear_changes();
                                 cx.notify();
-                            });
+                            })
                         }
                     }),
             )
-            // SQL预览按钮
             .child(
                 Button::new("sql-preview")
                     .with_size(Size::Medium)
                     .icon(IconName::Eye)
                     .tooltip("SQL预览")
-                    .on_click(move |_, w, cx| {
-                        this_for_sql.show_sql_preview(w, cx);
-                    }),
+                    .on_click(move |_, w, cx| this_for_sql.show_sql_preview(w, cx)),
             )
-            // 提交更改按钮
             .child(
                 Button::new("commit-changes")
                     .with_size(Size::Medium)
                     .icon(IconName::ArrowUp)
                     .tooltip("提交更改")
-                    .on_click(move |c, window, cx| {
-                        on_save_clone.handle_save_changes(c, window, cx)
-                    }),
+                    .on_click(move |c, window, cx| on_save.handle_save_changes(c, window, cx)),
             )
-            // 分隔线
             .child(div().w(px(1.0)).h(px(20.0)).bg(cx.theme().border).mx_2())
-            // 图表按钮
             .child(
                 Button::new("chart-view")
                     .with_size(Size::Medium)
                     .icon(IconName::ChartPie)
                     .tooltip("图表"),
             )
-            // 弹性空间
             .child(div().flex_1())
-            // 编辑器切换按钮
             .child({
-                let is_editor_visible = *self.editor_visible.read(cx);
-                let mut btn = Button::new("toggle-editor")
+                let is_visible = self.editor_state.read(cx).is_visible();
+                let btn = Button::new("toggle-editor")
                     .with_size(Size::Medium)
                     .icon(IconName::EditBorder)
                     .tooltip("编辑器");
 
-                if is_editor_visible {
-                    btn = btn.primary();
-                }
-
-                btn.on_click(move |_, w, cx| {
-                    this_for_editor.toggle_editor(w, cx);
-                })
+                let btn = if is_visible { btn.primary() } else { btn };
+                btn.on_click(move |_, w, cx| this_for_editor.toggle_editor(w, cx))
             })
             .into_any_element()
     }
 
-    /// 渲染表格区域（包含可选的编辑器）
-    pub fn render_table_area(&self, _window: &mut Window, cx: & App) -> AnyElement {
-        let is_editor_visible = *self.editor_visible.read(cx);
+    pub fn render_table_area(&self, _window: &mut Window, cx: &App) -> AnyElement {
+        let table_view = Table::new(&self.table).stripe(true).bordered(true);
 
-        if is_editor_visible {
-            div()
-                .flex_1()
-                .w_full()
-                .overflow_hidden()
-                .child(
-                    v_resizable("table-editor-split")
-                        .child(
-                            resizable_panel()
-                                .size(px(300.))
-                                .size_range(px(150.)..Pixels::MAX)
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .bg(cx.theme().background)
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .overflow_hidden()
-                                        .child(Table::new(&self.table).stripe(true).bordered(true)),
-                                ),
-                        )
-                        .child(
-                            resizable_panel()
-                                .size(px(300.))
-                                .size_range(px(150.)..Pixels::MAX)
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .bg(cx.theme().background)
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .overflow_hidden()
-                                        .child(self.text_editor.clone()),
-                                ),
-                        ),
-                )
-                .into_any_element()
-        } else {
-            div()
+        if !self.editor_state.read(cx).is_visible() {
+            return div()
                 .flex_1()
                 .w_full()
                 .h_full()
                 .bg(cx.theme().background)
                 .border_1()
                 .border_color(cx.theme().border)
-                .child(Table::new(&self.table).stripe(true).bordered(true))
-                .into_any_element()
+                .child(table_view)
+                .into_any_element();
         }
+
+        div()
+            .flex_1()
+            .w_full()
+            .overflow_hidden()
+            .child(
+                v_resizable("table-editor-split")
+                    .child(
+                        resizable_panel()
+                            .size(px(300.))
+                            .size_range(px(150.)..Pixels::MAX)
+                            .child(
+                                div()
+                                    .size_full()
+                                    .bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .overflow_hidden()
+                                    .child(table_view),
+                            ),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size(px(300.))
+                            .size_range(px(150.)..Pixels::MAX)
+                            .child(
+                                div()
+                                    .size_full()
+                                    .bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .overflow_hidden()
+                                    .child(self.text_editor.clone()),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 }
-
-// impl Render for DataGrid {
-//     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-//
-//     }
-// }
 
 impl Clone for DataGrid {
     fn clone(&self) -> Self {
@@ -675,8 +595,7 @@ impl Clone for DataGrid {
             table: self.table.clone(),
             status_msg: self.status_msg.clone(),
             text_editor: self.text_editor.clone(),
-            editing_large_text: self.editing_large_text.clone(),
-            editor_visible: self.editor_visible.clone(),
+            editor_state: self.editor_state.clone(),
             _table_sub: None,
         }
     }
