@@ -75,7 +75,6 @@ impl EditorState {
 pub struct DataGrid {
     config: DataGridConfig,
     pub(crate) table: Entity<TableState<EditorTableDelegate>>,
-    status_msg: Entity<String>,
     text_editor: Entity<MultiTextEditor>,
     editor_state: Entity<EditorState>,
     _table_sub: Option<Subscription>,
@@ -86,14 +85,12 @@ impl DataGrid {
         let table = cx.new(|cx| {
             TableState::new(EditorTableDelegate::new(vec![], vec![], window, cx), window, cx)
         });
-        let status_msg = cx.new(|_| "Ready".to_string());
         let editor_state = cx.new(|_| EditorState::default());
         let text_editor = create_multi_text_editor_with_content(None, window, cx);
 
         let mut result = Self {
             config,
             table,
-            status_msg,
             text_editor,
             editor_state,
             _table_sub: None,
@@ -121,10 +118,7 @@ impl DataGrid {
     pub fn table(&self) -> &Entity<TableState<EditorTableDelegate>> {
         &self.table
     }
-
-    pub fn status_msg(&self) -> &Entity<String> {
-        &self.status_msg
-    }
+    
 
     pub fn editor_visible(&self) -> &Entity<EditorState> {
         &self.editor_state
@@ -133,15 +127,7 @@ impl DataGrid {
     pub fn editing_large_text(&self) -> &Entity<EditorState> {
         &self.editor_state
     }
-
-    // ========== 状态更新 ==========
-
-    pub fn update_status(&self, message: String, cx: &mut App) {
-        self.status_msg.update(cx, |s, cx| {
-            *s = message;
-            cx.notify();
-        });
-    }
+    
 
     pub fn update_data(
         &self,
@@ -332,17 +318,14 @@ impl DataGrid {
         })
     }
 
-    fn handle_save_changes(&self, _: &ClickEvent, _window: &mut Window, cx: &mut App) {
+    fn handle_save_changes(&self, _: &ClickEvent, window: &mut Window, cx: &mut App) {
         let Some(save_request) = self.create_save_request(cx) else {
             return;
         };
-
         let change_count = save_request.changes.len();
-        self.update_status(format!("Saving {} changes...", change_count), cx);
-
+        window.push_notification(format!("Saving {} changes...", change_count), cx);
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
-        let status_msg = self.status_msg.clone();
         let this = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -358,27 +341,13 @@ impl DataGrid {
             cx.update(|cx| match result {
                 Ok(response) if response.errors.is_empty() => {
                     this.clear_changes(cx);
-                    status_msg.update(cx, |s, cx| {
-                        *s = format!("Successfully saved {} changes", response.success_count);
-                        cx.notify();
-                    });
+                    notification(cx, format!("Successfully saved {} changes", response.success_count));
                 }
                 Ok(response) => {
-                    status_msg.update(cx, |s, cx| {
-                        *s = format!(
-                            "Saved {} changes, {} errors: {}",
-                            response.success_count,
-                            response.errors.len(),
-                            response.errors.first().unwrap_or(&String::new())
-                        );
-                        cx.notify();
-                    });
+                    notification(cx, format!("Failed to save {} changes: {}", response.errors.len(), response.errors.first().unwrap_or(&String::new())));
                 }
                 Err(e) => {
-                    status_msg.update(cx, |s, cx| {
-                        *s = format!("Failed to save changes: {}", e);
-                        cx.notify();
-                    });
+                    notification(cx, format!("Failed to save changes: {}", e));
                 }
             })
             .ok();
@@ -588,12 +557,20 @@ impl DataGrid {
     }
 }
 
+#[inline]
+pub fn notification(cx: &mut App, error: String){
+    if let Some(window) = cx.active_window() {
+        _ = window.update(cx, |_, w, cx| {
+            w.push_notification(error, cx)
+        });
+    };
+}
+
 impl Clone for DataGrid {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
             table: self.table.clone(),
-            status_msg: self.status_msg.clone(),
             text_editor: self.text_editor.clone(),
             editor_state: self.editor_state.clone(),
             _table_sub: None,

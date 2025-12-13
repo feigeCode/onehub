@@ -1,9 +1,9 @@
 use std::any::Any;
 
-use gpui::{actions, div, AnyElement, App, AppContext, Context, Corner, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window};
+use gpui::{actions, div, AnyElement, App, AppContext, AsyncApp, Context, Corner, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window};
 use gpui_component::{h_flex, table::Column, v_flex, ActiveTheme, IconName, Sizable, Size};
 
-use crate::data_grid::{DataGrid, DataGridConfig};
+use crate::data_grid::{notification, DataGrid, DataGridConfig};
 use crate::filter_editor::{ColumnSchema, FilterEditorEvent, TableFilterEditor, TableSchema};
 use db::{GlobalDbState, TableDataRequest};
 use gpui_component::button::Button;
@@ -130,7 +130,6 @@ impl TableData {
         let connection_id = self.connection_id.clone();
         let table_name = self.table_name.clone();
         let database_name = self.database_name.clone();
-        let status_msg = self.status_msg.clone();
         let data_grid = self.data_grid.clone();
         let page_size = *self.page_size.read(cx);
         let where_clause = self.filter_editor.read(cx).get_where_clause(cx);
@@ -139,21 +138,20 @@ impl TableData {
 
         let this = self.clone();
 
-        cx.spawn(async move |cx| {
+        cx.spawn(async move |cx: &mut AsyncApp| {
             let start_time = std::time::Instant::now();
 
             let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
                 Ok(result) => result,
                 Err(e) => {
                     cx.update(|cx| {
-                        status_msg.update(cx, |s, cx| {
-                            *s = format!("Failed to get connection: {}", e);
-                            cx.notify();
-                        });
+                        notification(cx,format!("Failed to get connection: {}", e));
                     }).ok();
                     return;
                 }
             };
+
+
 
             let conn = conn_arc.read().await;
 
@@ -187,9 +185,7 @@ impl TableData {
                         })
                         .collect();
 
-                    let row_count = rows.len();
                     let total = response.total_count;
-                    let total_pages = if page_size == 0 { 1 } else { (total + page_size - 1) / page_size };
                     let pk_columns = response.primary_key_indices;
                     let duration = start_time.elapsed().as_millis();
                     let sql_str = response.executed_sql;
@@ -243,25 +239,11 @@ impl TableData {
                             *s = sql_str;
                             cx.notify();
                         });
-                        data_grid.update(cx, |grid, cx| {
-                            grid.update_status(
-                                format!("Page {}/{} ({} rows, {} total)", page, total_pages.max(1), row_count, total),
-                                cx,
-                            );
-                        });
-
-                        status_msg.update(cx, |s, cx| {
-                            *s = format!("Page {}/{} ({} rows, {} total)", page, total_pages.max(1), row_count, total);
-                            cx.notify();
-                        });
                     }).ok();
                 }
                 Err(e) => {
                     cx.update(|cx| {
-                        status_msg.update(cx, |s, cx| {
-                            *s = format!("Query failed: {}", e);
-                            cx.notify();
-                        });
+                        notification(cx, format!("Query failed: {}", e))
                     }).ok();
                 }
             }
@@ -316,7 +298,7 @@ impl TableData {
     fn handle_apply_query(&self, cx: &mut App) {
         self.load_data_with_clauses(1, cx);
     }
-    
+
 }
 
 
