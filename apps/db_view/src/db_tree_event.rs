@@ -1,20 +1,73 @@
-use one_core::gpui_tokio::Tokio;
-use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
-use tracing::log::warn;
-use uuid::Uuid;
+// 1. 标准库导入
+// (无需标准库导入)
+
+// 2. 外部 crate 导入（按字母顺序）
 use db::{DbNode, DbNodeType, GlobalDbState};
-use gpui_component::{h_flex, v_flex, WindowExt};
-use one_core::tab_container::{TabContainer, TabItem};
-use crate::{database_objects_tab::DatabaseObjectsPanel, db_tree_view::{DbTreeView, DbTreeViewEvent}};
-use crate::sql_editor_view::SqlEditorTabContent;
-
-
-
-
+use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
+use tracing::log::error;
+use gpui_component::{
+    h_flex, v_flex, WindowExt,
+    notification::Notification,
+};
+use one_core::{
+    gpui_tokio::Tokio,
+    tab_container::{TabContainer, TabItem},
+};
+use uuid::Uuid;
+use one_core::storage::query_model::Query;
+// 3. 当前 crate 导入（按模块分组）
+use crate::{
+    database_objects_tab::DatabaseObjectsPanel,
+    db_tree_view::{DbTreeView, DbTreeViewEvent},
+    sql_editor_view::SqlEditorTabContent,
+};
 
 // Event handler for database tree view events
 pub struct DatabaseEventHandler {
     _tree_subscription: Subscription,
+}
+
+impl DatabaseEventHandler {
+    /// 显示错误通知
+    fn show_error(window: &mut Window, message: impl Into<String>, cx: &mut App) {
+        window.push_notification(
+            Notification::error(message.into()).autohide(true),
+            cx
+        );
+    }
+
+
+    /// 显示警告通知
+    fn show_warning(window: &mut Window, message: impl Into<String>, cx: &mut App) {
+        window.push_notification(
+            Notification::warning(message.into()).autohide(true),
+            cx
+        );
+    }
+
+    /// 在异步上下文中显示错误通知
+    fn show_error_async(cx: &mut App, message: impl Into<String>) {
+        if let Some(window) = cx.active_window() {
+            _ = window.update(cx, |_, window, cx| {
+                window.push_notification(
+                    Notification::error(message.into()).autohide(true),
+                    cx
+                );
+            });
+        }
+    }
+
+    /// 在异步上下文中显示成功通知
+    fn show_success_async(cx: &mut App, message: impl Into<String>) {
+        if let Some(window) = cx.active_window() {
+            _ = window.update(cx, |_, window, cx| {
+                window.push_notification(
+                    Notification::success(message.into()).autohide(true),
+                    cx
+                );
+            });
+        }
+    }
 }
 
 impl DatabaseEventHandler {
@@ -46,154 +99,154 @@ impl DatabaseEventHandler {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_node_selected(node, global_state, objects_panel, cx);
                     } else {
-                        warn!("NodeSelected event with missing node: {}", node_id);
+                        Self::show_error(window, format!("节点选择失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CreateNewQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_create_new_query(node, tab_container, tree_view.clone(), window, cx);
+                        Self::handle_create_new_query(node, tab_container,window, cx);
                     } else {
-                        warn!("CreateNewQuery event with missing node: {}", node_id);
+                        Self::show_error(window, format!("创建查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenTableData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_table_data(node, global_state, tab_container, window, cx);
                     } else {
-                        warn!("OpenTableData event with missing node: {}", node_id);
+                        Self::show_error(window, format!("打开表数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenViewData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_view_data(node, global_state, tab_container, window, cx);
                     } else {
-                        warn!("OpenViewData event with missing node: {}", node_id);
+                        Self::show_error(window, format!("打开视图数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenTableStructure { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_table_structure(node, global_state, tab_container, window, cx);
                     } else {
-                        warn!("OpenTableStructure event with missing node: {}", node_id);
+                        Self::show_error(window, format!("打开表结构失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::ImportData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_import_data(node, global_state, window, cx);
                     } else {
-                        warn!("ImportData event with missing node: {}", node_id);
+                        Self::show_error(window, format!("导入数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::ExportData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_export_data(node, global_state, window, cx);
                     } else {
-                        warn!("ExportData event with missing node: {}", node_id);
+                        Self::show_error(window, format!("导出数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CloseConnection { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_close_connection(node, global_state, tree_view.clone(), window, cx);
                     } else {
-                        warn!("CloseConnection event with missing node: {}", node_id);
+                        Self::show_error(window, format!("关闭连接失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteConnection { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_connection(node, tree_view.clone(), window, cx);
                     } else {
-                        warn!("DeleteConnection event with missing node: {}", node_id);
+                        Self::show_error(window, format!("删除连接失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CreateDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_create_database(node, global_state, window, cx);
                     } else {
-                        warn!("EditDatabase event with missing node: {}", node_id);
+                        Self::show_error(window, format!("创建数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::EditDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_edit_database(node, global_state, window, cx);
                     } else {
-                        warn!("EditDatabase event with missing node: {}", node_id);
+                        Self::show_error(window, format!("编辑数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CloseDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_close_database(node, global_state, tree_view.clone(), window, cx);
                     } else {
-                        warn!("CloseDatabase event with missing node: {}", node_id);
+                        Self::show_error(window, format!("关闭数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_database(node, global_state, tree_view.clone(), window, cx);
                     } else {
-                        warn!("DeleteDatabase event with missing node: {}", node_id);
+                        Self::show_error(window, format!("删除数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_table(node, global_state, tree_view.clone(), window, cx);
                     } else {
-                        warn!("DeleteTable event with missing node: {}", node_id);
+                        Self::show_error(window, format!("删除表失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::RenameTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_rename_table(node, global_state, window, cx);
                     } else {
-                        warn!("RenameTable event with missing node: {}", node_id);
+                        Self::show_error(window, format!("重命名表失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::TruncateTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_truncate_table(node, global_state, tree_view.clone(), window, cx);
                     } else {
-                        warn!("TruncateTable event with missing node: {}", node_id);
+                        Self::show_error(window, format!("清空表失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteView { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_view(node, global_state, tree_view.clone(), window, cx);
                     } else {
-                        warn!("DeleteView event with missing node: {}", node_id);
+                        Self::show_error(window, format!("删除视图失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenNamedQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_named_query(node, tab_container, window, cx);
                     } else {
-                        warn!("OpenNamedQuery event with missing node: {}", node_id);
+                        Self::show_error(window, format!("打开查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::RenameQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_rename_query(node, global_state, window, cx);
+                        Self::handle_rename_query(node, tree_view, global_state, window, cx);
                     } else {
-                        warn!("RenameQuery event with missing node: {}", node_id);
+                        Self::show_error(window, format!("重命名查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_query(node, tree_view.clone(), window, cx);
                     } else {
-                        warn!("DeleteQuery event with missing node: {}", node_id);
+                        Self::show_error(window, format!("删除查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::RunSqlFile { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_run_sql_file(node, global_state, window, cx);
                     } else {
-                        warn!("RunSqlFile event with missing node: {}", node_id);
+                        Self::show_error(window, format!("运行SQL文件失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DumpSqlFile { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_dump_sql_file(node, global_state, window, cx);
                     } else {
-                        warn!("DumpSqlFile event with missing node: {}", node_id);
+                        Self::show_error(window, format!("转储SQL文件失败：找不到节点 {}", node_id), cx);
                     }
                 }
             }
@@ -265,6 +318,10 @@ impl DatabaseEventHandler {
                 _ = objects_panel.update(cx, |panel, cx| {
                     panel.handle_node_selected(node, config, cx);
                 });
+            } else {
+                let _ = cx.update(|cx| {
+                    Self::show_error_async(cx, "获取连接配置失败");
+                });
             }
         }).detach();
 
@@ -274,7 +331,6 @@ impl DatabaseEventHandler {
     fn handle_create_new_query(
         node: DbNode,
         tab_container: Entity<TabContainer>,
-        db_tree_view: Entity<DbTreeView>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -286,7 +342,7 @@ impl DatabaseEventHandler {
         // 1. 如果是数据库节点，直接使用 node.name
         // 2. 如果是 QueriesFolder 或其他节点，从 metadata 中获取 database
         // 3. 如果 metadata 没有，尝试从 parent_context 解析
-        let database = if node.node_type == db::DbNodeType::Database {
+        let database = if node.node_type == DbNodeType::Database {
             node.name.clone()
         } else if let Some(metadata) = &node.metadata {
             metadata.get("database").cloned().unwrap_or_else(|| {
@@ -336,6 +392,7 @@ impl DatabaseEventHandler {
         let database = metadata.get("database").unwrap();
         let tab_id = format!("table-data-{}.{}", database, table);
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
@@ -363,6 +420,8 @@ impl DatabaseEventHandler {
                     cx,
                 );
             });
+        } else {
+            Self::show_error(window, format!("打开表数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 
@@ -382,6 +441,7 @@ impl DatabaseEventHandler {
         let database = metadata.get("database").unwrap();
         let tab_id = format!("view-data-{}.{}", database, view);
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
@@ -410,6 +470,8 @@ impl DatabaseEventHandler {
                     cx,
                 );
             });
+        } else {
+            Self::show_error(window, format!("打开视图数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 
@@ -417,7 +479,7 @@ impl DatabaseEventHandler {
     fn handle_open_table_structure(
         node: DbNode,
         global_state: GlobalDbState,
-        tab_container: Entity<TabContainer>,
+        _tab_container: Entity<TabContainer>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -426,37 +488,18 @@ impl DatabaseEventHandler {
         let table = node.name.clone();
         let metadata = &node.metadata.unwrap();
         let database = metadata.get("database").unwrap();
-        let tab_id = format!("table-designer-{}.{}", database, table);
+        let _tab_id = format!("table-designer-{}.{}", database, table);
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
 
-        if let Some(config) = config {
-            let database_clone = database.clone();
-            let table_clone = table.clone();
-            let config_id = config.id.clone();
-            let database_type = config.database_type;
-            let tab_id_clone = tab_id.clone();
-
-            // tab_container.update(cx, |container, cx| {
-            //     container.activate_or_add_tab_lazy(
-            //         tab_id,
-            //         move |window, cx| {
-            //             let table_designer = TableDesignerView::edit_table(
-            //                 database_clone,
-            //                 table_clone,
-            //                 config_id,
-            //                 database_type,
-            //                 window,
-            //                 cx,
-            //             );
-            //             TabItem::new(tab_id_clone, table_designer.read(cx).clone())
-            //         },
-            //         window,
-            //         cx,
-            //     );
-            // });
+        if let Some(_config) = config {
+            // TODO: 实现表结构设计器
+            Self::show_warning(window, "表结构设计器功能尚未实现", cx);
+        } else {
+            Self::show_error(window, format!("打开表结构失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 
@@ -472,7 +515,7 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
 
         // 根据节点类型选择不同的导入视图
-        if node.node_type == db::DbNodeType::Table {
+        if node.node_type == DbNodeType::Table {
             // 表节点：使用表导入视图（支持 TXT/CSV/JSON）
             use crate::table_import_view::TableImportView;
 
@@ -482,6 +525,7 @@ impl DatabaseEventHandler {
                 .unwrap_or_else(|| node.parent_context.clone().unwrap_or_default());
             let table_name = node.name.clone();
 
+            let connection_id_for_error = connection_id.clone();
             let config = Tokio::block_on(cx, async move {
                 global_state.get_config_async(&connection_id).await
             });
@@ -502,6 +546,8 @@ impl DatabaseEventHandler {
                         .width(px(900.0))
                         .on_cancel(|_, _window, _cx| true)
                 });
+            } else {
+                Self::show_error(window, format!("导入数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
             }
         } else {
             // 数据库节点：使用原有的导入视图（支持 SQL）
@@ -509,6 +555,7 @@ impl DatabaseEventHandler {
 
             let database = node.name.clone();
 
+            let connection_id_for_error = connection_id.clone();
             let config = Tokio::block_on(cx, async move {
                 global_state.get_config_async(&connection_id).await
             });
@@ -528,6 +575,8 @@ impl DatabaseEventHandler {
                         .width(px(800.0))
                         .on_cancel(|_, _window, _cx| true)
                 });
+            } else {
+                Self::show_error(window, format!("导入数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
             }
         }
     }
@@ -546,12 +595,13 @@ impl DatabaseEventHandler {
         // 获取数据库名：如果是数据库节点则用 name，否则用 parent_context
         let database = node.parent_context.clone().unwrap_or_else(|| node.name.clone());
         // 如果是表节点，预填表名
-        let table_name = if node.node_type == db::DbNodeType::Table {
+        let table_name = if node.node_type == DbNodeType::Table {
             Some(node.name.clone())
         } else {
             None
         };
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
@@ -580,6 +630,8 @@ impl DatabaseEventHandler {
                     .width(px(800.0))
                     .on_cancel(|_, _window, _cx| true)
             });
+        } else {
+            Self::show_error(window, format!("导出数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 
@@ -621,17 +673,19 @@ impl DatabaseEventHandler {
                         // 执行连接关闭逻辑
                         let result= global_state.disconnect_all(cx, conn_id.clone()).await;
                         match result {
-                            Ok(task) => {
+                            Ok(_) => {
                                 // 清理树视图节点状态并刷新
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree_view, cx| {
                                         tree_view.close_connection(&conn_id, cx);
                                     });
+                                    Self::show_success_async(cx, "连接已成功关闭");
                                 });
-
                             }
                             Err(e) => {
-                                eprintln!("Failed to close connection: {}", e);
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("关闭连接失败: {}", e));
+                                });
                             }
                         }
                     }).detach();
@@ -674,20 +728,45 @@ impl DatabaseEventHandler {
                     let storage = storage.clone();
                     let tree = tree.clone();
                     cx.spawn(async move |cx| {
-                        if let Ok(pool) = storage.get_pool().await {
-                            if let Ok(id) = conn_id.parse::<i64>() {
-                                if let Some(conn_repo_arc) = storage.get::<ConnectionRepository>().await {
-                                    let conn_repo = (*conn_repo_arc).clone();
-                                    let _ = conn_repo.delete(&pool, id).await;
-                                    eprintln!("Connection deleted: {}", conn_id);
-
-                                    // 刷新树
-                                    let _ = cx.update(|cx| {
-                                        tree.update(cx, |tree, cx| {
-                                            tree.refresh_tree(conn_id.clone(), cx);
+                        match storage.get_pool().await {
+                            Ok(pool) => {
+                                match conn_id.parse::<i64>() {
+                                    Ok(id) => {
+                                        if let Some(conn_repo_arc) = storage.get::<ConnectionRepository>().await {
+                                            let conn_repo = (*conn_repo_arc).clone();
+                                            match conn_repo.delete(&pool, id).await {
+                                                Ok(_) => {
+                                                    // 刷新树
+                                                    let _ = cx.update(|cx| {
+                                                        tree.update(cx, |tree, cx| {
+                                                            tree.refresh_tree(conn_id.clone(), cx);
+                                                        });
+                                                        Self::show_success_async(cx, "连接已成功删除");
+                                                    });
+                                                }
+                                                Err(e) => {
+                                                    let _ = cx.update(|cx| {
+                                                        Self::show_error_async(cx, format!("删除连接失败: {}", e));
+                                                    });
+                                                }
+                                            }
+                                        } else {
+                                            let _ = cx.update(|cx| {
+                                                Self::show_error_async(cx, "删除连接失败：无法获取存储库");
+                                            });
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = cx.update(|cx| {
+                                            Self::show_error_async(cx, format!("删除连接失败：无效的连接ID {}", e));
                                         });
-                                    });
+                                    }
                                 }
+                            }
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("删除连接失败：数据库连接错误 {}", e));
+                                });
                             }
                         }
                     }).detach();
@@ -708,6 +787,7 @@ impl DatabaseEventHandler {
 
         let connection_id = node.connection_id.clone();
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
@@ -731,7 +811,11 @@ impl DatabaseEventHandler {
                              true
                         })
                 });
+            } else {
+                Self::show_error(window, format!("创建数据库失败：不支持的数据库类型 {:?}", db_type), cx);
             }
+        } else {
+            Self::show_error(window, format!("创建数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 
@@ -748,6 +832,7 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
         let database_name = node.name.clone();
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
@@ -766,9 +851,18 @@ impl DatabaseEventHandler {
                         .title(format!("编辑数据库: {}", database_name))
                         .child(form.clone())
                         .width(px(600.0))
-                        .on_cancel(|_, _window, _cx| true)
+                        .on_ok(move |_, _window, _cx| {
+                           true 
+                        })
+                        .on_cancel(|_, _window, _cx| {
+                             true
+                        })
                 });
+            } else {
+                Self::show_error(window, format!("编辑数据库失败：不支持的数据库类型 {:?}", db_type), cx);
             }
+        } else {
+            Self::show_error(window, format!("编辑数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 
@@ -819,17 +913,18 @@ impl DatabaseEventHandler {
 
                         match result {
                             Ok(_) => {
-                                eprintln!("Database closed: {}", db_name_log);
-
                                 // 收起数据库节点并清理状态
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree_view, cx| {
                                         tree_view.close_database(&db_node_id, cx);
                                     });
+                                    Self::show_success_async(cx, format!("数据库 {} 已关闭", db_name_log));
                                 });
                             }
                             Err(e) => {
-                                eprintln!("Failed to close database: {}", e);
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("关闭数据库失败: {}", e));
+                                });
                             }
                         }
                     }).detach();
@@ -877,15 +972,19 @@ impl DatabaseEventHandler {
                         let result = state.drop_database(cx, conn_id.clone(), db_name.clone()).await;
                         match result {
                             Ok(_) => {
-                                eprintln!("Database deleted: {}", db_name_log);
                                 // 刷新父节点（连接节点）
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree, cx| {
                                         tree.refresh_tree(conn_id_for_refresh, cx);
                                     });
+                                    Self::show_success_async(cx, format!("数据库 {} 已删除", db_name_log));
                                 });
                             }
-                            Err(e) => eprintln!("Failed to start delete task: {}", e),
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("删除数据库失败: {}", e));
+                                });
+                            }
                         }
                     }).detach();
                     true
@@ -937,15 +1036,19 @@ impl DatabaseEventHandler {
                         
                         match task {
                             Ok(_) => {
-                                eprintln!("Table deleted: {}", tbl_name_log);
                                 // 刷新数据库节点
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree, cx| {
                                         tree.refresh_tree(db_node_id, cx);
                                     });
+                                    Self::show_success_async(cx, format!("表 {} 已删除", tbl_name_log));
                                 });
                             }
-                            Err(e) => eprintln!("Failed to start delete task: {}", e),
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("删除表失败: {}", e));
+                                });
+                            }
                         }
                     }).detach();
                     true
@@ -1037,10 +1140,16 @@ impl DatabaseEventHandler {
 
                         let task = state.rename_table(cx, conn_id.clone(), database, old_name.clone(), new_name.clone()).await;
                         match task {
-                            Ok(task) => {
-                                eprintln!("Table renamed: {} -> {}", old_name_log, new_name_log)
+                            Ok(_) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_success_async(cx, format!("表已重命名: {} -> {}", old_name_log, new_name_log));
+                                });
                             }
-                            Err(e) => eprintln!("Failed to start rename task: {}", e),
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("重命名表失败: {}", e));
+                                });
+                            }
                         }
                     }).detach();
                     true
@@ -1088,10 +1197,16 @@ impl DatabaseEventHandler {
                         let task = state.truncate_table(cx, conn_id.clone(), database, tbl_name.clone()).await;
                         
                         match task {
-                            Ok(task) => {
-                                eprintln!("Table truncated: {}", tbl_name_log);
+                            Ok(_) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_success_async(cx, format!("表 {} 已清空", tbl_name_log));
+                                });
                             }
-                            Err(e) => eprintln!("Failed to start truncate task: {}", e),
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("清空表失败: {}", e));
+                                });
+                            }
                         }
                     }).detach();
                     true
@@ -1142,16 +1257,20 @@ impl DatabaseEventHandler {
                         let result = state.drop_view(cx, conn_id.clone(), database, v_name.clone()).await;
                         
                         match result {
-                            Ok(task) => {
-                                eprintln!("View deleted: {}", v_name_log);
+                            Ok(_) => {
                                 // 刷新数据库节点
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree, cx| {
                                         tree.refresh_tree(db_node_id, cx);
                                     });
+                                    Self::show_success_async(cx, format!("视图 {} 已删除", v_name_log));
                                 });
                             }
-                            Err(e) => eprintln!("Failed to start delete task: {}", e),
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("删除视图失败: {}", e));
+                                });
+                            }
                         }
                     }).detach();
                     true
@@ -1198,6 +1317,7 @@ impl DatabaseEventHandler {
     /// 处理重命名查询事件
     fn handle_rename_query(
         node: DbNode,
+        db_tree: Entity<DbTreeView>,
         _global_state: GlobalDbState,
         window: &mut Window,
         cx: &mut App,
@@ -1221,11 +1341,15 @@ impl DatabaseEventHandler {
                 state.set_value(old_query_name.clone(), window, cx);
                 state
             });
+            let clone_db_tree = db_tree.clone();
+            let node_id = node.id.clone();
 
             window.open_dialog(cx, move |dialog, _window, _cx| {
                 let old_name = old_query_name.clone();
                 let storage = storage_manager.clone();
                 let input = input_state.clone();
+                let db_tree = clone_db_tree.clone();
+                let node_id = node_id.clone();
 
                 dialog
                     .title("重命名查询")
@@ -1273,21 +1397,34 @@ impl DatabaseEventHandler {
                         }
 
                         let storage = storage.clone();
-                        let old_name_log = old_name.clone();
                         let new_name_log = new_name.clone();
+                        let db_tree = db_tree.clone();
+                        let node_id = node_id.clone();
+                        cx.spawn(async move |cx: &mut AsyncApp| {
 
-                        cx.spawn(async move |_cx| {
-                            if let Ok(pool) = storage.get_pool().await {
-                                if let Some(query_repo_arc) = storage.get::<QueryRepository>().await {
-                                    let query_repo = (*query_repo_arc).clone();
-                                    if let Ok(Some(mut query)) = query_repo.get(&pool, qid).await {
+                            let result = async  {
+                                Tokio::spawn_result(cx, async move {
+                                    let repo = storage.get::<QueryRepository>().await
+                                        .ok_or_else(|| anyhow::anyhow!("WorkspaceRepository not found"))?;
+                                    let pool = storage.get_pool().await?;
+                                    let result: Option<Query> = repo.get(&pool, qid).await?;
+                                    if let Some(mut query) = result {
                                         query.name = new_name_log.clone();
-                                        match query_repo.update(&pool, &query).await {
-                                            Ok(_) => eprintln!("Query renamed: {} -> {}", old_name_log, new_name_log),
-                                            Err(e) => eprintln!("Failed to rename query: {}", e),
-                                        }
+                                        repo.update(&pool, &query).await?;
                                     }
-                                }
+                                    Ok(())
+                                })?.await
+                            }.await;
+
+                            if let Err(e) = result {
+                                error!("{}", e);
+                                _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, e.to_string());
+                                })
+                            }else {
+                                _ = db_tree.update(cx, |db, cx| {
+                                    db.refresh_tree(node_id,cx);
+                                })
                             }
                         }).detach();
                         true
@@ -1339,14 +1476,25 @@ impl DatabaseEventHandler {
                             if let Ok(pool) = storage.get_pool().await {
                                 if let Some(query_repo_arc) = storage.get::<QueryRepository>().await {
                                     let query_repo = (*query_repo_arc).clone();
-                                    let _ = query_repo.delete(&pool, qid).await;
-                                    eprintln!("Query deleted: {}", qid);
-
-                                    // 刷新树
+                                    match query_repo.delete(&pool, qid).await {
+                                        Ok(_) => {
+                                            // 刷新树
+                                            let _ = cx.update(|cx| {
+                                                tree.update(cx, |tree, cx| {
+                                                    tree.refresh_tree(conn_id.clone(), cx);
+                                                });
+                                                Self::show_success_async(cx, "查询已删除");
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = cx.update(|cx| {
+                                                Self::show_error_async(cx, format!("删除查询失败: {}", e));
+                                            });
+                                        }
+                                    }
+                                } else {
                                     let _ = cx.update(|cx| {
-                                        tree.update(cx, |tree, cx| {
-                                            tree.refresh_tree(conn_id.clone(), cx);
-                                        });
+                                        Self::show_error_async(cx, "删除查询失败：无法获取存储库");
                                     });
                                 }
                             }
@@ -1360,7 +1508,7 @@ impl DatabaseEventHandler {
     /// 处理运行SQL文件事件
     fn handle_run_sql_file(
         node: DbNode,
-        global_state: GlobalDbState,
+        _global_state: GlobalDbState,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -1395,6 +1543,7 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
         let database = node.name.clone();
 
+        let connection_id_for_error = connection_id.clone();
         let config = Tokio::block_on(cx, async move {
             global_state.get_config_async(&connection_id).await
         });
@@ -1409,6 +1558,8 @@ impl DatabaseEventHandler {
                     .width(px(800.0))
                     .on_cancel(|_, _window, _cx| true)
             });
+        } else {
+            Self::show_error(window, format!("转储SQL文件失败：无法获取连接配置 {}", connection_id_for_error), cx);
         }
     }
 }

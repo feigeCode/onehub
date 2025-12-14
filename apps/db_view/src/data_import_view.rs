@@ -69,7 +69,7 @@ impl DataImportView {
                 let mut path = String::new();
                 let mut i : usize = 0;
                 for path_buf in paths.iter() {
-                    path.push_str(path_buf.to_str().unwrap());
+                    path.push_str(path_buf.to_str().unwrap_or( ""));
                     i += 1;
                     if i < paths.len() {
                         path.push_str(";");

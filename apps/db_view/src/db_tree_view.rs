@@ -142,7 +142,7 @@ impl DbTreeView {
         }else {
             for conn in connections {
                 workspace_id = conn.workspace_id.clone();
-                let id = conn.id.unwrap().to_string();
+                let id = conn.id.unwrap_or(0).to_string();
                 let node = DbNode::new(id.clone(), conn.name.to_string(), DbNodeType::Connection, id.clone());
                 db_nodes.insert(id, node.clone());
                 init_nodes.push(node);

@@ -70,17 +70,19 @@ impl DataExportView {
         // 使用异步文件选择器
         cx.spawn(async move |cx| {
             if let Ok(Ok(Some(paths))) = future.await {
-                let path = paths.first().unwrap().to_string_lossy().to_string();
-                let _ = cx.update(|cx| {
-                    pending.update(cx, |p, cx| {
-                        *p = Some(path.clone());
-                        cx.notify();
+                if let Some (path) = paths.first(){
+                    let _ = cx.update(|cx| {
+                        pending.update(cx, |p, cx| {
+                            *p = Some(path.to_string_lossy().to_string().clone());
+                            cx.notify();
+                        });
+                        status.update(cx, |s, cx| {
+                            *s = format!("Selected: {}", path.to_string_lossy().to_string());
+                            cx.notify();
+                        });
                     });
-                    status.update(cx, |s, cx| {
-                        *s = format!("Selected: {}", path);
-                        cx.notify();
-                    });
-                });
+                }
+
             }
         })
         .detach();
