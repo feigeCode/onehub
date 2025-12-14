@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use anyhow::Error;
-use gpui::{div, px, AnyElement, App, AppContext, Context, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window};
+use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, Context, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window};
 use gpui::prelude::FluentBuilder;
 use gpui_component::{button::{Button, ButtonVariants as _}, h_flex, input::{Input, InputEvent, InputState}, menu::PopupMenuItem, v_flex, ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt, Sizable, Size, ThemeMode, WindowExt};
 
@@ -88,28 +88,24 @@ impl HomePage {
 
     fn load_workspaces(&mut self, cx: &mut Context<Self>) {
         let storage = cx.global::<GlobalStorageState>().storage.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
 
-        let task = Tokio::spawn(cx, async move {
-            let repo = storage.get::<WorkspaceRepository>().await
-                .ok_or_else(|| anyhow::anyhow!("WorkspaceRepository not found"))?;
-            let pool = storage.get_pool().await?;
-            let result: anyhow::Result<Vec<Workspace>> = repo.list(&pool).await;
-            result
-        });
+            let task_result = async {
+                Tokio::spawn_result(cx, async move {
+                    let repo = storage.get::<WorkspaceRepository>().await
+                        .ok_or_else(|| anyhow::anyhow!("WorkspaceRepository not found"))?;
+                    let pool = storage.get_pool().await?;
+                    let result: anyhow::Result<Vec<Workspace>> = repo.list(&pool).await;
+                    result
+                })?.await
+            }.await;
 
-        cx.spawn(async move |this, cx| {
-            let task_result = task.await;
             match task_result {
-                Ok(result) => match result {
-                    Ok(workspaces) => {
-                        _ = this.update(cx, |this, cx| {
-                            this.workspaces = workspaces;
-                            cx.notify();
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to load workspaces: {}", e);
-                    }
+                Ok(workspaces) =>  {
+                    _ = this.update(cx, |this, cx| {
+                        this.workspaces = workspaces;
+                        cx.notify();
+                    });
                 }
                 Err(e) => {
                     tracing::error!("Task join error: {}", e);
@@ -120,28 +116,22 @@ impl HomePage {
 
     fn load_connections(&mut self, cx: &mut Context<Self>) {
         let storage = cx.global::<GlobalStorageState>().storage.clone();
-
-        let task = Tokio::spawn(cx, async move {
-            let repo = storage.get::<ConnectionRepository>().await
-                .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
-            let pool = storage.get_pool().await?;
-            let result: anyhow::Result<Vec<StoredConnection>> = repo.list(&pool).await;
-            result
-        });
-
-        cx.spawn(async move |this, cx| {
-            let task_result = task.await;
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let task_result = async {
+                Tokio::spawn_result(cx, async move {
+                    let repo = storage.get::<ConnectionRepository>().await
+                        .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
+                    let pool = storage.get_pool().await?;
+                    let result: anyhow::Result<Vec<StoredConnection>> = repo.list(&pool).await;
+                    result
+                })?.await
+            }.await;
             match task_result {
-                Ok(result) => match result {
-                    Ok(connections) => {
-                        _ = this.update(cx, |this, cx| {
-                            this.connections = connections;
-                            cx.notify();
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to load connections: {}", e);
-                    }
+                Ok(connections) => {
+                    _ = this.update(cx, |this, cx| {
+                        this.connections = connections;
+                        cx.notify();
+                    });
                 }
                 Err(e) => {
                     tracing::error!("Task join error: {}", e);
