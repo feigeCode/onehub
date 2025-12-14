@@ -804,7 +804,6 @@ impl DatabasePlugin for PostgresPlugin {
     async fn execute_script(
         &self,
         connection: &dyn DbConnection,
-        _database: &str,
         script: &str,
         options: ExecOptions,
     ) -> Result<Vec<SqlResult>> {

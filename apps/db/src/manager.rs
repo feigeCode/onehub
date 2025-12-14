@@ -7,8 +7,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time;
-use gpui::Global;
+use gpui::{AppContext, Global, Task};
+use one_core::gpui_tokio::Tokio;
 use one_core::storage::{DatabaseType, DbConnectionConfig};
+use crate::{ExecOptions, SqlResult};
 
 pub struct DbManager {}
 
@@ -239,6 +241,25 @@ impl GlobalDbState {
         let conn = self.connection_pool.get_connection(config, &self.db_manager).await?;
 
         Ok((plugin, conn))
+    }
+
+    pub fn execute_script<C>(&self, cx: &mut C, connection_id: String, script: String, database: Option<String>, opts: Option<ExecOptions>) -> C::Result<Task<anyhow::Result<Vec<SqlResult>>>>
+    where
+        C: AppContext
+    {
+        let clone_self = self.clone();
+        Tokio::spawn_result(cx, async move {
+            let config = clone_self.get_config(&*connection_id).await;
+            let mut conf = match config {
+                None => return Err(anyhow::anyhow!("Connection not found: {}", connection_id)),
+                Some(c) => c
+            };
+            conf.database = database;
+            let plugin = clone_self.db_manager.get_plugin(&conf.database_type)?;
+            let conn = clone_self.connection_pool.get_connection(conf, &clone_self.db_manager).await?;
+            let conn = conn.read().await;
+            plugin.execute_script(&**conn, &*script, opts.unwrap_or(ExecOptions::default())).await
+        })
     }
 }
 

@@ -712,10 +712,10 @@ impl DatabasePlugin for MySqlPlugin {
     async fn execute_script(
         &self,
         connection: &dyn DbConnection,
-        _database: &str,
         script: &str,
         options: ExecOptions,
     ) -> Result<Vec<SqlResult>> {
+
         connection.execute(script, options)
             .await
             .map_err(|e| anyhow::anyhow!("Script execution failed: {}", e))

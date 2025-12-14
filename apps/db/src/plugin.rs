@@ -517,7 +517,6 @@ pub trait DatabasePlugin: Send + Sync {
     async fn execute_script(
         &self,
         connection: &dyn DbConnection,
-        database: &str,
         script: &str,
         options: ExecOptions,
     ) -> Result<Vec<SqlResult>>;

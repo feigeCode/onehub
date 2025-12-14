@@ -1,4 +1,11 @@
-use gpui::{div, App, AppContext, AsyncApp, ClickEvent, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, PathPromptOptions, Render, Styled, Window};
+// 1. 标准库导入
+// (无)
+
+// 2. 外部 crate 导入（按字母顺序）
+use gpui::{
+    div, App, AppContext, AsyncApp, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    IntoElement, ParentElement, PathPromptOptions, Render, Styled, Window,
+};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
@@ -6,9 +13,10 @@ use gpui_component::{
     switch::Switch,
     v_flex, ActiveTheme, Sizable,
 };
-
-use db::GlobalDbState;
 use one_core::gpui_tokio::Tokio;
+
+// 3. 当前 crate 导入（按模块分组）
+use db::{ExecOptions, GlobalDbState, SqlResult};
 
 pub struct SqlRunView {
     connection_id: String,
@@ -29,7 +37,6 @@ impl SqlRunView {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-
             Self {
                 connection_id: connection_id.into(),
                 database,
@@ -41,6 +48,15 @@ impl SqlRunView {
                 focus_handle: cx.focus_handle(),
             }
         })
+    }
+
+    fn update_status(cx: &AsyncApp, status: &Entity<String>, message: &str) {
+        let _ = cx.update(|cx| {
+            status.update(cx, |s, cx| {
+                *s = message.to_string();
+                cx.notify();
+            });
+        });
     }
 
     fn select_file(&mut self, _window: &mut Window, cx: &mut App) {
@@ -83,9 +99,8 @@ impl SqlRunView {
         let database = self.database.clone();
         let file_path_str = self.file_path.read(cx).text().to_string();
         let stop_on_error = *self.stop_on_error.read(cx);
-        let use_transaction = *self.use_transaction.read(cx);
+        let transactional = *self.use_transaction.read(cx);
         let status = self.status.clone();
-
         if file_path_str.is_empty() {
             status.update(cx, |s, cx| {
                 *s = "请选择SQL文件".to_string();
@@ -100,122 +115,96 @@ impl SqlRunView {
         });
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let files: Vec<String> = file_path_str.split(';').map(|s| s.to_string()).collect();
-            let mut success_count = 0;
-            let mut error_count = 0;
-            let mut last_error = String::new();
+            let files: Vec<&str> = file_path_str.split(';')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let mut total_success = 0;
+            let mut total_errors = 0;
+            let mut error_messages = Vec::new();
 
             for file_path in files {
-                let file_path = file_path.trim();
-                if file_path.is_empty() {
-                    continue;
-                }
-
-                // 读取文件
+                // 读取文件内容
                 let sql_content = match std::fs::read_to_string(file_path) {
                     Ok(content) => content,
                     Err(e) => {
-                        let _ = cx.update(|cx| {
-                            status.update(cx, |s, cx| {
-                                *s = format!("文件读取错误: {}", e);
-                                cx.notify();
-                            });
-                        });
+                        let error_msg = format!("文件读取错误 [{}]: {}", file_path, e);
+                        error_messages.push(error_msg.clone());
+                        total_errors += 1;
+                        
                         if stop_on_error {
+                            Self::update_status(&cx, &status, &error_msg);
                             return;
                         }
                         continue;
                     }
                 };
 
-                // 分割SQL语句
-                let statements: Vec<String> = sql_content
-                    .split(';')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
+                // 执行SQL脚本
                 let conn_id = connection_id.clone();
-                let db = database.clone().unwrap_or("".to_string());
-                let global = global_state.clone();
+                let opts = ExecOptions {
+                    stop_on_error,
+                    transactional,
+                    max_rows: None,
+                };
 
-                let result = Tokio::spawn_result(cx, async move {
-                    let (plugin, conn_arc) = global.get_plugin_and_connection(&conn_id).await?;
-                    let conn = conn_arc.read().await;
+                let result = global_state.execute_script(cx, conn_id, sql_content, database.clone() , Some(opts)).ok();
+                if let Some(re) = result {
+                    let result = re.await;
+                    match result {
+                        Ok(results) => {
+                            let success_count = results.iter().filter(|r| !r.is_error()).count();
+                            let error_count = results.iter().filter(|r| r.is_error()).count();
 
-                    if use_transaction {
-                        plugin.execute_query(&**conn, &db, "BEGIN", None).await?;
-                    }
+                            total_success += success_count;
+                            total_errors += error_count;
 
-                    let mut stmt_success = 0;
-                    let mut stmt_error = 0;
-                    let mut err_msg = String::new();
-
-                    for stmt in &statements {
-                        let sql = if stmt.ends_with(';') {
-                            stmt.to_string()
-                        } else {
-                            format!("{};", stmt)
-                        };
-
-                        match plugin.execute_query(&**conn, &db, &sql, None).await {
-                            Ok(_) => stmt_success += 1,
-                            Err(e) => {
-                                stmt_error += 1;
-                                err_msg = e.to_string();
-                                if stop_on_error {
-                                    if use_transaction {
-                                        let _ = plugin.execute_query(&**conn, &db, "ROLLBACK", None).await;
-                                    }
-                                    anyhow::bail!(err_msg);
+                            // 收集错误信息
+                            for result in results.iter() {
+                                if let SqlResult::Error(e) = result {
+                                    error_messages.push(format!("[{}]: {}", file_path, e.message));
                                 }
+                            }
+
+                            if error_count > 0 && stop_on_error {
+                                let error_msg = format!("执行错误: {}", error_messages.last().unwrap_or(&"未知错误".to_string()));
+                                Self::update_status(&cx, &status, &error_msg);
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            let error_msg = format!("执行失败 [{}]: {}", file_path, e);
+                            error_messages.push(error_msg.clone());
+                            total_errors += 1;
+
+                            if stop_on_error {
+                                Self::update_status(&cx, &status, &error_msg);
+                                return;
                             }
                         }
                     }
-
-                    if use_transaction {
-                        plugin.execute_query(&**conn, &db, "COMMIT", None).await?;
-                    }
-
-                    Ok((stmt_success, stmt_error, err_msg))
-                }).unwrap().await;
-
-                match result {
-                    Ok((s, e, err)) => {
-                        success_count += s;
-                        error_count += e;
-                        if !err.is_empty() {
-                            last_error = err;
-                        }
-                    }
-                    Err(e) => {
-                        last_error = e.to_string();
-                        if stop_on_error {
-                            let _ = cx.update(|cx| {
-                                status.update(cx, |s, cx| {
-                                    *s = format!("执行错误: {}", last_error);
-                                    cx.notify();
-                                });
-                            });
-                            return;
-                        }
-                    }
                 }
+                
+                
             }
 
-            let _ = cx.update(|cx| {
-                status.update(cx, |s, cx| {
-                    if error_count == 0 {
-                        *s = format!("执行完成: {} 条语句全部成功", success_count);
-                    } else {
-                        *s = format!(
-                            "执行完成: {} 条成功, {} 条失败\n最后错误: {}",
-                            success_count, error_count, last_error
-                        );
-                    }
-                    cx.notify();
-                });
-            });
+            // 生成最终状态消息
+            let final_message = if total_errors == 0 {
+                format!("执行完成: {} 条语句全部成功", total_success)
+            } else {
+                let error_summary = if error_messages.len() <= 3 {
+                    error_messages.join("\n")
+                } else {
+                    format!("{}...\n(共{}个错误)", 
+                        error_messages[..3].join("\n"), 
+                        error_messages.len())
+                };
+                format!("执行完成: {} 条成功, {} 条失败\n错误详情:\n{}", 
+                    total_success, total_errors, error_summary)
+            };
+
+            Self::update_status(&cx, &status, &final_message);
         }).detach();
     }
 }
@@ -278,14 +267,32 @@ impl Render for SqlRunView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("stop_on_error").checked(*self.stop_on_error.read(cx)))
+                            .child(
+                                Switch::new("stop_on_error")
+                                    .checked(*self.stop_on_error.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.stop_on_error.update(cx, |value, cx| {
+                                            *value = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("遇错停止"),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("use_transaction").checked(*self.use_transaction.read(cx)))
+                            .child(
+                                Switch::new("use_transaction")
+                                    .checked(*self.use_transaction.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.use_transaction.update(cx, |value, cx| {
+                                            *value = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("使用事务"),
                     ),
             )
@@ -298,6 +305,17 @@ impl Render for SqlRunView {
                             .child("执行")
                             .on_click(window.listener_for(&cx.entity(), |view, _: &ClickEvent, window, cx| {
                                 view.start_run(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("clear_status")
+                            .small()
+                            .child("清除状态")
+                            .on_click(window.listener_for(&cx.entity(), |view, _: &ClickEvent, _window, cx| {
+                                view.status.update(cx, |s, cx| {
+                                    s.clear();
+                                    cx.notify();
+                                });
                             })),
                     ),
             )
