@@ -695,31 +695,6 @@ impl DatabasePlugin for MySqlPlugin {
         })
     }
 
-    // === Query Execution ===
-
-    async fn execute_query(
-        &self,
-        connection: &dyn DbConnection,
-        _database: &str,
-        query: &str,
-        params: Option<Vec<SqlValue>>,
-    ) -> Result<SqlResult> {
-        connection.query(query, params, ExecOptions::default())
-            .await
-            .map_err(|e| anyhow::anyhow!("Query execution failed: {}", e))
-    }
-
-    async fn execute_script(
-        &self,
-        connection: &dyn DbConnection,
-        script: &str,
-        options: ExecOptions,
-    ) -> Result<Vec<SqlResult>> {
-
-        connection.execute(script, options)
-            .await
-            .map_err(|e| anyhow::anyhow!("Script execution failed: {}", e))
-    }
 
     // === Database Switching ===
 
@@ -789,41 +764,7 @@ impl DatabasePlugin for MySqlPlugin {
     }
     
 
-    async fn create_database(&self, connection: &dyn DbConnection, request: &crate::plugin::DatabaseOperationRequest) -> Result<()> {
-        let mut sql = format!("CREATE DATABASE {}", self.quote_identifier(&request.database_name));
-        
-        if let Some(charset) = request.field_values.get("charset") {
-            sql.push_str(&format!(" CHARACTER SET {}", charset));
-        }
-        
-        if let Some(collation) = request.field_values.get("collation") {
-            sql.push_str(&format!(" COLLATE {}", collation));
-        }
-        
-        self.execute_query(connection, "", &sql, None).await?;
-        Ok(())
-    }
 
-    async fn update_database(&self, connection: &dyn DbConnection, request: &crate::plugin::DatabaseOperationRequest) -> Result<()> {
-        let mut sql = format!("ALTER DATABASE {}", self.quote_identifier(&request.database_name));
-        
-        let mut parts = Vec::new();
-        if let Some(charset) = request.field_values.get("charset") {
-            parts.push(format!("CHARACTER SET {}", charset));
-        }
-        
-        if let Some(collation) = request.field_values.get("collation") {
-            parts.push(format!("COLLATE {}", collation));
-        }
-        
-        if !parts.is_empty() {
-            sql.push(' ');
-            sql.push_str(&parts.join(" "));
-            self.execute_query(connection, "", &sql, None).await?;
-        }
-        
-        Ok(())
-    }
 }
 
 impl Default for MySqlPlugin {

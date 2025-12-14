@@ -118,7 +118,7 @@ impl DataImportView {
         });
 
         cx.spawn(async move |cx| {
-            let config = match global_state.get_config(&connection_id).await {
+            let config = match global_state.get_config_async(&connection_id).await {
                 Some(cfg) => cfg,
                 None => {
                     cx.update(|cx| {

@@ -21,7 +21,6 @@ use tracing::log::{error, info, trace};
 use db::{GlobalDbState, DbNode, DbNodeType};
 use one_core::{
     storage::{GlobalStorageState, StoredConnection},
-    gpui_tokio::Tokio,
 };
 use one_core::utils::debouncer::Debouncer;
 // ============================================================================
@@ -318,15 +317,7 @@ impl DbTreeView {
         
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             // 使用 DatabasePlugin 的方法加载子节点，添加超时机制
-            let children_result = Tokio::spawn_result(
-                cx,
-                async move {
-                    let (plugin, conn_arc) = global_state.get_plugin_and_connection(&connection_id).await?;
-                    let conn = conn_arc.read().await;
-                    // 加载子节点并返回结果
-                    plugin.load_node_children(&**conn, &node, &global_storage_state).await
-                }
-            ).unwrap().await;
+            let children_result = global_state.load_node_children(cx, connection_id.clone(), node.clone(), global_storage_state.clone()).unwrap().await;
 
             this.update(cx, |this: &mut Self, cx| {
                 // 移除加载状态

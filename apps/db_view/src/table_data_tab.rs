@@ -7,7 +7,6 @@ use crate::filter_editor::{ColumnSchema, FilterEditorEvent, TableFilterEditor, T
 use db::{GlobalDbState, TableDataRequest};
 use gpui_component::button::Button;
 use gpui_component::menu::DropdownMenu;
-use one_core::gpui_tokio::Tokio;
 use one_core::tab_container::{TabContent, TabContentType};
 
 // ============================================================================
@@ -146,104 +145,88 @@ impl TableData {
         cx.spawn(async move |cx: &mut AsyncApp| {
             let table_name_for_schema = table_name.clone();
             
-            let result = Tokio::spawn_result(cx, async move {
-                let (plugin, conn_arc) = global_state.get_plugin_and_connection(&connection_id).await?;
-                let conn = conn_arc.read().await;
-
-                // Build request with raw where/order by clauses
-                let request = if page_size == 0 {
-                    TableDataRequest::new(&database_name, &table_name)
-                        .with_where_clause(where_clause.clone())
-                        .with_order_by_clause(order_by_clause.clone())
-                } else {
-                    TableDataRequest::new(&database_name, &table_name)
-                        .with_page(page, page_size)
-                        .with_where_clause(where_clause.clone())
-                        .with_order_by_clause(order_by_clause.clone())
-                };
-                plugin.query_table_data(&**conn, &request).await
-            }).ok();
-            
+            let request = if page_size == 0 {
+                TableDataRequest::new(&database_name, &table_name)
+                    .with_where_clause(where_clause.clone())
+                    .with_order_by_clause(order_by_clause.clone())
+            } else {
+                TableDataRequest::new(&database_name, &table_name)
+                    .with_page(page, page_size)
+                    .with_where_clause(where_clause.clone())
+                    .with_order_by_clause(order_by_clause.clone())
+            };
+            let result = global_state.query_table_data(cx, connection_id, request).unwrap().await;
             
             match result {
-                None => {
+                Err( err) => {
                     cx.update(|cx| {
-                        notification(cx, "Failed to get connection".to_string());
+                        notification(cx, format!("Failed to get connection:{}", err));
                     }).ok();
                 }
-                Some(task) => {
-                    match task.await {
-                        Ok(response) => {
-                            let columns: Vec<Column> = response
-                                .columns
-                                .iter()
-                                .map(|col| Column::new(col.name.clone(), col.name.clone()))
-                                .collect();
+                Ok(response) => {
+                    let columns: Vec<Column> = response
+                        .columns
+                        .iter()
+                        .map(|col| Column::new(col.name.clone(), col.name.clone()))
+                        .collect();
 
-                            let rows: Vec<Vec<String>> = response
-                                .rows
-                                .iter()
-                                .map(|row| {
-                                    row.iter()
-                                        .map(|cell| cell.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "NULL".to_string()))
-                                        .collect()
-                                })
-                                .collect();
+                    let rows: Vec<Vec<String>> = response
+                        .rows
+                        .iter()
+                        .map(|row| {
+                            row.iter()
+                                .map(|cell| cell.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "NULL".to_string()))
+                                .collect()
+                        })
+                        .collect();
 
-                            let pk_columns = response.primary_key_indices;
-                            
-                            // 更新统一的状态信息
-                            cx.update(|cx| {
-                                table_data_info.update(cx, |info, cx| {
-                                    info.total_count = response.total_count;
-                                    info.current_sql = response.executed_sql;
-                                    info.duration = response.duration;
-                                    info.current_page = response.page;
-                                    cx.notify();
-                                });
-                            }).ok();
-                            
-                            // Build column schema for completion providers
-                            let column_schemas: Vec<ColumnSchema> = response
-                                .columns
-                                .iter()
-                                .map(|col| ColumnSchema {
-                                    name: col.name.clone(),
-                                    data_type: col.db_type.clone(),
-                                    is_nullable: col.nullable,
-                                })
-                                .collect();
+                    let pk_columns = response.primary_key_indices;
 
-                            cx.update(|cx| {
-                                // Update filter editor schema
-                                filter_editor.update(cx, |editor, cx| {
-                                    editor.set_schema(TableSchema {
-                                        table_name: table_name_for_schema.clone(),
-                                        columns: column_schemas,
-                                    }, cx);
-                                });
+                    // 更新统一的状态信息
+                    cx.update(|cx| {
+                        table_data_info.update(cx, |info, cx| {
+                            info.total_count = response.total_count;
+                            info.current_sql = response.executed_sql;
+                            info.duration = response.duration;
+                            info.current_page = response.page;
+                            cx.notify();
+                        });
+                    }).ok();
 
-                                // Debug: 打印数据信息
-                                eprintln!("Loading data: {} columns, {} rows", columns.len(), rows.len());
-                                if !columns.is_empty() {
-                                    eprintln!("First column: {}", columns[0].name);
-                                }
-                                if !rows.is_empty() && !rows[0].is_empty() {
-                                    eprintln!("First row first cell: {}", rows[0][0]);
-                                }
+                    // Build column schema for completion providers
+                    let column_schemas: Vec<ColumnSchema> = response
+                        .columns
+                        .iter()
+                        .map(|col| ColumnSchema {
+                            name: col.name.clone(),
+                            data_type: col.db_type.clone(),
+                            is_nullable: col.nullable,
+                        })
+                        .collect();
 
-                                // Update DataGrid
-                                data_grid.update(cx, |grid, cx| {
-                                    grid.update_data(columns, rows, pk_columns, cx)
-                                });
-                            }).ok();
+                    cx.update(|cx| {
+                        // Update filter editor schema
+                        filter_editor.update(cx, |editor, cx| {
+                            editor.set_schema(TableSchema {
+                                table_name: table_name_for_schema.clone(),
+                                columns: column_schemas,
+                            }, cx);
+                        });
+
+                        // Debug: 打印数据信息
+                        eprintln!("Loading data: {} columns, {} rows", columns.len(), rows.len());
+                        if !columns.is_empty() {
+                            eprintln!("First column: {}", columns[0].name);
                         }
-                        Err(e) => {
-                            cx.update(|cx| {
-                                notification(cx, format!("Query failed: {}", e))
-                            }).ok();
+                        if !rows.is_empty() && !rows[0].is_empty() {
+                            eprintln!("First row first cell: {}", rows[0][0]);
                         }
-                    }
+
+                        // Update DataGrid
+                        data_grid.update(cx, |grid, cx| {
+                            grid.update_data(columns, rows, pk_columns, cx)
+                        });
+                    }).ok();
                 }
             }
         }).detach();

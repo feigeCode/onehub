@@ -259,16 +259,15 @@ impl DatabaseEventHandler {
         }
 
         let connection_id = node.connection_id.clone();
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
+            if let Some(config) = config {
+                _ = objects_panel.update(cx, |panel, cx| {
+                    panel.handle_node_selected(node, config, cx);
+                });
+            }
+        }).detach();
 
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
-        });
-
-        if let Some(config) = config {
-            objects_panel.update(cx, |panel, cx| {
-                panel.handle_node_selected(node, config, cx);
-            });
-        }
     }
 
     /// 处理创建新查询事件
@@ -338,7 +337,7 @@ impl DatabaseEventHandler {
         let tab_id = format!("table-data-{}.{}", database, table);
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
         if let Some(config) = config {
             let database_clone = database.clone();
@@ -384,7 +383,7 @@ impl DatabaseEventHandler {
         let tab_id = format!("view-data-{}.{}", database, view);
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
 
         if let Some(config) = config {
@@ -430,7 +429,7 @@ impl DatabaseEventHandler {
         let tab_id = format!("table-designer-{}.{}", database, table);
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
 
         if let Some(config) = config {
@@ -484,7 +483,7 @@ impl DatabaseEventHandler {
             let table_name = node.name.clone();
 
             let config = Tokio::block_on(cx, async move {
-                global_state.get_config(&connection_id).await
+                global_state.get_config_async(&connection_id).await
             });
 
             if let Some(config) = config {
@@ -511,7 +510,7 @@ impl DatabaseEventHandler {
             let database = node.name.clone();
 
             let config = Tokio::block_on(cx, async move {
-                global_state.get_config(&connection_id).await
+                global_state.get_config_async(&connection_id).await
             });
 
             if let Some(config) = config {
@@ -554,7 +553,7 @@ impl DatabaseEventHandler {
         };
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
 
         if let Some(config) = config {
@@ -597,11 +596,13 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
         let connection_name = node.name.clone();
         let tree_clone = tree_view.clone();
+        let global_state = global_state.clone();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let conn_id = connection_id.clone();
             let conn_name = connection_name.clone();
             let tree = tree_clone.clone();
+            let global_state = global_state.clone();
 
             dialog
                 .title("确认关闭连接")
@@ -614,20 +615,14 @@ impl DatabaseEventHandler {
                 )
                 .on_ok(move |_, _, cx| {
                     let conn_id = conn_id.clone();
-                    let conn_name_log = conn_name.clone();
                     let tree = tree.clone();
-
+                    let global_state = global_state.clone();
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         // 执行连接关闭逻辑
-                        let result = Tokio::spawn_result(cx,async move {
-                            // 这里可以添加实际的连接清理代码
-                            // 比如关闭数据库连接池中的连接
-                            Ok(())
-                        }).unwrap().await;
-
+                        let result= global_state.disconnect_all(cx, conn_id.clone());
                         match result {
-                            Ok(_) => {
-                                eprintln!("Connection closed: {}", conn_name_log);
+                            Ok(task) => {
+                                _ = task.await;
 
                                 // 清理树视图节点状态并刷新
                                 let _ = cx.update(|cx| {
@@ -715,7 +710,7 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
 
         if let Some(config) = config {
@@ -755,7 +750,7 @@ impl DatabaseEventHandler {
         let database_name = node.name.clone();
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
 
         if let Some(config) = config {
@@ -874,29 +869,32 @@ impl DatabaseEventHandler {
                 .on_ok(move |_, _, cx| {
                     let conn_id = conn_id.clone();
                     let db_name = db_name.clone();
-                    let state = state.clone();
                     let db_name_log = db_name.clone();
                     let tree = tree.clone();
+                    let state = state.clone();
                     let conn_id_for_refresh = conn_id.clone();
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
-                        let result = Tokio::spawn_result(cx,async move {
-                            let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
-                            let conn = conn_arc.read().await;
-                            plugin.drop_database(&**conn, &db_name).await
-                        }).unwrap().await;
-
-                        match result {
-                            Ok(_) => {
-                                eprintln!("Database deleted: {}", db_name_log);
-                                // 刷新父节点（连接节点）
-                                let _ = cx.update(|cx| {
-                                    tree.update(cx, |tree, cx| {
-                                        tree.refresh_tree(conn_id_for_refresh, cx);
-                                    });
-                                });
+                        let task = cx.update(|cx| {
+                            state.drop_database(cx, conn_id.clone(), db_name.clone())
+                        });
+                        
+                        match task {
+                            Ok(task) => {
+                                match task.await {
+                                    Ok(_) => {
+                                        eprintln!("Database deleted: {}", db_name_log);
+                                        // 刷新父节点（连接节点）
+                                        let _ = cx.update(|cx| {
+                                            tree.update(cx, |tree, cx| {
+                                                tree.refresh_tree(conn_id_for_refresh, cx);
+                                            });
+                                        });
+                                    }
+                                    Err(e) => eprintln!("Failed to delete database: {}", e),
+                                }
                             }
-                            Err(e) => eprintln!("Failed to delete database: {}", e),
+                            Err(e) => eprintln!("Failed to start delete task: {}", e),
                         }
                     }).detach();
                     true
@@ -943,24 +941,27 @@ impl DatabaseEventHandler {
                     let db_node_id = format!("{}:{}", conn_id, meta.as_ref().and_then(|m| m.get("database")).unwrap_or(&String::new()));
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
-                        let result = Tokio::spawn_result(cx, async move {
-                            let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
-                            let conn = conn_arc.read().await;
-                            let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
-                            plugin.drop_table(&**conn, database, &tbl_name).await
-                        }).unwrap().await;
-
-                        match result {
-                            Ok(_) => {
-                                eprintln!("Table deleted: {}", tbl_name_log);
-                                // 刷新数据库节点
-                                let _ = cx.update(|cx| {
-                                    tree.update(cx, |tree, cx| {
-                                        tree.refresh_tree(db_node_id, cx);
-                                    });
-                                });
+                        let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
+                        let task = cx.update(|cx| {
+                            state.drop_table(cx, conn_id.clone(), database, tbl_name.clone())
+                        });
+                        
+                        match task {
+                            Ok(task) => {
+                                match task.await {
+                                    Ok(_) => {
+                                        eprintln!("Table deleted: {}", tbl_name_log);
+                                        // 刷新数据库节点
+                                        let _ = cx.update(|cx| {
+                                            tree.update(cx, |tree, cx| {
+                                                tree.refresh_tree(db_node_id, cx);
+                                            });
+                                        });
+                                    }
+                                    Err(e) => eprintln!("Failed to delete table: {}", e),
+                                }
                             }
-                            Err(e) => eprintln!("Failed to delete table: {}", e),
+                            Err(e) => eprintln!("Failed to start delete task: {}", e),
                         }
                     }).detach();
                     true
@@ -1048,17 +1049,20 @@ impl DatabaseEventHandler {
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let old_name_log = old_name.clone();
                         let new_name_log = new_name.clone();
+                        let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
 
-                        let result = Tokio::spawn_result(cx,async move {
-                            let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
-                            let conn = conn_arc.read().await;
-                            let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
-                            plugin.rename_table(&**conn, database, &old_name, &new_name).await
-                        }).unwrap().await;
-
-                        match result {
-                            Ok(_) => eprintln!("Table renamed: {} -> {}", old_name_log, new_name_log),
-                            Err(e) => eprintln!("Failed to rename table: {}", e),
+                        let task = cx.update(|cx| {
+                            state.rename_table(cx, conn_id.clone(), database, old_name.clone(), new_name.clone())
+                        });
+                        
+                        match task {
+                            Ok(task) => {
+                                match task.await {
+                                    Ok(_) => eprintln!("Table renamed: {} -> {}", old_name_log, new_name_log),
+                                    Err(e) => eprintln!("Failed to rename table: {}", e),
+                                }
+                            }
+                            Err(e) => eprintln!("Failed to start rename task: {}", e),
                         }
                     }).detach();
                     true
@@ -1102,19 +1106,22 @@ impl DatabaseEventHandler {
                     let tbl_name_log = tbl_name.clone();
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
-                        let result = Tokio::spawn_result(cx, async move {
-                            let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
-                            let conn = conn_arc.read().await;
-                            let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
-                            plugin.truncate_table(&**conn, database, &tbl_name).await
-                        }).unwrap().await;
-
-                        match result {
-                            Ok(_) => {
-                                eprintln!("Table truncated: {}", tbl_name_log);
-                                // 清空表不需要刷新树，因为表结构没变
+                        let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
+                        let task = cx.update(|cx| {
+                            state.truncate_table(cx, conn_id.clone(), database, tbl_name.clone())
+                        });
+                        
+                        match task {
+                            Ok(task) => {
+                                match task.await {
+                                    Ok(_) => {
+                                        eprintln!("Table truncated: {}", tbl_name_log);
+                                        // 清空表不需要刷新树，因为表结构没变
+                                    }
+                                    Err(e) => eprintln!("Failed to truncate table: {}", e),
+                                }
                             }
-                            Err(e) => eprintln!("Failed to truncate table: {}", e),
+                            Err(e) => eprintln!("Failed to start truncate task: {}", e),
                         }
                     }).detach();
                     true
@@ -1161,24 +1168,25 @@ impl DatabaseEventHandler {
                     let db_node_id = format!("{}:{}", conn_id, meta.as_ref().and_then(|m| m.get("database")).unwrap_or(&String::new()));
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
-                        let result = Tokio::spawn_result(cx, async move {
-                            let (plugin, conn_arc) = state.get_plugin_and_connection(&conn_id).await?;
-                            let conn = conn_arc.read().await;
-                            let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.as_str()).unwrap_or("");
-                            plugin.drop_view(&**conn, database, &v_name).await
-                        }).unwrap().await;
-
+                        let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
+                        let result = state.drop_view(cx, conn_id.clone(), database, v_name.clone());
+                        
                         match result {
-                            Ok(_) => {
-                                eprintln!("View deleted: {}", v_name_log);
-                                // 刷新数据库节点
-                                let _ = cx.update(|cx| {
-                                    tree.update(cx, |tree, cx| {
-                                        tree.refresh_tree(db_node_id, cx);
-                                    });
-                                });
+                            Ok(task) => {
+                                match task.await {
+                                    Ok(_) => {
+                                        eprintln!("View deleted: {}", v_name_log);
+                                        // 刷新数据库节点
+                                        let _ = cx.update(|cx| {
+                                            tree.update(cx, |tree, cx| {
+                                                tree.refresh_tree(db_node_id, cx);
+                                            });
+                                        });
+                                    }
+                                    Err(e) => eprintln!("Failed to delete view: {}", e),
+                                }
                             }
-                            Err(e) => eprintln!("Failed to delete view: {}", e),
+                            Err(e) => eprintln!("Failed to start delete task: {}", e),
                         }
                     }).detach();
                     true
@@ -1423,7 +1431,7 @@ impl DatabaseEventHandler {
         let database = node.name.clone();
 
         let config = Tokio::block_on(cx, async move {
-            global_state.get_config(&connection_id).await
+            global_state.get_config_async(&connection_id).await
         });
 
         if let Some(config) = config {

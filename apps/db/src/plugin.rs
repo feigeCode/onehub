@@ -505,21 +505,7 @@ pub trait DatabasePlugin: Send + Sync {
         }
     }
 
-    // === Query Execution ===
-    async fn execute_query(
-        &self,
-        connection: &dyn DbConnection,
-        database: &str,
-        query: &str,
-        params: Option<Vec<SqlValue>>,
-    ) -> Result<SqlResult>;
-
-    async fn execute_script(
-        &self,
-        connection: &dyn DbConnection,
-        script: &str,
-        options: ExecOptions,
-    ) -> Result<Vec<SqlResult>>;
+ 
 
     async fn switch_db(&self, connection: &dyn DbConnection, database: &str) -> Result<SqlResult>;
 
@@ -621,7 +607,7 @@ pub trait DatabasePlugin: Send + Sync {
         );
 
         // Get total count
-        let total_count = match self.execute_query(connection, &request.database, &count_sql, None).await? {
+        let total_count = match connection.query(&count_sql, None, ExecOptions::default()).await? {
             SqlResult::Query(result) => {
                 result.rows.first()
                     .and_then(|r| r.first())
@@ -656,7 +642,7 @@ pub trait DatabasePlugin: Send + Sync {
         };
 
         // Execute data query
-        let rows = match self.execute_query(connection, &request.database, &data_sql, None).await? {
+        let rows = match connection.query(&data_sql, None, ExecOptions::default()).await? {
             SqlResult::Query(result) => result.rows,
             _ => Vec::new(),
         };
@@ -706,14 +692,20 @@ pub trait DatabasePlugin: Send + Sync {
                 continue;
             };
 
-            match self.execute_query(connection, &request.database, &sql, None).await {
-                Ok(SqlResult::Exec(_)) => {
-                    success_count += 1;
+            match connection.execute(&sql, ExecOptions::default()).await {
+                Ok(results) => {
+                    for result in results {
+                        match result {
+                            SqlResult::Exec(_) => {
+                                success_count += 1;
+                            }
+                            SqlResult::Error(err) => {
+                                errors.push(err.message);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-                Ok(SqlResult::Error(err)) => {
-                    errors.push(err.message);
-                }
-                Ok(_) => {}
                 Err(e) => {
                     errors.push(e.to_string());
                 }
@@ -868,29 +860,23 @@ pub trait DatabasePlugin: Send + Sync {
 
     // === DDL Operations ===
     /// Drop database
-    async fn drop_database(&self, connection: &dyn DbConnection, database: &str) -> Result<()> {
-        let query = format!("DROP DATABASE IF EXISTS {}", self.quote_identifier(database));
-        self.execute_query(connection, "", &query, None).await?;
-        Ok(())
+    fn drop_database(&self, database: &str) -> String {
+         format!("DROP DATABASE IF EXISTS {}", self.quote_identifier(database))
     }
 
     /// Drop table
-    async fn drop_table(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<()> {
-        let query = format!("DROP TABLE IF EXISTS {}", self.quote_identifier(table));
-        self.execute_query(connection, database, &query, None).await?;
-        Ok(())
+    fn drop_table(&self, database: &str, table: &str) -> String {
+        format!("DROP TABLE IF EXISTS {}.{}", self.quote_identifier( database) , self.quote_identifier(table))
     }
 
     /// Truncate table
-    async fn truncate_table(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<()> {
-        let query = format!("TRUNCATE TABLE {}", self.quote_identifier(table));
-        self.execute_query(connection, database, &query, None).await?;
-        Ok(())
+    fn truncate_table(&self, database: &str, table: &str) -> String {
+        format!("TRUNCATE TABLE {}", self.quote_identifier(table))
     }
 
     /// Rename table
-    async fn rename_table(&self, connection: &dyn DbConnection, database: &str, old_name: &str, new_name: &str) -> Result<()> {
-        let query = match self.name() {
+    fn rename_table(&self, database: &str, old_name: &str, new_name: &str) -> String {
+        match self.name() {
             DatabaseType::MySQL => format!(
                 "RENAME TABLE {} TO {}",
                 self.quote_identifier(old_name),
@@ -902,29 +888,16 @@ pub trait DatabasePlugin: Send + Sync {
                 self.quote_identifier(new_name)
             ),
             DatabaseType::MSSQL | DatabaseType::Oracle => todo!(),
-        };
-        self.execute_query(connection, database, &query, None).await?;
-        Ok(())
+        }
     }
 
     /// Drop view
-    async fn drop_view(&self, connection: &dyn DbConnection, database: &str, view: &str) -> Result<()> {
-        let query = format!("DROP VIEW IF EXISTS {}", self.quote_identifier(view));
-        self.execute_query(connection, database, &query, None).await?;
-        Ok(())
+    fn drop_view(&self, database: &str, view: &str) -> String {
+        format!("DROP VIEW IF EXISTS {}", self.quote_identifier(view))
     }
 
-
-    /// Create a new database
-    async fn create_database(&self, connection: &dyn DbConnection, request: &DatabaseOperationRequest) -> Result<()> {
-        let query = format!("CREATE DATABASE {}", self.quote_identifier(&request.database_name));
-        self.execute_query(connection, "", &query, None).await?;
-        Ok(())
-    }
-
-    /// Update database properties
-    async fn update_database(&self, _connection: &dyn DbConnection, _request: &DatabaseOperationRequest) -> Result<()> {
-        // Default implementation does nothing - databases may override
-        Ok(())
+    /// Create database
+    fn create_database(&self, database: &str, database_name: &str) -> String {
+        format!("CREATE DATABASE {}", self.quote_identifier(database_name))
     }
 }

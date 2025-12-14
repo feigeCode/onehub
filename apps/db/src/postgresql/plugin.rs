@@ -787,31 +787,6 @@ impl DatabasePlugin for PostgresPlugin {
         })
     }
 
-    // === Query Execution ===
-
-    async fn execute_query(
-        &self,
-        connection: &dyn DbConnection,
-        _database: &str,
-        query: &str,
-        params: Option<Vec<SqlValue>>,
-    ) -> Result<SqlResult> {
-        connection.query(query, params, ExecOptions::default())
-            .await
-            .map_err(|e| anyhow::anyhow!("Query execution failed: {}", e))
-    }
-
-    async fn execute_script(
-        &self,
-        connection: &dyn DbConnection,
-        script: &str,
-        options: ExecOptions,
-    ) -> Result<Vec<SqlResult>> {
-        connection.execute(script, options)
-            .await
-            .map_err(|e| anyhow::anyhow!("Script execution failed: {}", e))
-    }
-
     // === Database Switching ===
 
     async fn switch_db(&self, _connection: &dyn DbConnection, database: &str) -> Result<SqlResult> {

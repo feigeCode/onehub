@@ -144,7 +144,7 @@ impl SqlEditorTabContent {
             use one_core::storage::traits::Repository;
 
             // Load query from database and get database list
-            let (result, databases) = Tokio::block_on(cx, async move {
+            let result = Tokio::block_on(cx, async move {
                 // Load query
                 let query_result = async {
                     let query_repo = storage_manager.get::<one_core::storage::query_repository::QueryRepository>().await
@@ -154,17 +154,9 @@ impl SqlEditorTabContent {
                 }.await;
 
                 // Get database list from server
-                let db_list = match global_state.get_plugin_and_connection(&conn_id).await {
-                    Ok((plugin, conn_arc)) => {
-                        let conn = conn_arc.read().await;
-                        plugin.list_databases(&**conn).await.unwrap_or_default()
-                    }
-                    Err(_) => vec![],
-                };
-
-                (query_result, db_list)
+                query_result
             }).unwrap();
-
+            let databases = global_state.list_databases(cx, conn_id.clone()).unwrap().await.map_or(vec![], |t| t);
             // Update UI with loaded query
             cx.update(|cx| {
                 if let Some(window_id) = cx.active_window() {
@@ -259,21 +251,11 @@ impl SqlEditorTabContent {
         let database_select = self.database_select.clone();
 
         // Spawn async task to load databases
-        cx.spawn(async move |cx| {
-            let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
+        cx.spawn(async move |cx:&mut AsyncApp| {
+            let databases = match global_state.list_databases(cx, connection_id.clone()).unwrap().await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!("Failed to get connection: {}", e);
-                    return;
-                }
-            };
-
-            // List databases
-            let conn = conn_arc.read().await;
-            let databases = match plugin.list_databases(&**conn).await {
-                Ok(dbs) => dbs,
-                Err(e) => {
-                    eprintln!("Failed to list databases: {}", e);
                     return;
                 }
             };
@@ -346,8 +328,8 @@ impl SqlEditorTabContent {
         let editor = self.editor.clone();
         let db = database.to_string();
 
-        cx.spawn(async move |cx| {
-            let (plugin, conn_arc) = match global_state.get_plugin_and_connection(&connection_id).await {
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let tables = match global_state.list_tables(cx, connection_id.clone(), db.clone()).unwrap().await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!("Failed to get connection: {}", e);
@@ -356,17 +338,7 @@ impl SqlEditorTabContent {
             };
 
             // Get database-specific completion info
-            let db_completion_info = plugin.get_completion_info();
-
-            // Load tables
-            let conn = conn_arc.read().await;
-            let tables = match plugin.list_tables(&**conn, &db).await {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("Failed to list tables: {}", e);
-                    return;
-                }
-            };
+            let db_completion_info = global_state.get_completion_info(cx, connection_id.clone()).unwrap().await.unwrap();
 
             let mut schema = SqlSchema::default();
 
@@ -385,10 +357,9 @@ impl SqlEditorTabContent {
 
             // Load columns for each table
             for table in &tables {
-                if let Ok(columns) = plugin.list_columns(&**conn, &db, &table.name).await {
+                if let Ok(columns) = global_state.list_columns(cx, connection_id.clone(), db.clone(), table.name.clone()).unwrap().await {
                     let column_items: Vec<(String, String)> = columns.iter()
-                        .map(|c| (c.name.clone(), format!("{} - {}",
-c.data_type,
+                        .map(|c| (c.name.clone(), format!("{} - {}", c.data_type,
                             c.comment.as_ref().unwrap_or(&String::new()))))
                         .collect();
                     schema = schema.with_table_columns(&table.name, column_items);
@@ -433,7 +404,7 @@ c.data_type,
             }
             
             // Get connection with current database
-            let config = match global_state.get_config(&connection_id).await {
+            let config = match global_state.get_config_async(&connection_id).await {
                 Some(mut cfg) => {
                     cfg.database = current_database.read().ok().and_then(|guard| guard.clone());
                     cfg
