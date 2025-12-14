@@ -317,7 +317,7 @@ impl DbTreeView {
         
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             // 使用 DatabasePlugin 的方法加载子节点，添加超时机制
-            let children_result = global_state.load_node_children(cx, connection_id.clone(), node.clone(), global_storage_state.clone()).unwrap().await;
+            let children_result = global_state.load_node_children(cx, connection_id.clone(), node.clone(), global_storage_state.clone()).await;
 
             this.update(cx, |this: &mut Self, cx| {
                 // 移除加载状态

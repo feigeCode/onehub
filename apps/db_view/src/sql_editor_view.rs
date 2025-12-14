@@ -156,7 +156,7 @@ impl SqlEditorTabContent {
                 // Get database list from server
                 query_result
             }).unwrap();
-            let databases = global_state.list_databases(cx, conn_id.clone()).unwrap().await.map_or(vec![], |t| t);
+            let databases = global_state.list_databases(cx, conn_id.clone()).await.map_or(vec![], |t| t);
             // Update UI with loaded query
             cx.update(|cx| {
                 if let Some(window_id) = cx.active_window() {
@@ -252,7 +252,7 @@ impl SqlEditorTabContent {
 
         // Spawn async task to load databases
         cx.spawn(async move |cx:&mut AsyncApp| {
-            let databases = match global_state.list_databases(cx, connection_id.clone()).unwrap().await {
+            let databases = match global_state.list_databases(cx, connection_id.clone()).await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!("Failed to get connection: {}", e);
@@ -329,7 +329,7 @@ impl SqlEditorTabContent {
         let db = database.to_string();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let tables = match global_state.list_tables(cx, connection_id.clone(), db.clone()).unwrap().await {
+            let tables = match global_state.list_tables(cx, connection_id.clone(), db.clone()).await {
                 Ok(result) => result,
                 Err(e) => {
                     eprintln!("Failed to get connection: {}", e);
@@ -338,7 +338,7 @@ impl SqlEditorTabContent {
             };
 
             // Get database-specific completion info
-            let db_completion_info = global_state.get_completion_info(cx, connection_id.clone()).unwrap().await.unwrap();
+            let db_completion_info = global_state.get_completion_info(cx, connection_id.clone()).await.unwrap();
 
             let mut schema = SqlSchema::default();
 
@@ -357,7 +357,7 @@ impl SqlEditorTabContent {
 
             // Load columns for each table
             for table in &tables {
-                if let Ok(columns) = global_state.list_columns(cx, connection_id.clone(), db.clone(), table.name.clone()).unwrap().await {
+                if let Ok(columns) = global_state.list_columns(cx, connection_id.clone(), db.clone(), table.name.clone()).await {
                     let column_items: Vec<(String, String)> = columns.iter()
                         .map(|c| (c.name.clone(), format!("{} - {}", c.data_type,
                             c.comment.as_ref().unwrap_or(&String::new()))))

@@ -155,8 +155,8 @@ impl TableData {
                     .with_where_clause(where_clause.clone())
                     .with_order_by_clause(order_by_clause.clone())
             };
-            let result = global_state.query_table_data(cx, connection_id, request).unwrap().await;
             
+            let result =global_state.query_table_data(cx, connection_id, request).await;
             match result {
                 Err( err) => {
                     cx.update(|cx| {

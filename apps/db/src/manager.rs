@@ -5,13 +5,14 @@ use crate::postgresql::PostgresPlugin;
 use crate::{DbNode, ExecOptions, SqlResult};
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
-use gpui::{AppContext, Global, Task};
+use gpui::{AppContext, AsyncApp, Global, Task};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+use gpui_component::highlighter::Language::C;
 
 /// Database manager - creates database plugins
 pub struct DbManager {}
@@ -445,14 +446,12 @@ impl GlobalDbState {
         self.db_manager.get_plugin(database_type)
     }
     
-    pub fn drop_database<C>(
+    pub async fn drop_database(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         config_id: String,
         database_name: String,
-    ) -> C::Result<Task<anyhow::Result<SqlResult>>>
-    where 
-        C: AppContext
+    ) -> anyhow::Result<SqlResult>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -484,19 +483,17 @@ impl GlobalDbState {
             let _ = clone_self.connection_manager.close_session(&session_id).await;
             
             Ok(result)
-        })
+        })?.await
     }
 
     /// Drop table
-    pub fn drop_table<C>(
+    pub async fn drop_table(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         config_id: String,
         database: String,
         table_name: String,
-    ) -> C::Result<Task<anyhow::Result<SqlResult>>>
-    where 
-        C: AppContext
+    ) ->anyhow::Result<SqlResult>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -525,19 +522,17 @@ impl GlobalDbState {
             
             let _ = clone_self.connection_manager.close_session(&session_id).await;
             Ok(result)
-        })
+        })?.await
     }
 
     /// Truncate table
-    pub fn truncate_table<C>(
+    pub async fn truncate_table(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         config_id: String,
         database: String,
         table_name: String,
-    ) -> C::Result<Task<anyhow::Result<SqlResult>>>
-    where 
-        C: AppContext
+    ) -> anyhow::Result<SqlResult>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -566,20 +561,18 @@ impl GlobalDbState {
             
             let _ = clone_self.connection_manager.close_session(&session_id).await;
             Ok(result)
-        })
+        })?.await
     }
 
     /// Rename table
-    pub fn rename_table<C>(
+    pub async fn rename_table(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         config_id: String,
         database: String,
         old_name: String,
         new_name: String,
-    ) -> C::Result<Task<anyhow::Result<SqlResult>>>
-    where 
-        C: AppContext
+    ) -> anyhow::Result<SqlResult>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -608,19 +601,17 @@ impl GlobalDbState {
             
             let _ = clone_self.connection_manager.close_session(&session_id).await;
             Ok(result)
-        })
+        })?.await
     }
 
     /// Drop view
-    pub fn drop_view<C>(
+    pub async fn drop_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         config_id: String,
         database: String,
         view_name: String,
-    ) -> C::Result<Task<anyhow::Result<SqlResult>>>
-    where 
-        C: AppContext
+    ) -> anyhow::Result<SqlResult>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -649,18 +640,16 @@ impl GlobalDbState {
             
             let _ = clone_self.connection_manager.close_session(&session_id).await;
             Ok(result)
-        })
+        })?.await
     }
 
     /// Create database
-    pub fn create_database<C>(
+    pub async fn create_database(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         config_id: String,
         database_name: String,
-    ) -> C::Result<Task<anyhow::Result<SqlResult>>>
-    where 
-        C: AppContext
+    ) -> anyhow::Result<SqlResult>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -689,7 +678,7 @@ impl GlobalDbState {
             
             let _ = clone_self.connection_manager.close_session(&session_id).await;
             Ok(result)
-        })
+        })?.await
     }
 
     /// Register a connection configuration
@@ -702,13 +691,11 @@ impl GlobalDbState {
     }
 
     /// Unregister a connection configuration
-    pub fn unregister_connection<C>(
+    pub async fn unregister_connection(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
-    ) -> C::Result<Task<anyhow::Result<()>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<()>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -719,34 +706,30 @@ impl GlobalDbState {
             let mut connections = clone_self.connections.write().await;
             connections.remove(&connection_id);
             Ok(())
-        })
+        })?.await
     }
-    
+
 
     /// Get all registered connections
-    pub fn list_connections<C>(
+    pub async fn list_connections(
         &self,
-        cx: &mut C,
-    ) -> C::Result<Task<anyhow::Result<Vec<DbConnectionConfig>>>>
-    where
-        C: AppContext
+        cx: &mut AsyncApp,
+    ) -> anyhow::Result<Vec<DbConnectionConfig>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
             let connections = clone_self.connections.read().await;
             Ok(connections.values().cloned().collect())
-        })
+        })?.await
     }
 
     /// Create a new session for executing queries
-    pub fn create_session<C>(
+    pub async fn create_session(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: Option<String>,
-    ) -> C::Result<Task<anyhow::Result<String>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<String>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -760,20 +743,18 @@ impl GlobalDbState {
 
             clone_self.connection_manager.create_session(config, &clone_self.db_manager).await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// Execute SQL script (simplified - creates session per execution)
-    pub fn execute_script<C>(
+    pub async fn execute_script(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         script: String,
         database: Option<String>,
         opts: Option<ExecOptions>,
-    ) -> C::Result<Task<anyhow::Result<Vec<SqlResult>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<SqlResult>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -817,19 +798,17 @@ impl GlobalDbState {
             }
 
             Ok(result)
-        })
+        })?.await
     }
 
     /// Execute script with existing session (for transaction scenarios)
-    pub fn execute_with_session<C>(
+    pub async fn execute_with_session(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         session_id: String,
         script: String,
         opts: Option<ExecOptions>,
-    ) -> C::Result<Task<anyhow::Result<Vec<SqlResult>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<SqlResult>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -855,80 +834,69 @@ impl GlobalDbState {
             }
 
             Ok(result)
-        })
+        })?.await
     }
 
     /// Get connection statistics
-    pub fn stats<C>(
+    pub async fn stats(
         &self,
-        cx: &mut C,
-    ) -> C::Result<Task<anyhow::Result<ConnectionStats>>>
-    where
-        C: AppContext
+        cx: &mut AsyncApp,
+    ) -> anyhow::Result<ConnectionStats>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
             Ok(clone_self.connection_manager.stats().await)
-        })
+        })?.await
     }
 
     /// List all sessions for a connection
-    pub fn list_sessions<C>(
+    pub async fn list_sessions(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
-    ) -> C::Result<Task<anyhow::Result<Vec<SessionInfo>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<SessionInfo>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
             Ok(clone_self.connection_manager.list_sessions(&connection_id).await)
-        })
+        })?.await
     }
 
     /// Close a specific session
-    pub fn close_session<C>(
+    pub async fn close_session(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         session_id: String,
-    ) -> C::Result<Task<anyhow::Result<()>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<()>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
             clone_self.connection_manager.close_session(&session_id).await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// Disconnect all sessions for a connection
-    pub fn disconnect_all<C>(
+    pub async fn disconnect_all(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
-    ) -> C::Result<Task<anyhow::Result<()>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<()>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
             clone_self.connection_manager.remove_all_sessions(&connection_id).await;
             Ok(())
-        })
+        })?.await
     }
 
     /// Query table data
-    pub fn query_table_data<C>(
+    pub async fn query_table_data(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         request: crate::types::TableDataRequest,
-    ) -> C::Result<Task<anyhow::Result<crate::types::TableDataResponse>>>
-    where
-        C: AppContext
-    {
+    ) -> anyhow::Result<crate::types::TableDataResponse> {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
             let config = clone_self.get_config_async(&connection_id).await
@@ -939,19 +907,17 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.query_table_data(&*connection, &request).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// Load node children for tree view
-    pub fn load_node_children<C>(
+    pub async fn load_node_children(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         node: DbNode,
         storage_state: GlobalStorageState,
-    ) -> C::Result<Task<anyhow::Result<Vec<DbNode>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<DbNode>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -963,18 +929,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.load_node_children(&*connection, &node, &storage_state).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// Apply table changes
-    pub fn apply_table_changes<C>(
+    pub async fn apply_table_changes(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         request: crate::types::TableSaveRequest,
-    ) -> C::Result<Task<anyhow::Result<crate::types::TableSaveResponse>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::TableSaveResponse>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -986,18 +950,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.apply_table_changes(&*connection, request).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// Generate table changes SQL
-    pub fn generate_table_changes_sql<C>(
+    pub async fn generate_table_changes_sql(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         request: crate::types::TableSaveRequest,
-    ) -> C::Result<Task<anyhow::Result<String>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<String>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1009,17 +971,15 @@ impl GlobalDbState {
             } else {
                 Ok("-- 连接不存在".to_string())
             }
-        })
+        })?.await
     }
 
     /// List databases
-    pub fn list_databases<C>(
+    pub async fn list_databases(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
-    ) -> C::Result<Task<anyhow::Result<Vec<String>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<String>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1031,17 +991,15 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_databases(&*connection).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List databases view
-    pub fn list_databases_view<C>(
+    pub async fn list_databases_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1053,18 +1011,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_databases_view(&*connection).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List tables
-    pub fn list_tables<C>(
+    pub async fn list_tables(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<Vec<crate::types::TableInfo>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<crate::types::TableInfo>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1076,18 +1032,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_tables(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List tables view
-    pub fn list_tables_view<C>(
+    pub async fn list_tables_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1099,19 +1053,17 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_tables_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List columns
-    pub fn list_columns<C>(
+    pub async fn list_columns(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
         table: String,
-    ) -> C::Result<Task<anyhow::Result<Vec<crate::types::ColumnInfo>>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<Vec<crate::types::ColumnInfo>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1123,19 +1075,17 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_columns(&*connection, &database, &table).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List columns view
-    pub fn list_columns_view<C>(
+    pub async fn list_columns_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
         table: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1147,18 +1097,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_columns_view(&*connection, &database, &table).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List views
-    pub fn list_views_view<C>(
+    pub async fn list_views_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1170,18 +1118,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_views_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List functions view
-    pub fn list_functions_view<C>(
+    pub async fn list_functions_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1193,18 +1139,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_functions_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List procedures view
-    pub fn list_procedures_view<C>(
+    pub async fn list_procedures_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1216,18 +1160,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_procedures_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List triggers view
-    pub fn list_triggers_view<C>(
+    pub async fn list_triggers_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1239,18 +1181,16 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_triggers_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// List sequences view
-    pub fn list_sequences_view<C>(
+    pub async fn list_sequences_view(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
         database: String,
-    ) -> C::Result<Task<anyhow::Result<crate::types::ObjectView>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::types::ObjectView>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1262,17 +1202,15 @@ impl GlobalDbState {
             connection.connect().await?;
             
             plugin.list_sequences_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        })?.await
     }
 
     /// Get completion info
-    pub fn get_completion_info<C>(
+    pub async fn get_completion_info(
         &self,
-        cx: &mut C,
+        cx: &mut AsyncApp,
         connection_id: String,
-    ) -> C::Result<Task<anyhow::Result<crate::plugin::SqlCompletionInfo>>>
-    where
-        C: AppContext
+    ) -> anyhow::Result<crate::plugin::SqlCompletionInfo>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
@@ -1284,7 +1222,7 @@ impl GlobalDbState {
             } else {
                 Ok(crate::plugin::SqlCompletionInfo::default())
             }
-        })
+        })?.await
     }
 }
 

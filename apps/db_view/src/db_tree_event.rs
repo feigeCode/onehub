@@ -619,17 +619,16 @@ impl DatabaseEventHandler {
                     let global_state = global_state.clone();
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         // 执行连接关闭逻辑
-                        let result= global_state.disconnect_all(cx, conn_id.clone());
+                        let result= global_state.disconnect_all(cx, conn_id.clone()).await;
                         match result {
                             Ok(task) => {
-                                _ = task.await;
-
                                 // 清理树视图节点状态并刷新
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree_view, cx| {
                                         tree_view.close_connection(&conn_id, cx);
                                     });
                                 });
+
                             }
                             Err(e) => {
                                 eprintln!("Failed to close connection: {}", e);
@@ -875,24 +874,16 @@ impl DatabaseEventHandler {
                     let conn_id_for_refresh = conn_id.clone();
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
-                        let task = cx.update(|cx| {
-                            state.drop_database(cx, conn_id.clone(), db_name.clone())
-                        });
-                        
-                        match task {
-                            Ok(task) => {
-                                match task.await {
-                                    Ok(_) => {
-                                        eprintln!("Database deleted: {}", db_name_log);
-                                        // 刷新父节点（连接节点）
-                                        let _ = cx.update(|cx| {
-                                            tree.update(cx, |tree, cx| {
-                                                tree.refresh_tree(conn_id_for_refresh, cx);
-                                            });
-                                        });
-                                    }
-                                    Err(e) => eprintln!("Failed to delete database: {}", e),
-                                }
+                        let result = state.drop_database(cx, conn_id.clone(), db_name.clone()).await;
+                        match result {
+                            Ok(_) => {
+                                eprintln!("Database deleted: {}", db_name_log);
+                                // 刷新父节点（连接节点）
+                                let _ = cx.update(|cx| {
+                                    tree.update(cx, |tree, cx| {
+                                        tree.refresh_tree(conn_id_for_refresh, cx);
+                                    });
+                                });
                             }
                             Err(e) => eprintln!("Failed to start delete task: {}", e),
                         }
@@ -942,24 +933,17 @@ impl DatabaseEventHandler {
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
-                        let task = cx.update(|cx| {
-                            state.drop_table(cx, conn_id.clone(), database, tbl_name.clone())
-                        });
+                        let task = state.drop_table(cx, conn_id.clone(), database, tbl_name.clone()).await;
                         
                         match task {
-                            Ok(task) => {
-                                match task.await {
-                                    Ok(_) => {
-                                        eprintln!("Table deleted: {}", tbl_name_log);
-                                        // 刷新数据库节点
-                                        let _ = cx.update(|cx| {
-                                            tree.update(cx, |tree, cx| {
-                                                tree.refresh_tree(db_node_id, cx);
-                                            });
-                                        });
-                                    }
-                                    Err(e) => eprintln!("Failed to delete table: {}", e),
-                                }
+                            Ok(_) => {
+                                eprintln!("Table deleted: {}", tbl_name_log);
+                                // 刷新数据库节点
+                                let _ = cx.update(|cx| {
+                                    tree.update(cx, |tree, cx| {
+                                        tree.refresh_tree(db_node_id, cx);
+                                    });
+                                });
                             }
                             Err(e) => eprintln!("Failed to start delete task: {}", e),
                         }
@@ -1051,16 +1035,10 @@ impl DatabaseEventHandler {
                         let new_name_log = new_name.clone();
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
 
-                        let task = cx.update(|cx| {
-                            state.rename_table(cx, conn_id.clone(), database, old_name.clone(), new_name.clone())
-                        });
-                        
+                        let task = state.rename_table(cx, conn_id.clone(), database, old_name.clone(), new_name.clone()).await;
                         match task {
                             Ok(task) => {
-                                match task.await {
-                                    Ok(_) => eprintln!("Table renamed: {} -> {}", old_name_log, new_name_log),
-                                    Err(e) => eprintln!("Failed to rename table: {}", e),
-                                }
+                                eprintln!("Table renamed: {} -> {}", old_name_log, new_name_log)
                             }
                             Err(e) => eprintln!("Failed to start rename task: {}", e),
                         }
@@ -1107,19 +1085,11 @@ impl DatabaseEventHandler {
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
-                        let task = cx.update(|cx| {
-                            state.truncate_table(cx, conn_id.clone(), database, tbl_name.clone())
-                        });
+                        let task = state.truncate_table(cx, conn_id.clone(), database, tbl_name.clone()).await;
                         
                         match task {
                             Ok(task) => {
-                                match task.await {
-                                    Ok(_) => {
-                                        eprintln!("Table truncated: {}", tbl_name_log);
-                                        // 清空表不需要刷新树，因为表结构没变
-                                    }
-                                    Err(e) => eprintln!("Failed to truncate table: {}", e),
-                                }
+                                eprintln!("Table truncated: {}", tbl_name_log);
                             }
                             Err(e) => eprintln!("Failed to start truncate task: {}", e),
                         }
@@ -1169,22 +1139,17 @@ impl DatabaseEventHandler {
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
-                        let result = state.drop_view(cx, conn_id.clone(), database, v_name.clone());
+                        let result = state.drop_view(cx, conn_id.clone(), database, v_name.clone()).await;
                         
                         match result {
                             Ok(task) => {
-                                match task.await {
-                                    Ok(_) => {
-                                        eprintln!("View deleted: {}", v_name_log);
-                                        // 刷新数据库节点
-                                        let _ = cx.update(|cx| {
-                                            tree.update(cx, |tree, cx| {
-                                                tree.refresh_tree(db_node_id, cx);
-                                            });
-                                        });
-                                    }
-                                    Err(e) => eprintln!("Failed to delete view: {}", e),
-                                }
+                                eprintln!("View deleted: {}", v_name_log);
+                                // 刷新数据库节点
+                                let _ = cx.update(|cx| {
+                                    tree.update(cx, |tree, cx| {
+                                        tree.refresh_tree(db_node_id, cx);
+                                    });
+                                });
                             }
                             Err(e) => eprintln!("Failed to start delete task: {}", e),
                         }

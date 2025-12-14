@@ -13,7 +13,6 @@ use gpui_component::{
     switch::Switch,
     v_flex, ActiveTheme, Sizable,
 };
-use one_core::gpui_tokio::Tokio;
 
 // 3. 当前 crate 导入（按模块分组）
 use db::{ExecOptions, GlobalDbState, SqlResult};
@@ -149,44 +148,41 @@ impl SqlRunView {
                     max_rows: None,
                 };
 
-                let result = global_state.execute_script(cx, conn_id, sql_content, database.clone() , Some(opts)).ok();
-                if let Some(re) = result {
-                    let result = re.await;
-                    match result {
-                        Ok(results) => {
-                            let success_count = results.iter().filter(|r| !r.is_error()).count();
-                            let error_count = results.iter().filter(|r| r.is_error()).count();
+                let result = global_state.execute_script(cx, conn_id, sql_content, database.clone() , Some(opts)).await;
+                match result {
+                    Ok(results) => {
+                        let success_count = results.iter().filter(|r| !r.is_error()).count();
+                        let error_count = results.iter().filter(|r| r.is_error()).count();
 
-                            total_success += success_count;
-                            total_errors += error_count;
+                        total_success += success_count;
+                        total_errors += error_count;
 
-                            // 收集错误信息
-                            for result in results.iter() {
-                                if let SqlResult::Error(e) = result {
-                                    error_messages.push(format!("[{}]: {}", file_path, e.message));
-                                }
-                            }
-
-                            if error_count > 0 && stop_on_error {
-                                let error_msg = format!("执行错误: {}", error_messages.last().unwrap_or(&"未知错误".to_string()));
-                                Self::update_status(&cx, &status, &error_msg);
-                                return;
+                        // 收集错误信息
+                        for result in results.iter() {
+                            if let SqlResult::Error(e) = result {
+                                error_messages.push(format!("[{}]: {}", file_path, e.message));
                             }
                         }
-                        Err(e) => {
-                            let error_msg = format!("执行失败 [{}]: {}", file_path, e);
-                            error_messages.push(error_msg.clone());
-                            total_errors += 1;
 
-                            if stop_on_error {
-                                Self::update_status(&cx, &status, &error_msg);
-                                return;
-                            }
+                        if error_count > 0 && stop_on_error {
+                            let error_msg = format!("执行错误: {}", error_messages.last().unwrap_or(&"未知错误".to_string()));
+                            Self::update_status(&cx, &status, &error_msg);
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = format!("执行失败 [{}]: {}", file_path, e);
+                        error_messages.push(error_msg.clone());
+                        total_errors += 1;
+
+                        if stop_on_error {
+                            Self::update_status(&cx, &status, &error_msg);
+                            return;
                         }
                     }
                 }
-                
-                
+
+
             }
 
             // 生成最终状态消息

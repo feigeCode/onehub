@@ -329,7 +329,7 @@ impl DataGrid {
         let this = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let result = global_state.apply_table_changes(cx, connection_id.clone(), save_request).unwrap().await;
+            let result = global_state.apply_table_changes(cx, connection_id.clone(), save_request).await;
 
             cx.update(|cx| match result {
                 Ok(response) if response.errors.is_empty() => {
