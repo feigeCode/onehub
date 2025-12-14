@@ -1,21 +1,18 @@
 use crate::connection::{DbConnection, DbError};
 use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
+use crate::SqlValue;
 
-use sqlx::mysql::{MySqlArguments, MySqlPoolOptions, MySqlRow};
-use sqlx::{query, Column, MySql, MySqlPool, Row, ValueRef};
+use mysql_async::{prelude::*, Conn, Opts, OptsBuilder, Pool, Row, Value};
 use std::time::Instant;
 use async_trait::async_trait;
 use std::sync::RwLock;
-use sqlx::types::chrono;
-use sqlx::types::chrono::Utc;
 use one_core::storage::DbConnectionConfig;
-use crate::{SqlValue};
 
 pub struct MysqlDbConnection {
     config: Option<DbConnectionConfig>,
-    // Active connection pool; wrapped for interior mutability to allow switching DB in execute()
-    pool: RwLock<Option<MySqlPool>>,
-    // Track current database selected on this connection
+    // Use Pool for connection management
+    pool: RwLock<Option<Pool>>,
+    // Track current database
     current_database: RwLock<Option<String>>,
 }
 
@@ -28,9 +25,8 @@ impl MysqlDbConnection {
         }
     }
 
-    fn ensure_connected(&self) -> Result<MySqlPool, DbError> {
-        self
-            .pool
+    fn ensure_connected(&self) -> Result<Pool, DbError> {
+        self.pool
             .read()
             .unwrap()
             .as_ref()
@@ -38,141 +34,128 @@ impl MysqlDbConnection {
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))
     }
 
-    fn bind_parameter(
-        query: sqlx::query::Query<MySql, MySqlArguments>,
-        param: SqlValue,
-    ) -> sqlx::query::Query<MySql, MySqlArguments> {
-        match param {
-            SqlValue::Null => {
-                // Bind NULL as Option::<i32>::None (MySQL supports NULL for any type)
-                query.bind(None::<i32>)
+    /// Extract value from mysql_async::Value - much simpler than sqlx!
+    fn extract_value(value: &Value) -> Option<String> {
+        match value {
+            Value::NULL => None,
+            Value::Bytes(b) => Some(String::from_utf8_lossy(b).to_string()),
+            Value::Int(i) => Some(i.to_string()),
+            Value::UInt(u) => Some(u.to_string()),
+            Value::Float(f) => Some(f.to_string()),
+            Value::Double(d) => Some(d.to_string()),
+            Value::Date(year, month, day, hour, min, sec, micro) => {
+                if *hour == 0 && *min == 0 && *sec == 0 && *micro == 0 {
+                    // Pure DATE
+                    Some(format!("{:04}-{:02}-{:02}", year, month, day))
+                } else {
+                    // DATETIME or TIMESTAMP
+                    Some(format!(
+                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                        year, month, day, hour, min, sec
+                    ))
+                }
             }
-            SqlValue::Bool(v) => query.bind(v),
-            SqlValue::Int(v) => query.bind(v),
-            SqlValue::Float(v) => query.bind(v),
-            SqlValue::String(v) => query.bind(v),
-            SqlValue::Bytes(v) => query.bind(v),
-            SqlValue::Json(v) => query.bind(v.to_string()), // MySQL stores JSON as text
+            Value::Time(is_neg, days, hours, minutes, seconds, _micros) => {
+                let sign = if *is_neg { "-" } else { "" };
+                if *days == 0 {
+                    Some(format!("{}{}:{:02}:{:02}", sign, hours, minutes, seconds))
+                } else {
+                    Some(format!(
+                        "{}{} {:02}:{:02}:{:02}",
+                        sign, days, hours, minutes, seconds
+                    ))
+                }
+            }
         }
     }
-    fn extract_value(row: &MySqlRow, index: usize) -> Option<String> {
-        use sqlx::Row;
-        use sqlx::TypeInfo;
-        use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-        use sqlx::types::BigDecimal;
 
-        // Check if NULL
-        if let Ok(val) = row.try_get_raw(index) {
-            if val.is_null() {
-                return None;
-            }
+    /// Convert SqlValue to mysql_async::Value for parameter binding
+    fn convert_param(param: &SqlValue) -> Value {
+        match param {
+            SqlValue::Null => Value::NULL,
+            SqlValue::Bool(v) => Value::Int(*v as i64),
+            SqlValue::Int(v) => Value::Int(*v),
+            SqlValue::Float(v) => Value::Double(*v),
+            SqlValue::String(v) => Value::Bytes(v.as_bytes().to_vec()),
+            SqlValue::Bytes(v) => Value::Bytes(v.clone()),
+            SqlValue::Json(v) => Value::Bytes(v.to_string().as_bytes().to_vec()),
         }
+    }
 
-        // Get column type info for type-specific handling
-        let column = row.column(index);
-        let type_name = column.type_info().name().to_uppercase();
+    /// Execute a single statement and return the result
+    async fn execute_single(
+        conn: &mut Conn,
+        sql: &str,
+        is_query: bool,
+    ) -> Result<SqlResult, DbError> {
+        let start = Instant::now();
+        let sql_string = sql.to_string();
 
-        // Date and time types - must be checked BEFORE String to avoid incorrect parsing
-        // MySQL types: DATE, DATETIME, TIME, YEAR
-        // ───────── TIME / DATE / DATETIME / TIMESTAMP 处理 ─────────
-        match type_name.as_str() {
-            "TIMESTAMP" => {
-                // 带时区类型 → DateTime<Utc>
-                if let Ok(val) = row.try_get::<chrono::DateTime<Utc>, _>(index) {
-                    return Some(val.format("%Y-%m-%d %H:%M:%S").to_string());
+        if is_query {
+            // Execute SELECT or other query statements
+            match conn.query::<Row, _>(sql).await {
+                Ok(rows) => {
+                    let elapsed_ms = start.elapsed().as_millis();
+
+                    if rows.is_empty() {
+                        Ok(SqlResult::Query(QueryResult {
+                            sql: sql_string,
+                            columns: Vec::new(),
+                            rows: Vec::new(),
+                            elapsed_ms,
+                        }))
+                    } else {
+                        // Get column names from first row
+                        let columns: Vec<String> = rows[0]
+                            .columns_ref()
+                            .iter()
+                            .map(|col| col.name_str().to_string())
+                            .collect();
+
+                        // Extract row data
+                        let all_rows: Vec<Vec<Option<String>>> = rows
+                            .iter()
+                            .map(|row| {
+                                (0..row.len())
+                                    .map(|i| Self::extract_value(&row[i]))
+                                    .collect()
+                            })
+                            .collect();
+
+                        Ok(SqlResult::Query(QueryResult {
+                            sql: sql_string,
+                            columns,
+                            rows: all_rows,
+                            elapsed_ms,
+                        }))
+                    }
                 }
+                Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
+                    sql: sql_string,
+                    message: e.to_string(),
+                })),
             }
-            "DATETIME" => {
-                if let Ok(val) = row.try_get::<NaiveDateTime, _>(index) {
-                    return Some(val.format("%Y-%m-%d %H:%M:%S").to_string());
+        } else {
+            // Execute DML/DDL statements
+            match conn.query_drop(sql).await {
+                Ok(_) => {
+                    let elapsed_ms = start.elapsed().as_millis();
+                    let rows_affected = conn.affected_rows();
+                    let message = SqlStatementClassifier::format_message(&sql_string, rows_affected);
+
+                    Ok(SqlResult::Exec(ExecResult {
+                        sql: sql_string,
+                        rows_affected,
+                        elapsed_ms,
+                        message: Some(message),
+                    }))
                 }
+                Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
+                    sql: sql_string,
+                    message: e.to_string(),
+                })),
             }
-            "DATE" => {
-                if let Ok(val) = row.try_get::<NaiveDate, _>(index) {
-                    return Some(val.format("%Y-%m-%d").to_string());
-                }
-            }
-            "TIME" => {
-                if let Ok(val) = row.try_get::<NaiveTime, _>(index) {
-                    return Some(val.format("%H:%M:%S").to_string());
-                }
-            }
-            "YEAR" => {
-                if let Ok(val) = row.try_get::<i16, _>(index) {
-                    return Some(val.to_string());
-                }
-            }
-            _ => {}
         }
-
-        // Try different types in order of likelihood
-        // String types (VARCHAR, CHAR, TEXT, etc.)
-        if let Ok(val) = row.try_get::<String, _>(index) {
-            return Some(val);
-        }
-
-        // Integer types (TINYINT, SMALLINT, MEDIUMINT, INT, BIGINT)
-        if let Ok(val) = row.try_get::<i64, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<i32, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<i16, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<i8, _>(index) {
-            return Some(val.to_string());
-        }
-
-        // Unsigned integer types
-        if let Ok(val) = row.try_get::<u64, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<u32, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<u16, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<u8, _>(index) {
-            return Some(val.to_string());
-        }
-
-        // Floating point types (FLOAT, DOUBLE)
-        if let Ok(val) = row.try_get::<f64, _>(index) {
-            return Some(val.to_string());
-        }
-        if let Ok(val) = row.try_get::<f32, _>(index) {
-            return Some(val.to_string());
-        }
-
-        // DECIMAL/NUMERIC type
-        if let Ok(val) = row.try_get::<BigDecimal, _>(index) {
-            return Some(val.to_string());
-        }
-
-        // Boolean (BOOL, BOOLEAN which are aliases for TINYINT(1))
-        if let Ok(val) = row.try_get::<bool, _>(index) {
-            return Some(if val { "1" } else { "0" }.to_string());
-        }
-
-        // Binary types (BINARY, VARBINARY, BLOB)
-        if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
-            // For binary data, try to show as UTF-8 string first, otherwise hex
-            if let Ok(s) = String::from_utf8(val.clone()) {
-                return Some(s);
-            }
-            return Some(format!("0x{}", hex::encode(&val)));
-        }
-
-        // JSON type
-        if let Ok(val) = row.try_get::<serde_json::Value, _>(index) {
-            return Some(val.to_string());
-        }
-
-        // If all else fails, return column type information
-        Some(format!("<{}>", type_name))
     }
 }
 
@@ -183,40 +166,44 @@ impl DbConnection for MysqlDbConnection {
     }
 
     async fn connect(&mut self) -> anyhow::Result<(), DbError> {
-        let config = self.config.clone();
-        if let Some(conf) = config {
-            let clone_conf = conf.clone();
-            let url = if let Some(db) = conf.database {
-                format!(
-                    "mysql://{}:{}@{}:{}/{}",
-                    conf.username, conf.password, conf.host, conf.port, db.clone()
-                )
-            } else {
-                format!(
-                    "mysql://{}:{}@{}:{}",
-                    conf.username, conf.password, conf.host, conf.port
-                )
-            };
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| DbError::ConnectionError("No database configuration provided".to_string()))?;
 
-            let pool = MySqlPoolOptions::new()
-                .max_connections(1)
-                .connect(&url)
-                .await
-                .map_err(|e| DbError::ConnectionError(format!("Failed to connect to database: {}", e)))?;
-            // Persist pool and current database
-            {
-                let mut guard = self.pool.write().unwrap();
-                *guard = Some(pool);
-            }
-            {
-                let mut db_guard = self.current_database.write().unwrap();
-                db_guard.clone_from(&clone_conf.database);
-            }
-            Ok(())
-        }else { 
-            Err(DbError::ConnectionError("No database configuration provided".to_string()))
+        let mut opts_builder = OptsBuilder::default()
+            .ip_or_hostname(&config.host)
+            .tcp_port(config.port)
+            .user(Some(&config.username))
+            .pass(Some(&config.password));
+
+        if let Some(ref db) = config.database {
+            opts_builder = opts_builder.db_name(Some(db));
         }
-        
+
+        let opts = Opts::from(opts_builder);
+        let pool = Pool::new(opts);
+
+        // Test the connection
+        let conn = pool
+            .get_conn()
+            .await
+            .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;
+
+        // Return connection to pool
+        drop(conn);
+
+        // Store pool and current database
+        {
+            let mut guard = self.pool.write().unwrap();
+            *guard = Some(pool);
+        }
+        {
+            let mut db_guard = self.current_database.write().unwrap();
+            *db_guard = config.database.clone();
+        }
+
+        Ok(())
     }
 
     async fn disconnect(&mut self) -> Result<(), DbError> {
@@ -224,376 +211,304 @@ impl DbConnection for MysqlDbConnection {
             let mut guard = self.pool.write().unwrap();
             guard.take()
         };
+
         if let Some(pool) = pool_opt {
-            pool.close().await;
+            pool.disconnect()
+                .await
+                .map_err(|e| DbError::ConnectionError(format!("Failed to disconnect: {}", e)))?;
         }
+
         Ok(())
     }
 
-
     async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
-        let base_pool = self.ensure_connected()?;
-        // Work off a current pool; switch pools on USE and persist DB context
-        let active_pool = base_pool.clone();
+        let pool = self.ensure_connected()?;
+        let mut conn = pool
+            .get_conn()
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
 
-        // Split script into individual statements
+        // Split script into statements
         let statements = SqlScriptSplitter::split(script);
         let mut results = Vec::new();
 
+        if options.transactional {
+            // Start transaction
+            let mut tx = conn
+                .start_transaction(Default::default())
+                .await
+                .map_err(|e| DbError::QueryError(format!("Failed to begin transaction: {}", e)))?;
 
-        // Execute each statement on the pool
-        for sql in statements {
-            let sql = sql.trim();
-            if sql.is_empty() {
-                continue;
-            }
-
-            // Check if this is a USE statement
-            let sql_upper = sql.to_uppercase();
-            let is_use_statement = sql_upper.starts_with("USE ");
-
-            // If it's a USE statement, execute it directly and update current database
-            if is_use_statement {
-                let start = Instant::now();
-                // Extract database name from USE statement
-                let db_name = sql.trim_start_matches("USE ")
-                    .trim_start_matches("use ")
-                    .trim()
-                    .trim_matches('`')
-                    .trim_matches(';')
-                    .to_string();
-
-                // Execute USE statement on current connection
-                let pool = active_pool.clone();
-                let sql_to_exec = sql.to_string();
-                match sqlx::raw_sql(&sql_to_exec).execute(&pool).await
-                {
-                    Ok(_exec_result) => {
-                        // Update current database property
-                        {
-                            let mut db_guard = self.current_database.write().unwrap();
-                            *db_guard = Some(db_name.clone());
-                        }
-                        let elapsed_ms = start.elapsed().as_millis();
-                        results.push(SqlResult::Exec(ExecResult {
-                            sql: sql.to_string(),
-                            rows_affected: 0,
-                            elapsed_ms,
-                            message: Some(format!("Database changed to '{}'", db_name)),
-                        }));
-                        continue;
-                    }
-                    Err(e) => {
-                        results.push(SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        }));
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
+            for sql in statements {
+                let sql = sql.trim();
+                if sql.is_empty() {
+                    continue;
                 }
-            }
 
-            // Apply max_rows limit for non-USE statements
-            let modified_sql = if let Some(max_rows) = options.max_rows {
-                if SqlStatementClassifier::is_query_statement(sql) && !sql.to_uppercase().contains(" LIMIT ") {
-                    format!("{} LIMIT {}", sql, max_rows)
+                // Apply max_rows limit
+                let modified_sql = if let Some(max_rows) = options.max_rows {
+                    if SqlStatementClassifier::is_query_statement(sql)
+                        && !sql.to_uppercase().contains(" LIMIT ")
+                    {
+                        format!("{} LIMIT {}", sql, max_rows)
+                    } else {
+                        sql.to_string()
+                    }
                 } else {
                     sql.to_string()
-                }
-            } else {
-                sql.to_string()
-            };
+                };
 
-            // Determine statement type
-            let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
 
-            let start = Instant::now();
-            let result = if is_query {
-                // Execute query statement using raw_sql on the active pool - wrap in Tokio context
-                let pool = active_pool.clone();
-                let sql_to_exec = modified_sql.clone();
-                let original_sql = sql.to_string();
+                // Execute within transaction
+                let start = Instant::now();
+                let sql_string = modified_sql.clone();
 
-                match sqlx::raw_sql(&sql_to_exec).fetch_all(&pool).await {
-                    Ok(rows) => {
-                        let elapsed_ms = start.elapsed().as_millis();
+                let result = if is_query {
+                    match tx.query::<Row, _>(&modified_sql).await {
+                        Ok(rows) => {
+                            let elapsed_ms = start.elapsed().as_millis();
 
-                        if rows.is_empty() {
-                            SqlResult::Query(QueryResult {
-                                sql: original_sql,
-                                columns: Vec::new(),
-                                rows: Vec::new(),
-                                elapsed_ms,
-                            })
-                        } else {
-                            // Extract column names
-                            let columns: Vec<String> = rows[0]
-                                .columns()
-                                .iter()
-                                .map(|col| col.name().to_string())
-                                .collect();
-
-                            // Extract row data
-                            let data_rows: Vec<Vec<Option<String>>> = rows
-                                .iter()
-                                .map(|row| {
-                                    (0..columns.len())
-                                        .map(|i| Self::extract_value(row, i))
-                                        .collect()
+                            if rows.is_empty() {
+                                SqlResult::Query(QueryResult {
+                                    sql: sql.to_string(),
+                                    columns: Vec::new(),
+                                    rows: Vec::new(),
+                                    elapsed_ms,
                                 })
-                                .collect();
+                            } else {
+                                let columns: Vec<String> = rows[0]
+                                    .columns_ref()
+                                    .iter()
+                                    .map(|col| col.name_str().to_string())
+                                    .collect();
 
-                            SqlResult::Query(QueryResult {
-                                sql: original_sql,
-                                columns,
-                                rows: data_rows,
+                                let all_rows: Vec<Vec<Option<String>>> = rows
+                                    .iter()
+                                    .map(|row| {
+                                        (0..row.len())
+                                            .map(|i| Self::extract_value(&row[i]))
+                                            .collect()
+                                    })
+                                    .collect();
+
+                                SqlResult::Query(QueryResult {
+                                    sql: sql.to_string(),
+                                    columns,
+                                    rows: all_rows,
+                                    elapsed_ms,
+                                })
+                            }
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.to_string(),
+                            message: e.to_string(),
+                        }),
+                    }
+                } else {
+                    match tx.query_drop(&modified_sql).await {
+                        Ok(_) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            let rows_affected = tx.affected_rows();
+                            let message = SqlStatementClassifier::format_message(&sql_string, rows_affected);
+
+                            SqlResult::Exec(ExecResult {
+                                sql: sql.to_string(),
+                                rows_affected,
                                 elapsed_ms,
+                                message: Some(message),
                             })
                         }
-                    }
-                    Err(e) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
                             message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
+                        }),
                     }
+                };
+
+                let is_error = result.is_error();
+                results.push(result);
+
+                if is_error {
+                    break;
                 }
+            }
+
+            // Commit or rollback
+            let has_error = results.iter().any(|r| r.is_error());
+            if has_error {
+                tx.rollback()
+                    .await
+                    .map_err(|e| DbError::QueryError(format!("Failed to rollback: {}", e)))?;
             } else {
-                // Execute non-query statement using raw_sql on the active pool - wrap in Tokio context
-                let pool = active_pool.clone();
-                let sql_to_exec = modified_sql.clone();
-                let original_sql = sql.to_string();
-
-                match sqlx::raw_sql(&sql_to_exec).execute(&pool).await {
-                    Ok(exec_result) => {
-                        let elapsed_ms = start.elapsed().as_millis();
-                        let rows_affected = exec_result.rows_affected();
-                        let message = SqlStatementClassifier::format_message(&original_sql, rows_affected);
-
-                        SqlResult::Exec(ExecResult {
-                            sql: original_sql,
-                            rows_affected,
-                            elapsed_ms,
-                            message: Some(message),
-                        })
-                    }
-                    Err(e) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
+                tx.commit()
+                    .await
+                    .map_err(|e| DbError::QueryError(format!("Failed to commit: {}", e)))?;
+            }
+        } else {
+            // Execute statements one by one
+            for sql in statements {
+                let sql = sql.trim();
+                if sql.is_empty() {
+                    continue;
                 }
-            };
 
-            results.push(result);
+                let sql_upper = sql.to_uppercase();
+                let is_use_statement = sql_upper.starts_with("USE ");
+
+                // Handle USE statement specially
+                if is_use_statement {
+                    let start = Instant::now();
+                    let db_name = sql
+                        .trim_start_matches("USE ")
+                        .trim_start_matches("use ")
+                        .trim()
+                        .trim_matches('`')
+                        .trim_matches(';')
+                        .to_string();
+
+                    match conn.query_drop(sql).await {
+                        Ok(_) => {
+                            // Update current database
+                            {
+                                let mut db_guard = self.current_database.write().unwrap();
+                                *db_guard = Some(db_name.clone());
+                            }
+
+                            let elapsed_ms = start.elapsed().as_millis();
+                            results.push(SqlResult::Exec(ExecResult {
+                                sql: sql.to_string(),
+                                rows_affected: 0,
+                                elapsed_ms,
+                                message: Some(format!("Database changed to '{}'", db_name)),
+                            }));
+                        }
+                        Err(e) => {
+                            results.push(SqlResult::Error(SqlErrorInfo {
+                                sql: sql.to_string(),
+                                message: e.to_string(),
+                            }));
+
+                            if options.stop_on_error {
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Apply max_rows limit
+                let modified_sql = if let Some(max_rows) = options.max_rows {
+                    if SqlStatementClassifier::is_query_statement(sql)
+                        && !sql.to_uppercase().contains(" LIMIT ")
+                    {
+                        format!("{} LIMIT {}", sql, max_rows)
+                    } else {
+                        sql.to_string()
+                    }
+                } else {
+                    sql.to_string()
+                };
+
+                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let result = Self::execute_single(&mut conn, &modified_sql, is_query).await?;
+
+                let is_error = result.is_error();
+                results.push(result);
+
+                if is_error && options.stop_on_error {
+                    break;
+                }
+            }
         }
 
-        // Connection will be automatically returned to the pool when dropped
         Ok(results)
     }
 
-
-    async fn query(&self, query: &str, params: Option<Vec<SqlValue>>, options: ExecOptions) -> Result<SqlResult, DbError> {
+    async fn query(
+        &self,
+        query: &str,
+        params: Option<Vec<SqlValue>>,
+        options: ExecOptions,
+    ) -> Result<SqlResult, DbError> {
         let pool = self.ensure_connected()?;
+        let mut conn = pool
+            .get_conn()
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
+
         let start = Instant::now();
-        // Determine if it's a query or execution statement
         let is_query = SqlStatementClassifier::is_query_statement(query);
+        let query_string = query.to_string();
 
-        let result = if let Some(params) = params {
-            // Use prepared statement with parameter binding
+        if let Some(params) = params {
+            // Use prepared statement with parameters
+            let mysql_params: Vec<Value> = params.iter().map(Self::convert_param).collect();
+
             if is_query {
-                // For SELECT queries with parameters - use raw_sql with parameters
-                // Build parameterized query string
-                let query_str = query.to_string();
-                let params_vec: Vec<String> = params.iter().map(|p| match p {
-                    SqlValue::Null => "NULL".to_string(),
-                    SqlValue::Bool(v) => v.to_string(),
-                    SqlValue::Int(v) => v.to_string(),
-                    SqlValue::Float(v) => v.to_string(),
-                    SqlValue::String(v) => format!("'{}'", v.replace("'", "''")),
-                    SqlValue::Bytes(v) => format!("0x{}", hex::encode(v)),
-                    SqlValue::Json(v) => format!("'{}'", v.to_string().replace("'", "''")),
-                }).collect();
-
-                // Simple parameter substitution (not ideal, but works for now)
-                let mut final_query = query_str.clone();
-                for (i, param_val) in params_vec.iter().enumerate() {
-                    final_query = final_query.replacen("?", param_val, 1);
-                }
-
-                let pool = pool.clone();
-                match sqlx::raw_sql(&final_query).fetch_all(&pool).await {
+                match conn.exec::<Row, _, _>(query, mysql_params).await {
                     Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
 
                         if rows.is_empty() {
-                            SqlResult::Query(QueryResult {
-                                sql: query_str,
+                            Ok(SqlResult::Query(QueryResult {
+                                sql: query_string,
                                 columns: Vec::new(),
                                 rows: Vec::new(),
                                 elapsed_ms,
-                            })
+                            }))
                         } else {
-                            // Extract column names
                             let columns: Vec<String> = rows[0]
-                                .columns()
+                                .columns_ref()
                                 .iter()
-                                .map(|col| col.name().to_string())
+                                .map(|col| col.name_str().to_string())
                                 .collect();
 
-                            // Extract row data
-                            let data_rows: Vec<Vec<Option<String>>> = rows
+                            let all_rows: Vec<Vec<Option<String>>> = rows
                                 .iter()
                                 .map(|row| {
-                                    (0..columns.len())
-                                        .map(|i| Self::extract_value(row, i))
+                                    (0..row.len())
+                                        .map(|i| Self::extract_value(&row[i]))
                                         .collect()
                                 })
                                 .collect();
 
-                            SqlResult::Query(QueryResult {
-                                sql: query_str,
+                            Ok(SqlResult::Query(QueryResult {
+                                sql: query_string,
                                 columns,
-                                rows: data_rows,
+                                rows: all_rows,
                                 elapsed_ms,
-                            })
+                            }))
                         }
                     }
-                    Err(e) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
+                    Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
+                        sql: query_string,
                         message: e.to_string(),
-                    })
+                    })),
                 }
             } else {
-                // For DML/DDL queries with parameters - use raw_sql with parameters
-                let query_str = query.to_string();
-                let params_vec: Vec<String> = params.iter().map(|p| match p {
-                    SqlValue::Null => "NULL".to_string(),
-                    SqlValue::Bool(v) => v.to_string(),
-                    SqlValue::Int(v) => v.to_string(),
-                    SqlValue::Float(v) => v.to_string(),
-                    SqlValue::String(v) => format!("'{}'", v.replace("'", "''")),
-                    SqlValue::Bytes(v) => format!("0x{}", hex::encode(v)),
-                    SqlValue::Json(v) => format!("'{}'", v.to_string().replace("'", "''")),
-                }).collect();
-
-                // Simple parameter substitution
-                let mut final_query = query_str.clone();
-                for param_val in params_vec.iter() {
-                    final_query = final_query.replacen("?", param_val, 1);
-                }
-
-                let pool = pool.clone();
-                match sqlx::raw_sql(&final_query).execute(&pool).await {
-                    Ok(exec_result) => {
+                match conn.exec_drop(query, mysql_params).await {
+                    Ok(_) => {
                         let elapsed_ms = start.elapsed().as_millis();
-                        let rows_affected = exec_result.rows_affected();
-                        let message = SqlStatementClassifier::format_message(&query_str, rows_affected);
+                        let rows_affected = conn.affected_rows();
+                        let message = SqlStatementClassifier::format_message(&query_string, rows_affected);
 
-                        SqlResult::Exec(ExecResult {
-                            sql: query_str,
+                        Ok(SqlResult::Exec(ExecResult {
+                            sql: query_string,
                             rows_affected,
                             elapsed_ms,
                             message: Some(message),
-                        })
+                        }))
                     }
-                    Err(e) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
+                    Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
+                        sql: query_string,
                         message: e.to_string(),
-                    })
+                    })),
                 }
             }
         } else {
-            // Use raw SQL without parameter binding (for user input)
-            if is_query {
-                let pool = pool.clone();
-                let query_str = query.to_string();
-                let query_str_clone = query_str.clone();
-                match sqlx::raw_sql(&query_str_clone).fetch_all(&pool).await {
-                    Ok(rows) => {
-                        let elapsed_ms = start.elapsed().as_millis();
-
-                        if rows.is_empty() {
-                            SqlResult::Query(QueryResult {
-                                sql: query_str,
-                                columns: Vec::new(),
-                                rows: Vec::new(),
-                                elapsed_ms,
-                            })
-                        } else {
-                            // Extract column names
-                            let columns: Vec<String> = rows[0]
-                                .columns()
-                                .iter()
-                                .map(|col| col.name().to_string())
-                                .collect();
-
-                            // Extract row data
-                            let data_rows: Vec<Vec<Option<String>>> = rows
-                                .iter()
-                                .map(|row| {
-                                    (0..columns.len())
-                                        .map(|i| Self::extract_value(row, i))
-                                        .collect()
-                                })
-                                .collect();
-
-                            SqlResult::Query(QueryResult {
-                                sql: query_str,
-                                columns,
-                                rows: data_rows,
-                                elapsed_ms,
-                            })
-                        }
-                    }
-                    Err(e) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
-                        message: e.to_string(),
-                    })
-                }
-            } else {
-                let pool = pool.clone();
-                let query_str = query.to_string();
-                let query_str_clone = query_str.clone();
-                match sqlx::raw_sql(&query_str_clone).execute(&pool).await {
-                    Ok(exec_result) => {
-                        let elapsed_ms = start.elapsed().as_millis();
-                        let rows_affected = exec_result.rows_affected();
-                        let message = SqlStatementClassifier::format_message(&query_str, rows_affected);
-
-                        SqlResult::Exec(ExecResult {
-                            sql: query_str,
-                            rows_affected,
-                            elapsed_ms,
-                            message: Some(message),
-                        })
-                    }
-                    Err(e) => SqlResult::Error(SqlErrorInfo {
-                        sql: query.to_string(),
-                        message: e.to_string(),
-                    })
-                }
-            }
-        };
-
-        Ok(result)
+            // Execute without parameters
+            Self::execute_single(&mut conn, query, is_query).await
+        }
     }
 }

@@ -1,9 +1,10 @@
-use std::sync::RwLock;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use sqlx::sqlite::{SqlitePoolOptions, SqliteRow};
-use sqlx::{Column, Row, SqlitePool};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{Column, Connection, Row, SqliteConnection};
+use tokio::sync::Mutex;
 use one_core::storage::DbConnectionConfig;
 use crate::connection::{DbConnection, DbError};
 use crate::executor::{
@@ -15,24 +16,15 @@ use crate::types::{SqlValue};
 
 pub struct SqliteDbConnection {
     config: Option<DbConnectionConfig>,
-    pool: RwLock<Option<SqlitePool>>,
+    connection: Arc<Mutex<Option<SqliteConnection>>>,
 }
 
 impl SqliteDbConnection {
     pub fn new(config: DbConnectionConfig) -> Self {
         Self {
             config: Some(config),
-            pool: RwLock::new(None),
+            connection: Arc::new(Mutex::new(None)),
         }
-    }
-
-    fn ensure_connected(&self) -> Result<SqlitePool, DbError> {
-        self.pool
-            .read()
-            .unwrap()
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))
     }
 
     fn extract_value(row: &SqliteRow, index: usize) -> Option<String> {
@@ -115,29 +107,26 @@ impl DbConnection for SqliteDbConnection {
             .clone();
 
         let url = format!("sqlite://{}", database_path);
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
+        let conn = SqliteConnection::connect(&url)
             .await
             .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
         {
-            let mut guard = self.pool.write().unwrap();
-            *guard = Some(pool);
+            let mut guard = self.connection.lock().await;
+            *guard = Some(conn);
         }
 
         Ok(())
     }
 
     async fn disconnect(&mut self) -> Result<(), DbError> {
-        let pool_opt = {
-            let mut guard = self.pool.write().unwrap();
+        let conn_opt = {
+            let mut guard = self.connection.lock().await;
             guard.take()
         };
 
-        if let Some(pool) = pool_opt {
-            pool.close().await;
+        if let Some(conn) = conn_opt {
+            conn.close().await.map_err(|e| DbError::ConnectionError(format!("Failed to disconnect: {}", e)))?;
         }
 
         Ok(())
@@ -148,7 +137,6 @@ impl DbConnection for SqliteDbConnection {
         script: &str,
         options: ExecOptions,
     ) -> Result<Vec<SqlResult>, DbError> {
-        let pool = self.ensure_connected()?;
         let statements = SqlScriptSplitter::split(script);
         let mut results = Vec::new();
 
@@ -174,18 +162,17 @@ impl DbConnection for SqliteDbConnection {
             let start = Instant::now();
 
             let result = if is_query {
-                let pool = pool.clone();
-                let sql_to_exec = modified_sql.clone();
-                let original_sql = sql.to_string();
+                let mut guard = self.connection.lock().await;
+                let conn = guard.as_mut()
+                    .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-                match sqlx::raw_sql(&sql_to_exec).fetch_all(&pool).await
-                {
+                match sqlx::query(&modified_sql).fetch_all(conn).await {
                     Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
 
                         if rows.is_empty() {
                             SqlResult::Query(QueryResult {
-                                sql: original_sql,
+                                sql: sql.to_string(),
                                 columns: Vec::new(),
                                 rows: Vec::new(),
                                 elapsed_ms,
@@ -207,90 +194,49 @@ impl DbConnection for SqliteDbConnection {
                                 .collect();
 
                             SqlResult::Query(QueryResult {
-                                sql: original_sql,
+                                sql: sql.to_string(),
                                 columns,
                                 rows: data_rows,
                                 elapsed_ms,
                             })
                         }
                     }
-                    Err(e) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
-                    Err(e) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
+                    Err(e) => SqlResult::Error(SqlErrorInfo {
+                        sql: sql.to_string(),
+                        message: e.to_string(),
+                    }),
                 }
             } else {
-                let pool = pool.clone();
-                let sql_to_exec = modified_sql.clone();
-                let original_sql = sql.to_string();
+                let mut guard = self.connection.lock().await;
+                let conn = guard.as_mut()
+                    .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-                match sqlx::raw_sql(&sql_to_exec).execute(&pool).await
-                {
+                match sqlx::query(&modified_sql).execute(conn).await {
                     Ok(exec_result) => {
                         let elapsed_ms = start.elapsed().as_millis();
                         let rows_affected = exec_result.rows_affected();
-                        let message =
-                            SqlStatementClassifier::format_message(&original_sql, rows_affected);
+                        let message = SqlStatementClassifier::format_message(sql, rows_affected);
 
                         SqlResult::Exec(ExecResult {
-                            sql: original_sql,
+                            sql: sql.to_string(),
                             rows_affected,
                             elapsed_ms,
                             message: Some(message),
                         })
                     }
-                    Err(e) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
-                    Err(e) => {
-                        let result = SqlResult::Error(SqlErrorInfo {
-                            sql: sql.to_string(),
-                            message: e.to_string(),
-                        });
-
-                        results.push(result);
-
-                        if options.stop_on_error {
-                            break;
-                        }
-                        continue;
-                    }
+                    Err(e) => SqlResult::Error(SqlErrorInfo {
+                        sql: sql.to_string(),
+                        message: e.to_string(),
+                    }),
                 }
             };
 
+            let is_error = result.is_error();
             results.push(result);
+
+            if is_error && options.stop_on_error {
+                break;
+            }
         }
 
         Ok(results)
@@ -302,23 +248,21 @@ impl DbConnection for SqliteDbConnection {
         _params: Option<Vec<SqlValue>>,
         _options: ExecOptions,
     ) -> Result<SqlResult, DbError> {
-        let pool = self.ensure_connected()?;
         let start = Instant::now();
         let is_query = SqlStatementClassifier::is_query_statement(query);
 
         let result = if is_query {
-            let pool = pool.clone();
-            let query_str = query.to_string();
-            let query_str_clone = query_str.clone();
+            let mut guard = self.connection.lock().await;
+            let conn = guard.as_mut()
+                .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-            match sqlx::raw_sql(&query_str_clone).fetch_all(&pool).await
-            {
+            match sqlx::query(query).fetch_all(conn).await {
                 Ok(rows) => {
                     let elapsed_ms = start.elapsed().as_millis();
 
                     if rows.is_empty() {
                         SqlResult::Query(QueryResult {
-                            sql: query_str,
+                            sql: query.to_string(),
                             columns: Vec::new(),
                             rows: Vec::new(),
                             elapsed_ms,
@@ -340,7 +284,7 @@ impl DbConnection for SqliteDbConnection {
                             .collect();
 
                         SqlResult::Query(QueryResult {
-                            sql: query_str,
+                            sql: query.to_string(),
                             columns,
                             rows: data_rows,
                             elapsed_ms,
@@ -351,26 +295,20 @@ impl DbConnection for SqliteDbConnection {
                     sql: query.to_string(),
                     message: e.to_string(),
                 }),
-                Err(e) => SqlResult::Error(SqlErrorInfo {
-                    sql: query.to_string(),
-                    message: e.to_string(),
-                }),
             }
         } else {
-            let pool = pool.clone();
-            let query_str = query.to_string();
-            let query_str_clone = query_str.clone();
+            let mut guard = self.connection.lock().await;
+            let conn = guard.as_mut()
+                .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-            match sqlx::raw_sql(&query_str_clone).execute(&pool).await
-            {
+            match sqlx::query(query).execute(conn).await {
                 Ok(exec_result) => {
                     let elapsed_ms = start.elapsed().as_millis();
                     let rows_affected = exec_result.rows_affected();
-                    let message =
-                        SqlStatementClassifier::format_message(&query_str, rows_affected);
+                    let message = SqlStatementClassifier::format_message(query, rows_affected);
 
                     SqlResult::Exec(ExecResult {
-                        sql: query_str,
+                        sql: query.to_string(),
                         rows_affected,
                         elapsed_ms,
                         message: Some(message),

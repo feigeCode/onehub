@@ -33,6 +33,14 @@ pub enum SqlResult {
     Error(SqlErrorInfo),
 }
 
+
+impl SqlResult {
+    
+    pub fn is_error(&self) -> bool {
+        matches!(self, SqlResult::Error(_))
+    }
+}
+
 /// Query result with data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
