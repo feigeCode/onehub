@@ -476,15 +476,28 @@ impl HomePage {
         });
     }
 
-    fn add_item_to_tab(&mut self, conn: &StoredConnection, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_item_to_tab(&mut self, conn: &StoredConnection, workspace: Option<Workspace>, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_container.update(cx, |tc, cx| {
-            let tab_id = format!("database-{}", conn.name);
+            let w = workspace.clone();
+            let mut tab_id = format!("database-{}", conn.id.unwrap_or(0));
+            if let Some (w) = w {
+                tab_id = format!("database-{}", w.id.unwrap_or(0));
+            }
+
             tc.activate_or_add_tab_lazy(
                 tab_id.clone(),
                 {
-                    let conn = conn.clone();
+                    let workspace_id = workspace.clone().and_then(|w| w.id);
+                    let mut connections = vec![conn.clone()];
+                    if workspace_id.is_some() {
+                        connections = self.connections.iter()
+                            .cloned()
+                            .filter(|conn| conn.workspace_id == workspace_id)
+                            .collect();
+
+                    }
                     move |window, cx| {
-                        let db_content = DatabaseTabContent::new(vec![conn], window, cx);
+                        let db_content = DatabaseTabContent::new_with_active_conn(workspace, connections, conn.id, window, cx);
                         TabItem::new(tab_id.clone(), db_content)
                     }
                 },
@@ -744,20 +757,24 @@ impl HomePage {
             })
     }
 
-    fn open_workspace_tab(&mut self, workspace_id: i64, name: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_workspace_tab(&mut self, workspace_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let connections: Vec<StoredConnection> = self.connections.iter()
             .cloned()
-            .filter(|conn| conn.workspace_id == Some(workspace_id))
+            .filter(|conn| conn.workspace_id == workspace_id)
             .collect();
+        let workspace = workspace_id.and_then(|id| {
+            self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
+        });
         self.tab_container.update(cx, |tc, cx| {
-            let tab_id = format!("workspace-{}", workspace_id);
+            let tab_id = format!("database-{}", workspace_id.unwrap_or(0));
             tc.activate_or_add_tab_lazy(
                 tab_id.clone(),
                 {
                     move |window, cx| {
-                        let ws_content = DatabaseTabContent::new_with_name(
-                            Some(name),
+                        let ws_content = DatabaseTabContent::new_with_active_conn(
+                            workspace,
                             connections,
+                            None,
                             window,
                             cx
                         );
@@ -778,7 +795,6 @@ impl HomePage {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let workspace_id = workspace.id;
-        let workspace_name = workspace.name.clone();
         v_flex()
             .gap_2()
             .child(
@@ -800,7 +816,7 @@ impl HomePage {
                     )
                     .child(
                         div()
-                            .id(ElementId::Name(SharedString::from(format!("workspace-name-{}", workspace_id.unwrap()))))
+                            .id(ElementId::Name(SharedString::from(format!("workspace-name-{}", workspace_id.unwrap_or(0)))))
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
                             .hover(|style| {
@@ -809,9 +825,7 @@ impl HomePage {
                             .cursor_pointer()
                             .child(workspace.name.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(ws_id) = workspace_id {
-                                    this.open_workspace_tab(ws_id, workspace_name.clone(), window, cx);
-                                }
+                                this.open_workspace_tab(workspace_id, window, cx);
                             }))
                     )
                     .child(
@@ -848,7 +862,7 @@ impl HomePage {
                         div()
                             .w(px(320.0))  // 固定宽度，不增长
                             .flex_shrink_0() // 不收缩
-                            .child(self.render_connection_card(conn, selected_id, cx))
+                            .child(self.render_connection_card(conn,workspace_id, selected_id, cx))
                     );
                 }
                 
@@ -897,7 +911,7 @@ impl HomePage {
                         div()
                             .w(px(320.0))  // 固定宽度，不增长
                             .flex_shrink_0() // 不收缩
-                            .child(self.render_connection_card(conn, selected_id, cx))
+                            .child(self.render_connection_card(conn, None, selected_id, cx))
                     );
                 }
                 container
@@ -907,6 +921,7 @@ impl HomePage {
     fn render_connection_card(
         &self,
         conn: StoredConnection,
+        workspace_id: Option<i64>,
         selected_id: Option<i64>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -914,6 +929,9 @@ impl HomePage {
         let clone_conn = conn.clone();
         let edit_conn = conn.clone();
         let is_selected = selected_id == conn.id;
+        let workspace = workspace_id.and_then(|id| {
+            self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
+        });
 
         div()
             .id(SharedString::from(format!("conn-card-{}", conn.id.unwrap_or(0))))
@@ -940,7 +958,7 @@ impl HomePage {
                     .border_color(cx.theme().primary)
             })
             .on_double_click(cx.listener(move |this, _, w, cx| {
-                this.add_item_to_tab(&clone_conn, w, cx);
+                this.add_item_to_tab(&clone_conn, workspace.clone(), w, cx);
                 cx.notify()
             }))
             .on_click(cx.listener(move |this, _, _, cx| {

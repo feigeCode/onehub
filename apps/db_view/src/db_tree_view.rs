@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // 2. 外部 crate 导入（按字母顺序）
-use gpui::{App, AppContext, Context, Entity, IntoElement, InteractiveElement, ParentElement, Render, Styled, Window, div, StatefulInteractiveElement, EventEmitter, SharedString, Focusable, FocusHandle, AsyncApp, px, prelude::FluentBuilder};
+use gpui::{App, AppContext, Context, Entity, IntoElement, InteractiveElement, ParentElement, Render, Styled, Window, div, StatefulInteractiveElement, EventEmitter, SharedString, Focusable, FocusHandle, AsyncApp, px, prelude::FluentBuilder, Subscription};
 use gpui_component::{
     ActiveTheme, IconName, h_flex, list::ListItem, 
     menu::{ContextMenuExt, PopupMenuItem}, 
@@ -94,8 +94,6 @@ pub struct DbTreeView {
     error_nodes: HashMap<String, String>,
     // 已展开的节点（用于在重建树时保持展开状态）
     expanded_nodes: HashSet<String>,
-    // 当前树的根节点集合，便于我们更新子节点
-    items: Vec<TreeItem>,
     // 当前连接名称或者工作区名称
     connection_name: Option<String>,
     // 工作区ID
@@ -107,6 +105,8 @@ pub struct DbTreeView {
     // 搜索防抖序列号
     search_seq: u64,
     search_debouncer: Arc<Debouncer>,
+
+    _sub: Subscription
 }
 
 impl DbTreeView {
@@ -127,7 +127,7 @@ impl DbTreeView {
         }))
     }
 
-    pub fn new(connections: &Vec<StoredConnection>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(connections: &Vec<StoredConnection>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let mut db_nodes = HashMap::new();
         let mut init_nodes = vec![];
@@ -150,18 +150,17 @@ impl DbTreeView {
         }
         init_nodes.sort();
         let items = Self::create_initial_tree(init_nodes);
-        let clone_items = items.clone();
         let tree_state = cx.new(|cx| {
             ContextMenuTreeState::new(cx).items(items)
         });
         let search_input = cx.new(|cx| {
-            InputState::new(_window, cx).placeholder("搜索...").clean_on_escape()
+            InputState::new(window, cx).placeholder("搜索...").clean_on_escape()
         });
         let search_debouncer = Arc::new(Debouncer::new(Duration::from_millis(250)));
 
-        cx.subscribe_in(&search_input, _window, |this, _input, event, _window, cx| {
+        let _sub = cx.subscribe_in(&search_input, window, |this: &mut Self, input: &Entity<InputState>, event: &InputEvent, _window, cx: &mut Context<Self>| {
             if let InputEvent::Change = event {
-                let query = _input.read(cx).text().to_string();
+                let query = input.read(cx).text().to_string();
 
                 this.search_seq += 1;
                 let current_seq = this.search_seq;
@@ -170,7 +169,7 @@ impl DbTreeView {
 
                 cx.spawn(async move |view, cx| {
                     if debouncer.debounce().await {
-                        let _ = view.update(cx, |this, cx| {
+                        _ = view.update(cx, |this, cx| {
                             if this.search_seq == current_seq {
                                 this.search_query = query_for_task.clone();
                                 this.rebuild_tree(cx);
@@ -179,7 +178,7 @@ impl DbTreeView {
                     }
                 }).detach();
             }
-        }).detach();
+        });
 
         Self {
             focus_handle,
@@ -190,13 +189,13 @@ impl DbTreeView {
             loading_nodes: HashSet::new(),
             error_nodes: HashMap::new(),
             expanded_nodes: HashSet::new(),
-            items: clone_items,
             connection_name: None,
             _workspace_id: workspace_id,
             search_input,
             search_query: String::new(),
             search_seq: 0,
             search_debouncer,
+            _sub
         }
     }
 
@@ -300,12 +299,6 @@ impl DbTreeView {
         info!("DbTreeView lazy_load_children: attempting to load children for: {} (type: {:?}, has_children: {})",
               node_id, node.node_type, node.has_children);
 
-        // 如果节点没有子节点能力，跳过
-        // if !node.has_children {
-        //     eprintln!("Node {} has no children capability", node_id);
-        //     return;
-        // }
-
         // 标记为正在加载
         self.loading_nodes.insert(node_id.clone());
         cx.notify();
@@ -397,7 +390,6 @@ impl DbTreeView {
             .collect();
         // 只有当有新的items时才更新
         if !root_items.is_empty() || !search_query.is_empty() {
-            self.items = root_items.clone();
             self.tree_state.update(cx, |state, cx| {
                 state.set_items(root_items, cx);
             });
@@ -482,6 +474,12 @@ impl DbTreeView {
             Some(DbNodeType::NamedQuery) => Icon::from(IconName::File).text_color(cx.theme().primary),
             _ => Icon::from(IconName::File),
         }
+    }
+
+    pub fn active_connection(&mut self, active_conn_id: String,  cx: &mut Context<Self>) {
+        self.expanded_nodes.insert(active_conn_id.clone());
+        self.lazy_load_children(active_conn_id, cx);
+        self.rebuild_tree(cx);
     }
 
     fn handle_item_double_click(&mut self, item: TreeItem, cx: &mut Context<Self>) {
@@ -720,7 +718,7 @@ impl Render for DbTreeView {
                             .overflow_scroll()
                             .p_2()
                             .map(|this| {
-                                if self.items.is_empty() && !self.search_query.is_empty() {
+                                if self.tree_state.read(cx).entries.is_empty() && !self.search_query.is_empty() {
                                     // 搜索无结果时显示空状态
                                     this.child(
                                         v_flex()
@@ -798,7 +796,7 @@ impl Render for DbTreeView {
                                                 let after = &label_text[end..];
                                                 h_flex()
                                                     .when(!before.is_empty(), |el| el.child(div().child(before.to_string())))
-                                                    .child(div().bg(highlight_color).rounded(px(2.)).px_0p5().child(matched.to_string()))
+                                                    .child(div().text_color(highlight_color).child(matched.to_string()))
                                                     .when(!after.is_empty(), |el| el.child(div().child(after.to_string())))
                                                     .into_any_element()
                                             } else {

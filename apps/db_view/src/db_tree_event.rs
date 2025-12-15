@@ -4,7 +4,7 @@
 // 2. 外部 crate 导入（按字母顺序）
 use db::{DbNode, DbNodeType, GlobalDbState};
 use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
-use tracing::log::error;
+use tracing::log::{error, warn};
 use gpui_component::{
     h_flex, v_flex, WindowExt,
     notification::Notification,
@@ -91,162 +91,122 @@ impl DatabaseEventHandler {
             let tree_view = tree_view_clone.clone();
 
             let get_node = |node_id: &str, cx: &mut Context<Self>| -> Option<DbNode> {
-                tree_view.read(cx).get_node(node_id).cloned()
+                let node = tree_view.read(cx).get_node(node_id).cloned();
+                if node.is_none() {
+                    warn!("not found node {}", node_id);
+                }
+                node
             };
 
             match event {
                 DbTreeViewEvent::NodeSelected { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_node_selected(node, global_state, objects_panel, cx);
-                    } else {
-                        Self::show_error(window, format!("节点选择失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CreateNewQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_create_new_query(node, tab_container,window, cx);
-                    } else {
-                        Self::show_error(window, format!("创建查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenTableData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_table_data(node, global_state, tab_container, window, cx);
-                    } else {
-                        Self::show_error(window, format!("打开表数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenViewData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_view_data(node, global_state, tab_container, window, cx);
-                    } else {
-                        Self::show_error(window, format!("打开视图数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenTableStructure { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_table_structure(node, global_state, tab_container, window, cx);
-                    } else {
-                        Self::show_error(window, format!("打开表结构失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::ImportData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_import_data(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("导入数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::ExportData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_export_data(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("导出数据失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CloseConnection { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_close_connection(node, global_state, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("关闭连接失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteConnection { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_connection(node, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("删除连接失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CreateDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_create_database(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("创建数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::EditDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_edit_database(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("编辑数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::CloseDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_close_database(node, global_state, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("关闭数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_database(node, global_state, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("删除数据库失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_table(node, global_state, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("删除表失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::RenameTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_rename_table(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("重命名表失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::TruncateTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_truncate_table(node, global_state, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("清空表失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteView { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_view(node, global_state, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("删除视图失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::OpenNamedQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_named_query(node, tab_container, window, cx);
-                    } else {
-                        Self::show_error(window, format!("打开查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::RenameQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_rename_query(node, tree_view, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("重命名查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DeleteQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_query(node, tree_view.clone(), window, cx);
-                    } else {
-                        Self::show_error(window, format!("删除查询失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::RunSqlFile { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_run_sql_file(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("运行SQL文件失败：找不到节点 {}", node_id), cx);
                     }
                 }
                 DbTreeViewEvent::DumpSqlFile { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_dump_sql_file(node, global_state, window, cx);
-                    } else {
-                        Self::show_error(window, format!("转储SQL文件失败：找不到节点 {}", node_id), cx);
                     }
                 }
             }

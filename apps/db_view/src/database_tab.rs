@@ -1,13 +1,14 @@
 use std::any::Any;
 
 use db::GlobalDbState;
-use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window};
+use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, AsyncApp, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window};
 use gpui_component::{h_flex, resizable::{h_resizable, resizable_panel}, v_flex, ActiveTheme, IconName};
 
 use crate::database_objects_tab::DatabaseObjectsPanel;
 use crate::db_tree_event::DatabaseEventHandler;
 use crate::db_tree_view::DbTreeView;
 use one_core::{storage::StoredConnection, tab_container::{TabContainer, TabContent, TabContentType, TabItem}};
+use one_core::storage::Workspace;
 
 // Database connection tab content - using TabContainer architecture
 pub struct DatabaseTabContent {
@@ -18,15 +19,12 @@ pub struct DatabaseTabContent {
     status_msg: Entity<String>,
     is_connected: Entity<bool>,
     event_handler: Option<Entity<DatabaseEventHandler>>,
-    tab_name: Option< String>
+    workspace: Option<Workspace>
 }
 
 impl DatabaseTabContent {
-
-    pub fn new( connections: Vec<StoredConnection>, window: &mut Window, cx: &mut App) -> Self {
-        Self::new_with_name(None, connections, window, cx)
-    }
-    pub fn new_with_name(tab_name: Option<String>, connections: Vec<StoredConnection>, window: &mut Window, cx: &mut App) -> Self {
+    
+    pub fn new_with_active_conn(workspace: Option<Workspace>, connections: Vec<StoredConnection>, active_conn_id: Option<i64>, window: &mut Window, cx: &mut App) ->  Self{
         // Create database tree view
         let db_tree_view = cx.new(|cx| {
             DbTreeView::new(&connections, window, cx)
@@ -41,7 +39,7 @@ impl DatabaseTabContent {
         let objects_panel = cx.new(|cx| {
             DatabaseObjectsPanel::new(window, cx)
         });
-        
+
 
         // Add objects panel to tab container
         tab_container.update(cx, |container, cx| {
@@ -60,14 +58,21 @@ impl DatabaseTabContent {
 
         // 注册连接配置到 GlobalDbState，然后自动连接
         let global_state = cx.global::<GlobalDbState>().clone();
+        
         let connections_clone = connections.clone();
-
-        cx.spawn(async move |_cx| {
+        let clone_db_tree_view = db_tree_view.clone();
+        cx.spawn(async move |cx: &mut AsyncApp| {
             // 先注册所有连接
             for conn in &connections_clone {
                 if let Ok(db_config) = conn.to_db_connection() {
                     let _ = global_state.register_connection(db_config).await;
                 }
+            }
+            // 激活指定连接
+            if let Some(id) = active_conn_id {
+                _ = clone_db_tree_view.update(cx, |tree_view, cx| {
+                    tree_view.active_connection(id.to_string(), cx);
+                });
             }
         }).detach();
 
@@ -79,8 +84,15 @@ impl DatabaseTabContent {
             status_msg,
             is_connected,
             event_handler: Some(event_handler),
-            tab_name
+            workspace
         }
+        
+        
+    }
+
+    pub fn new(workspace: Option<Workspace>, connection: StoredConnection, window: &mut Window, cx: &mut App) -> Self {
+        let active_conn_id = connection.id.clone();
+        Self::new_with_active_conn(workspace, vec![connection], active_conn_id, window, cx)
     }
 
     fn render_connection_status(&self, cx: &mut App) -> AnyElement {
@@ -205,8 +217,8 @@ impl DatabaseTabContent {
 
 impl TabContent for DatabaseTabContent {
     fn title(&self) -> SharedString {
-        if let Some(name) = self.tab_name.clone() {
-            name.into()
+        if let Some(workspace) = &self.workspace {
+            workspace.name.clone().into()
         }else {
             self.connections.first()
                 .map(|c| c.name.clone())
@@ -273,7 +285,7 @@ impl Clone for DatabaseTabContent {
             status_msg: self.status_msg.clone(),
             is_connected: self.is_connected.clone(),
             event_handler: self.event_handler.clone(),
-            tab_name: self.tab_name.clone(),
+            workspace: self.workspace.clone(),
         }
     }
 }
