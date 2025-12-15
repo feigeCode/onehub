@@ -324,6 +324,7 @@ impl DatabaseEventHandler {
         let sql_editor = SqlEditorTabContent::new_with_config(
             format!("{} - Query", if database.is_empty() { "New Query" } else { &database }),
             connection_id,
+            None,
             if database.is_empty() { None } else { Some(database.clone()) },
             window,
             cx,
