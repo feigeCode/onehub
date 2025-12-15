@@ -549,34 +549,14 @@ impl GlobalDbState {
         table_name: String,
     ) ->anyhow::Result<SqlResult>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&config_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-            
-            let plugin = clone_self.get_plugin(&config.database_type)?;
-            let sql = plugin.drop_table(&database, &table_name);
-            
-            let session_id = clone_self.connection_manager
-                .create_session(config, &clone_self.db_manager)
-                .await?;
-            
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                let results = conn.execute(&sql, ExecOptions::default()).await?;
-                results.into_iter().next().unwrap_or(SqlResult::Exec(crate::executor::ExecResult {
-                    sql: sql.clone(),
-                    rows_affected: 0,
-                    elapsed_ms: 0,
-                    message: None,
-                }))
-            };
-            
-            let _ = clone_self.connection_manager.close_session(&session_id).await;
-            Ok(result)
-        })?.await
+        let config = self.get_config_async(&config_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
+        let plugin = self.get_plugin(&config.database_type)?;
+        let sql = plugin.drop_table(&database, &table_name);
+
+        let result = self.execute_with_session(cx, config, sql, None).await?;
+
+        Self::wrapper_result(result)
     }
 
     /// Truncate table
@@ -588,34 +568,14 @@ impl GlobalDbState {
         table_name: String,
     ) -> anyhow::Result<SqlResult>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&config_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-            
-            let plugin = clone_self.get_plugin(&config.database_type)?;
-            let sql = plugin.truncate_table(&database, &table_name);
-            
-            let session_id = clone_self.connection_manager
-                .create_session(config, &clone_self.db_manager)
-                .await?;
-            
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                let results = conn.execute(&sql, ExecOptions::default()).await?;
-                results.into_iter().next().unwrap_or(SqlResult::Exec(crate::executor::ExecResult {
-                    sql: sql.clone(),
-                    rows_affected: 0,
-                    elapsed_ms: 0,
-                    message: None,
-                }))
-            };
-            
-            let _ = clone_self.connection_manager.close_session(&session_id).await;
-            Ok(result)
-        })?.await
+        let config = self.get_config_async(&config_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
+        let plugin = self.get_plugin(&config.database_type)?;
+        let sql = plugin.truncate_table(&database, &table_name);
+
+        let result = self.execute_with_session(cx, config, sql, None).await?;
+
+        Self::wrapper_result(result)
     }
 
     /// Rename table
@@ -628,34 +588,14 @@ impl GlobalDbState {
         new_name: String,
     ) -> anyhow::Result<SqlResult>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&config_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-            
-            let plugin = clone_self.get_plugin(&config.database_type)?;
-            let sql = plugin.rename_table(&database, &old_name, &new_name);
-            
-            let session_id = clone_self.connection_manager
-                .create_session(config, &clone_self.db_manager)
-                .await?;
-            
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                let results = conn.execute(&sql, ExecOptions::default()).await?;
-                results.into_iter().next().unwrap_or(SqlResult::Exec(crate::executor::ExecResult {
-                    sql: sql.clone(),
-                    rows_affected: 0,
-                    elapsed_ms: 0,
-                    message: None,
-                }))
-            };
-            
-            let _ = clone_self.connection_manager.close_session(&session_id).await;
-            Ok(result)
-        })?.await
+        let config = self.get_config_async(&config_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
+        let plugin = self.get_plugin(&config.database_type)?;
+        let sql = plugin.rename_table(&database, &old_name, &new_name);
+
+        let result = self.execute_with_session(cx, config, sql, None).await?;
+
+        Self::wrapper_result(result)
     }
 
     /// Drop view
@@ -667,34 +607,14 @@ impl GlobalDbState {
         view_name: String,
     ) -> anyhow::Result<SqlResult>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&config_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-            
-            let plugin = clone_self.get_plugin(&config.database_type)?;
-            let sql = plugin.drop_view(&database, &view_name);
-            
-            let session_id = clone_self.connection_manager
-                .create_session(config, &clone_self.db_manager)
-                .await?;
-            
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                let results = conn.execute(&sql, ExecOptions::default()).await?;
-                results.into_iter().next().unwrap_or(SqlResult::Exec(crate::executor::ExecResult {
-                    sql: sql.clone(),
-                    rows_affected: 0,
-                    elapsed_ms: 0,
-                    message: None,
-                }))
-            };
-            
-            let _ = clone_self.connection_manager.close_session(&session_id).await;
-            Ok(result)
-        })?.await
+        let config = self.get_config_async(&config_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
+        let plugin = self.get_plugin(&config.database_type)?;
+        let sql = plugin.drop_view(&database, &view_name);
+
+        let result = self.execute_with_session(cx, config, sql, None).await?;
+
+        Self::wrapper_result(result)
     }
 
     /// Create database
@@ -705,34 +625,14 @@ impl GlobalDbState {
         database_name: String,
     ) -> anyhow::Result<SqlResult>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&config_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-            
-            let plugin = clone_self.get_plugin(&config.database_type)?;
-            let sql = plugin.create_database(&database_name, &database_name);
-            
-            let session_id = clone_self.connection_manager
-                .create_session(config, &clone_self.db_manager)
-                .await?;
-            
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                let results = conn.execute(&sql, ExecOptions::default()).await?;
-                results.into_iter().next().unwrap_or(SqlResult::Exec(crate::executor::ExecResult {
-                    sql: sql.clone(),
-                    rows_affected: 0,
-                    elapsed_ms: 0,
-                    message: None,
-                }))
-            };
-            
-            let _ = clone_self.connection_manager.close_session(&session_id).await;
-            Ok(result)
-        })?.await
+        let config = self.get_config_async(&config_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
+        let plugin = self.get_plugin(&config.database_type)?;
+        let sql = plugin.create_database(&database_name, &database_name);
+
+        let result = self.execute_with_session(cx, config, sql, None).await?;
+
+        Self::wrapper_result(result)
     }
 
     /// Register a connection configuration
@@ -862,6 +762,36 @@ impl GlobalDbState {
         })?.await
     }
 
+    async fn with_session_connection<R, F>(
+        &self,
+        cx: &mut AsyncApp,
+        config: DbConnectionConfig,
+        f: F,
+    ) -> anyhow::Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&dyn DatabasePlugin, &mut (dyn DbConnection + Send + Sync)) -> anyhow::Result<R> + Send + 'static,
+    {
+        let clone_self = self.clone();
+        Tokio::spawn_result(cx, async move {
+            let plugin = clone_self.get_plugin(&config.database_type)?;
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                f(&*plugin, conn)
+            };
+
+            clone_self.connection_manager.close_session(&session_id).await?;
+
+            result
+        })?.await
+    }
+
     /// Get connection statistics
     pub async fn stats(
         &self,
@@ -922,16 +852,37 @@ impl GlobalDbState {
         connection_id: String,
         request: crate::types::TableDataRequest,
     ) -> anyhow::Result<crate::types::TableDataResponse> {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.query_table_data(&*connection, &request).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.query_table_data(&*conn, &request).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -944,16 +895,37 @@ impl GlobalDbState {
         storage_state: GlobalStorageState,
     ) -> anyhow::Result<Vec<DbNode>>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.load_node_children(&*connection, &node, &storage_state).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.load_node_children(&*conn, &node, &storage_state).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -965,16 +937,37 @@ impl GlobalDbState {
         request: crate::types::TableSaveRequest,
     ) -> anyhow::Result<crate::types::TableSaveResponse>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.apply_table_changes(&*connection, request).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.apply_table_changes(&*conn, request).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -986,17 +979,14 @@ impl GlobalDbState {
         request: crate::types::TableSaveRequest,
     ) -> anyhow::Result<String>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            if let Some(config) = clone_self.get_config_async(&connection_id).await {
-                match clone_self.get_plugin(&config.database_type) {
-                    Ok(plugin) => Ok(plugin.generate_table_changes_sql(&request)),
-                    Err(_) => Ok("-- 无法获取数据库插件".to_string()),
-                }
-            } else {
-                Ok("-- 连接不存在".to_string())
-            }
-        })?.await
+        let _ = cx;
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
+        match self.get_plugin(&config.database_type) {
+            Ok(plugin) => Ok(plugin.generate_table_changes_sql(&request)),
+            Err(_) => Ok("-- 无法获取数据库插件".to_string()),
+        }
     }
 
     /// List databases
@@ -1006,16 +996,37 @@ impl GlobalDbState {
         connection_id: String,
     ) -> anyhow::Result<Vec<String>>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_databases(&*connection).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_databases(&*conn).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1026,16 +1037,37 @@ impl GlobalDbState {
         connection_id: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_databases_view(&*connection).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_databases_view(&*conn).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1047,16 +1079,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<Vec<crate::types::TableInfo>>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_tables(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_tables(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1068,16 +1121,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_tables_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_tables_view(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1090,16 +1164,37 @@ impl GlobalDbState {
         table: String,
     ) -> anyhow::Result<Vec<crate::types::ColumnInfo>>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_columns(&*connection, &database, &table).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_columns(&*conn, &database, &table).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1112,16 +1207,37 @@ impl GlobalDbState {
         table: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_columns_view(&*connection, &database, &table).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_columns_view(&*conn, &database, &table).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1133,16 +1249,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_views_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_views_view(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1154,16 +1291,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_functions_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_functions_view(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1175,16 +1333,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_procedures_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_procedures_view(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1196,16 +1375,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_triggers_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_triggers_view(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1217,16 +1417,37 @@ impl GlobalDbState {
         database: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
-            
             let plugin = clone_self.get_plugin(&config.database_type)?;
-            let mut connection = plugin.create_connection(config).await?;
-            connection.connect().await?;
-            
-            plugin.list_sequences_view(&*connection, &database).await.map_err(|e| anyhow::anyhow!("{}", e))
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_sequences_view(&*conn, &database).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
         })?.await
     }
 
@@ -1237,17 +1458,15 @@ impl GlobalDbState {
         connection_id: String,
     ) -> anyhow::Result<crate::plugin::SqlCompletionInfo>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            if let Some(config) = clone_self.get_config_async(&connection_id).await {
-                match clone_self.get_plugin(&config.database_type) {
-                    Ok(plugin) => Ok(plugin.get_completion_info()),
-                    Err(_) => Ok(crate::plugin::SqlCompletionInfo::default()),
-                }
-            } else {
-                Ok(crate::plugin::SqlCompletionInfo::default())
+        let _ = cx;
+        if let Some(config) = self.get_config_async(&connection_id).await {
+            match self.get_plugin(&config.database_type) {
+                Ok(plugin) => Ok(plugin.get_completion_info()),
+                Err(_) => Ok(crate::plugin::SqlCompletionInfo::default()),
             }
-        })?.await
+        } else {
+            Ok(crate::plugin::SqlCompletionInfo::default())
+        }
     }
 }
 
