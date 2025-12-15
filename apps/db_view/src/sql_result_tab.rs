@@ -1,20 +1,12 @@
-use std::clone;
-// 1. 标准库导入
-use std::sync::{Arc, RwLock};
-
+use std::sync::Arc;
 // 2. 外部 crate 导入（按字母顺序）
-use gpui::{div, px, AnyElement, App, AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
-use gpui_component::{
-    h_flex, v_flex,
-    list::ListItem,
-    tab::{Tab, TabBar},
-    table::Column,
-    ActiveTheme, IconName, Sizable, Size, StyledExt,
-};
+use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
+use tracing::log::error;
+use gpui_component::{h_flex, list::ListItem, tab::{Tab, TabBar}, table::Column, v_flex, ActiveTheme, IconName, Sizable, Size, StyledExt};
 
+use crate::data_grid::{DataGrid, DataGridConfig, DataGridUsage};
 // 3. 当前 crate 导入（按模块分组）
-use db::SqlResult;
-use crate::data_grid::{DataGrid, DataGridConfig};
+use db::{GlobalDbState, SqlResult};
 
 // Structure to hold a single SQL result with its metadata
 #[derive(Clone)]
@@ -29,45 +21,60 @@ pub struct SqlResultTab {
 
 #[derive(Clone)]
 pub struct SqlResultTabContainer {
-    pub result_tabs: Arc<RwLock<Vec<SqlResultTab>>>,
-    pub active_result_tab: Arc<RwLock<usize>>,
+    pub result_tabs: Entity<Vec<SqlResultTab>>,
+    pub active_result_tab: Entity<Arc<usize>>,
+    // Store all results for summary view (including non-query results)
+    pub all_results: Entity<Vec<SqlResult>>,
 }
 
 impl SqlResultTabContainer {
-    pub(crate) fn  new(result_tabs: Arc<RwLock<Vec<SqlResultTab>>>, active_result_tab: Arc<RwLock<usize>>, _cx: &mut Context<Self>) -> SqlResultTabContainer {
+    pub(crate) fn new(cx: &mut Context<Self>) -> SqlResultTabContainer {
+        let result_tabs = cx.new(|_| vec![]);
+        let active_result_tab = cx.new(|_| Arc::new(0));
+        let all_results = cx.new(|_| vec![]);
         SqlResultTabContainer {
             result_tabs,
             active_result_tab,
+            all_results,
         }
     }
 }
 
 impl SqlResultTabContainer {
 
-    pub fn set_result(&mut self, sql: &str, results: Vec<SqlResult>, window: &mut Window, cx: &mut Context<Self>) {
-        // Split SQL into individual statements for labeling
-        let sql_statements: Vec<String> = sql
-            .split(';')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    pub fn handle_run_query(&mut self, sql: String, connection_id: String, current_database_value: Option<String> , _window: &mut Window, cx: &mut App) {
+        let global_state = cx.global::<GlobalDbState>().clone();
+        let mut clone_self = self.clone();
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let result = global_state
+                .execute_script(cx, connection_id, sql.clone(), current_database_value, None)
+                .await;
+            match result {
+                Ok(results) => {
+                    let _ = cx.update(|cx| {
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                clone_self.set_result(results, window, cx);
+                            });
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Error executing query: {:?}", e)
+                }
+            };
+        }).detach();
+    }
 
-        // Create tabs for each result
-        let mut new_tabs = Vec::new();
+    pub fn set_result(&mut self, results: Vec<SqlResult>, window: &mut Window, cx: &mut App) {
+        // Create tabs only for query results, store all results for summary
+        let mut query_tabs: Vec<SqlResultTab> = vec![];
+        let mut all_result_tabs: Vec<SqlResult> = vec![];
 
-        for (idx, result) in results.iter().enumerate() {
-            let sql_text = sql_statements.get(idx)
-                .map(|s| {
-                    if s.len() > 50 {
-                        format!("{}...", &s[..50])
-                    } else {
-                        s.clone()
-                    }
-                })
-                .unwrap_or_else(|| format!("Statement {}", idx + 1));
-
+        for (idx, result) in results.into_iter().enumerate() {
             match result {
                 SqlResult::Query(query_result) => {
+                    let clone_query_result = query_result.clone();
                     // 创建DataGrid配置（只读模式，但显示工具栏）
                     let config = DataGridConfig::new(
                         "query_result",
@@ -76,7 +83,8 @@ impl SqlResultTabContainer {
                         one_core::storage::DatabaseType::MySQL, // 默认类型，实际不影响只读模式
                     )
                     .editable(false)
-                    .show_toolbar(true);
+                    .show_toolbar(true)
+                    .usage(DataGridUsage::SqlResult); // SQL结果场景，编辑器高度较高
 
                     let data_grid = cx.new(|cx| DataGrid::new(config, window, cx));
 
@@ -97,102 +105,35 @@ impl SqlResultTabContainer {
                         this.update_data(columns, rows, vec![], cx);
                     });
 
-                    new_tabs.push(SqlResultTab {
-                        sql: sql_text,
-                        result: result.clone(),
+                    let tab = SqlResultTab {
+                        sql: query_result.sql.clone(),
+                        result: SqlResult::Query(query_result.clone()),
                         execution_time: format!("{}ms", query_result.elapsed_ms),
                         rows_count: format!("{} rows", query_result.rows.len()),
                         data_grid: Some(data_grid),
-                    });
+                    };
+
+                    // Add to both query tabs and all results
+                    query_tabs.push(tab.clone());
+                    all_result_tabs.push(SqlResult::Query(clone_query_result));
                 }
-                SqlResult::Exec(exec_result) => {
-                    // 创建DataGrid配置（只读模式，但显示工具栏）
-                    let config = DataGridConfig::new(
-                        "exec_result",
-                        format!("result_{}", idx),
-                        "sql_result",
-                        one_core::storage::DatabaseType::MySQL,
-                    )
-                    .editable(false)
-                    .show_toolbar(true);
-
-                    let data_grid = cx.new(|cx|DataGrid::new(config, window, cx));
-
-                    // 准备执行结果数据
-                    let columns = vec![
-                        Column::new("Status", "Status"),
-                        Column::new("Rows Affected", "Rows Affected"),
-                    ];
-                    let rows = vec![vec![
-                        exec_result.message.clone().unwrap_or_else(|| "Success".to_string()),
-                        format!("{}", exec_result.rows_affected),
-                    ]];
-
-                    // 更新DataGrid数据
-                    data_grid.update(cx, |this,cx|{
-                        this.update_data(columns, rows, vec![], cx);
-                    });
-
-                    new_tabs.push(SqlResultTab {
-                        sql: sql_text,
-                        result: result.clone(),
-                        execution_time: format!("{}ms", exec_result.elapsed_ms),
-                        rows_count: format!("{} rows affected", exec_result.rows_affected),
-                        data_grid: Some(data_grid),
-                    });
-                }
-                SqlResult::Error(error) => {
-                    // 创建DataGrid配置（只读模式，但显示工具栏）
-                    let config = DataGridConfig::new(
-                        "error_result",
-                        format!("result_{}", idx),
-                        "sql_result",
-                        one_core::storage::DatabaseType::MySQL,
-                    )
-                    .editable(false)
-                    .show_toolbar(true);
-
-                    let data_grid = cx.new(|cx|DataGrid::new(config, window, cx));
-
-                    // 准备错误数据
-                    let columns = vec![Column::new("Error", "Error")];
-                    let rows = vec![vec![error.message.clone()]];
-
-                    // 更新DataGrid数据
-                    data_grid.update(cx, |this, cx| {
-                        this.update_data(columns, rows, vec![], cx);
-                    });
-                    new_tabs.push(SqlResultTab {
-                        sql: sql_text,
-                        result: result.clone(),
-                        execution_time: "Error".to_string(),
-                        rows_count: "Error".to_string(),
-                        data_grid: Some(data_grid),
-                    });
-                }
+                re => all_result_tabs.push(re)
             }
         }
 
-        // Update result tabs
-        if let Ok(mut tabs) = self.result_tabs.write() {
-            *tabs = new_tabs;
-        }
-        // Reset active tab to summary
-        if let Ok(mut active) = self.active_result_tab.write() {
-            *active = 0;
-        }
 
-        cx.notify();
     }
 
 }
 
 impl Render for SqlResultTabContainer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs = self.result_tabs.read().unwrap();
-        let active_idx = *self.active_result_tab.read().unwrap();
+        let clone_self = self.clone();
+        let query_tabs = self.result_tabs.read(cx);
+        let all_results = self.all_results.read(cx);
+        let active_idx = **self.active_result_tab.read(cx);
 
-        if tabs.is_empty() {
+        if all_results.is_empty() {
             // Show empty state
             v_flex()
                 .size_full()
@@ -216,20 +157,22 @@ impl Render for SqlResultTabContainer {
                     // Tab bar for result tabs (摘要 + individual results)
                     TabBar::new("result-tabs")
                         .w_full()
-                        .pill()
+                        .underline()
                         .with_size(Size::Small)
                         .selected_index(active_idx)
                         .on_click({
-                            let active_tab = self.active_result_tab.clone();
-                            move |_ix: &usize, _w, _cx| {
-                                *active_tab.write().unwrap() = *_ix;
+                            let clone_self = clone_self.clone();
+                            move |ix: &usize, _w, cx| {
+                                clone_self.active_result_tab.update(cx, |x, x1| {
+
+                                })
                             }
                         })
                         .child(
                             // Summary tab
                             Tab::new().label("摘要")
                         )
-                        .children(tabs.iter().enumerate().map(|(idx, tab)| {
+                        .children(query_tabs.iter().enumerate().map(|(idx, tab)| {
                             Tab::new().label(format!("结果{} ({}, {})", idx + 1, tab.rows_count, tab.execution_time))
                         }))
                 )
@@ -244,10 +187,10 @@ impl Render for SqlResultTabContainer {
                             .border_color(cx.theme().border)
                             .rounded_md()
                             .overflow_hidden()
-                            .child(render_summary_view(&tabs, cx))
+                            .child(render_summary_view(all_results, cx))
                     } else {
                         // Show individual result table with toolbar - 给DataGrid完整的空间
-                        tabs.get(active_idx - 1)
+                        query_tabs.get(active_idx - 1)
                             .and_then(|tab| tab.data_grid.as_ref())
                             .map(|data_grid| {
                                 v_flex()
@@ -284,14 +227,14 @@ impl Render for SqlResultTabContainer {
 }
 
 // Render summary view function
-fn render_summary_view(tabs: &[SqlResultTab], cx: &App) -> AnyElement {
+fn render_summary_view(tabs: &Vec<SqlResult>, cx: &App) -> AnyElement {
     let mut total_rows = 0;
     let mut total_time = 0.0;
     let mut success_count = 0;
     let mut error_count = 0;
 
     for tab in tabs {
-        match &tab.result {
+        match tab {
             SqlResult::Query(q) => {
                 total_rows += q.rows.len();
                 total_time += q.elapsed_ms as f64;
@@ -415,18 +358,24 @@ fn render_summary_view(tabs: &[SqlResultTab], cx: &App) -> AnyElement {
                 .flex_1()
                 .overflow_y_hidden()
                 .children(tabs.iter().enumerate().map(|(idx, tab)| {
-                    let (status_icon, status_color, status_text) = match &tab.result {
+                    let (sql,elapsed_ms, status_icon, status_color, status_text) = match tab {
                         SqlResult::Query(q) => (
+                            q.sql.clone(),
+                            q.elapsed_ms,
                             IconName::Check,
                             cx.theme().success,
                             format!("{} rows", q.rows.len())
                         ),
                         SqlResult::Exec(e) => (
+                            e.sql.clone(),
+                            e.elapsed_ms,
                             IconName::Check,
                             cx.theme().success,
                             format!("{} rows affected", e.rows_affected)
                         ),
                         SqlResult::Error(e) => (
+                            e.sql.clone(),
+                            0,
                             IconName::Close,
                             cx.theme().danger,
                             e.message.clone()
@@ -452,7 +401,7 @@ fn render_summary_view(tabs: &[SqlResultTab], cx: &App) -> AnyElement {
                                         .flex_1()
                                         .text_sm()
                                         .truncate()
-                                        .child(format!("语句{}: {}", idx + 1, tab.sql))
+                                        .child(format!("语句{}: {}", idx + 1, sql))
                                 )
                                 .child(
                                     // Execution time
@@ -460,7 +409,7 @@ fn render_summary_view(tabs: &[SqlResultTab], cx: &App) -> AnyElement {
                                         .flex_shrink_0()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(tab.execution_time.clone())
+                                        .child(elapsed_ms.to_string())
                                 )
                                 .child(
                                     // Status text

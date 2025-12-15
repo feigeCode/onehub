@@ -104,6 +104,34 @@ impl ResizablePanelGroup {
         self.on_resize = Rc::new(on_resize);
         self
     }
+
+    /// Conditionally add a child panel based on a boolean condition.
+    ///
+    /// This method allows for conditional composition of resizable panels,
+    /// similar to the `when` method available on other UI elements.
+    ///
+    /// # Arguments
+    /// * `condition` - Boolean condition to evaluate
+    /// * `f` - Closure that takes self and returns self with the child added
+    ///
+    /// # Example
+    /// ```
+    /// v_resizable("my-resizable")
+    ///     .child(panel1)
+    ///     .when(has_results, |this| {
+    ///         this.child(results_panel)
+    ///     })
+    /// ```
+    pub fn when<F>(self, condition: bool, f: F) -> Self
+    where
+        F: FnOnce(Self) -> Self,
+    {
+        if condition {
+            f(self)
+        } else {
+            self
+        }
+    }
 }
 
 impl<T> From<T> for ResizablePanel

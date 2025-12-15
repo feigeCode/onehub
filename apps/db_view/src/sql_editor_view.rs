@@ -10,7 +10,6 @@ use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
 use gpui_component::{h_flex, v_flex, ActiveTheme, IconName, IndexPath, Sizable, Size, WindowExt};
 use std::any::Any;
-use std::sync::{Arc, RwLock};
 use tracing::log::error;
 use one_core::storage::GlobalStorageState;
 use one_core::storage::query_repository::QueryRepository;
@@ -44,10 +43,6 @@ impl SqlEditorTab {
     ) -> Self {
         let editor = cx.new(|cx| SqlEditor::new(window, cx));
         let focus_handle = cx.focus_handle();
-
-        let result_tabs = Arc::new(RwLock::new(Vec::new()));
-        let active_result_tab = Arc::new(RwLock::new(0));
-
         // Create database select with empty items initially
         let database_select = cx.new(|cx| {
             SelectState::new(SearchableVec::new(vec![]), None, window, cx)
@@ -57,7 +52,7 @@ impl SqlEditorTab {
             title: title.into(),
             editor: editor.clone(),
             connection_id: connection_id.into(),
-            sql_result_tab_container: cx.new(|cx| SqlResultTabContainer::new(result_tabs, active_result_tab,cx)),
+            sql_result_tab_container: cx.new(|cx| SqlResultTabContainer::new(cx)),
             database_select: database_select.clone(),
             focus_handle,
         };
@@ -251,7 +246,6 @@ impl SqlEditorTab {
 
     fn handle_run_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let sql = self.get_sql_text(cx);
-        let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.connection_id.clone();
         let sql_result_tab_container = self.sql_result_tab_container.clone();
 
@@ -268,30 +262,9 @@ impl SqlEditorTab {
             return;
         }
 
-        cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result = global_state
-                .execute_script(cx, connection_id, sql.clone(), current_database_value, None)
-                .await;
-            match result {
-                Ok(results) => {
-                    let _ = cx.update(|cx| {
-                        if let Some(window_id) = cx.active_window() {
-                            let _ = cx.update_window(window_id, |_entity, window, cx| {
-                                sql_result_tab_container.update(cx, |state, cx| {
-                                    state.set_result(&sql, results, window, cx);
-                                });
-                            });
-                        }
-                    });
-                    SqlEditorTab::notify_async(cx, "Query executed".to_string());
-                }
-                Err(e) => {
-                    error!("Failed to execute script: {}", e);
-                    SqlEditorTab::notify_async(cx, format!("Failed to execute query: {}", e));
-                }
-            };
+        sql_result_tab_container.update(cx, |container, cx| {
+            container.handle_run_query(sql, connection_id, current_database_value, window, cx);
         })
-        .detach();
     }
 
     fn handle_format_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -407,92 +380,97 @@ impl Render for SqlEditorTab {
         let editor = self.editor.clone();
         let database_select = self.database_select.clone();
 
-        // Build the main layout with resizable panels
-        // Wrap in v_flex().size_full() to ensure proper containment within tab
+        // Check if there are any results to determine layout
+        let has_results = !self.sql_result_tab_container.read(cx).result_tabs.read(cx).is_empty();
+
+        // Build the main layout with conditional resizable panels
         v_flex()
             .size_full()
-            .child(v_resizable("sql-editor-resizable")
-                .child(
-                    // Top panel: Toolbar and Editor
-                    resizable_panel()
-                        .size(px(400.))
-                        .size_range(px(200.)..px(800.))
-                        .child(
-                            v_flex()
-                                .size_full()
-                                .gap_2()
-                                .child(
-                                    // Toolbar
-                                    h_flex()
-                                        .gap_2()
-                                        .p_2()
-                                        .bg(cx.theme().muted)
-                                        .rounded_md()
-                                        .items_center()
-                                        .w_full()
-                                        .child(
-                                            // Database selector
-                                            Select::new(&database_select)
-                                                .with_size(Size::Small)
-                                                .placeholder("Select Database")
-                                                .w(px(200.))
-                                        )
-                                        .child(
-                                            Button::new("run-query")
-                                                .with_size(Size::Small)
-                                                .primary()
-                                                .label("Run (⌘+Enter)")
-                                                .icon(IconName::ArrowRight)
-                                                .on_click(cx.listener(Self::handle_run_query)),
-                                        )
-                                        .child(
-                                            Button::new("format-query")
-                                                .with_size(Size::Small)
-                                                .ghost()
-                                                .label("Format")
-                                                .icon(IconName::Star)
-                                                .on_click(cx.listener(Self::handle_format_query)),
-                                        )
-                                        .child(
-                                            Button::new("save-query")
-                                                .with_size(Size::Small)
-                                                .ghost()
-                                                .label("Save Query")
-                                                .icon(IconName::Plus)
-                                                .on_click(cx.listener(Self::handle_save_query)),
-                                        )
-                                        .child(
-                                            Button::new("compress-query")
-                                                .with_size(Size::Small)
-                                                .ghost()
-                                                .label("Compress")
-                                                .on_click(cx.listener(Self::handle_compress_query)),
-                                        )
-                                        .child(
-                                            Button::new("export-query")
-                                                .with_size(Size::Small)
-                                                .ghost()
-                                                .label("Export")
-                                                .on_click({
-                                                    move |_, _, _| {
-                                                        // TODO: Implement export functionality
-                                                    }
-                                                }),
-                                        )
-                                )
-                                .child(
-                                    // Editor
-                                    v_flex()
-                                        .flex_1()
-                                        .child(editor)
-                                )
+            .child(
+                v_resizable("sql-editor-resizable")
+                    .child(
+                        resizable_panel()
+                            .child(
+                                v_flex()
+                                    .size_full()
+                                    .gap_2()
+                                    .child(
+                                // Toolbar
+                                h_flex()
+                                    .gap_2()
+                                    .p_2()
+                                    .bg(cx.theme().muted)
+                                    .rounded_md()
+                                    .items_center()
+                                    .w_full()
+                                    .child(
+                                        // Database selector
+                                        Select::new(&database_select)
+                                            .with_size(Size::Small)
+                                            .placeholder("Select Database")
+                                            .w(px(200.))
+                                    )
+                                    .child(
+                                        Button::new("run-query")
+                                            .with_size(Size::Small)
+                                            .primary()
+                                            .label("Run (⌘+Enter)")
+                                            .icon(IconName::ArrowRight)
+                                            .on_click(cx.listener(Self::handle_run_query)),
+                                    )
+                                    .child(
+                                        Button::new("format-query")
+                                            .with_size(Size::Small)
+                                            .ghost()
+                                            .label("Format")
+                                            .icon(IconName::Star)
+                                            .on_click(cx.listener(Self::handle_format_query)),
+                                    )
+                                    .child(
+                                        Button::new("save-query")
+                                            .with_size(Size::Small)
+                                            .ghost()
+                                            .label("Save Query")
+                                            .icon(IconName::Plus)
+                                            .on_click(cx.listener(Self::handle_save_query)),
+                                    )
+                                    .child(
+                                        Button::new("compress-query")
+                                            .with_size(Size::Small)
+                                            .ghost()
+                                            .label("Compress")
+                                            .on_click(cx.listener(Self::handle_compress_query)),
+                                    )
+                                    .child(
+                                        Button::new("export-query")
+                                            .with_size(Size::Small)
+                                            .ghost()
+                                            .label("Export")
+                                            .on_click({
+                                                move |_, _, _| {
+                                                    // TODO: Implement export functionality
+                                                }
+                                            }),
+                                    )
+                            )
+                            .child(
+                                // Editor
+                                v_flex()
+                                    .flex_1()
+                                    .child(editor.clone())
+                            )
+                            )
+                    )
+                    .when(has_results, |this| {
+                        this.child(
+                            // Bottom panel: Results with tabs
+                            resizable_panel()
+                                .size(px(400.))
+                                .size_range(px(400.)..px(800.))
+                                .child(self.sql_result_tab_container.clone())
                         )
-                )
-                .child(
-                    // Bottom panel: Results with tabs
-                    resizable_panel()
-                        .child(self.sql_result_tab_container.clone())
-                ))
+                    })
+            )
     }
 }
 

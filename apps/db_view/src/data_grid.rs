@@ -1,23 +1,30 @@
-use gpui::{
-    div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement,
-    Pixels, SharedString, Styled, Subscription, Window,
-};
+use gpui::{div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, Styled, Subscription, Window};
 use gpui::prelude::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
-    resizable::{resizable_panel, v_resizable},
     table::{Column, Table, TableEvent, TableState},
+    v_flex,
     ActiveTheme as _, IconName, Sizable as _, Size, WindowExt,
 };
 
 use crate::multi_text_editor::{create_multi_text_editor_with_content, MultiTextEditor};
 use crate::results_delegate::{EditorTableDelegate, RowChange};
-use db::{GlobalDbState, TableCellChange, TableRowChange, TableSaveRequest};
+use crate::sql_editor::SqlEditor;
+use db::{ExecOptions, GlobalDbState, SqlResult, TableCellChange, TableRowChange, TableSaveRequest};
 
 // ============================================================================
 // DataGrid - 可复用的数据表格组件
 // ============================================================================
+
+/// 数据表格使用场景
+#[derive(Clone, Debug)]
+pub enum DataGridUsage {
+    /// 在表格数据页签中使用（编辑器高度较低）
+    TableData,
+    /// 在SQL结果页签中使用（编辑器高度较高）
+    SqlResult,
+}
 
 /// 数据表格配置
 #[derive(Clone)]
@@ -28,6 +35,7 @@ pub struct DataGridConfig {
     pub database_type: one_core::storage::DatabaseType,
     pub editable: bool,
     pub show_toolbar: bool,
+    pub usage: DataGridUsage,
 }
 
 impl DataGridConfig {
@@ -44,6 +52,7 @@ impl DataGridConfig {
             database_type,
             editable: true,
             show_toolbar: true,
+            usage: DataGridUsage::TableData, // 默认为表格数据场景
         }
     }
 
@@ -54,6 +63,11 @@ impl DataGridConfig {
 
     pub fn show_toolbar(mut self, show: bool) -> Self {
         self.show_toolbar = show;
+        self
+    }
+
+    pub fn usage(mut self, usage: DataGridUsage) -> Self {
+        self.usage = usage;
         self
     }
 }
@@ -118,7 +132,7 @@ impl DataGrid {
     pub fn table(&self) -> &Entity<TableState<EditorTableDelegate>> {
         &self.table
     }
-    
+
 
     pub fn editor_visible(&self) -> &Entity<EditorState> {
         &self.editor_state
@@ -127,7 +141,7 @@ impl DataGrid {
     pub fn editing_large_text(&self) -> &Entity<EditorState> {
         &self.editor_state
     }
-    
+
 
     pub fn update_data(
         &self,
@@ -201,10 +215,29 @@ impl DataGrid {
     /// 切换编辑器显示状态
     fn toggle_editor(&self, window: &mut Window, cx: &mut App) {
         let is_visible = self.editor_state.read(cx).is_visible();
-
+        let text_editor = self.text_editor.clone();
         if is_visible {
+            let clone_self = self.clone();
+            window.open_dialog(cx, move |dialog, _window, cx| {
+                let clone_self = clone_self.clone();
+                dialog
+                    .title("编辑单元格")
+                    .w(px(800.0))
+                    .h(px(600.0))
+                    .child(text_editor.clone())
+                    .confirm()
+                    .on_ok(|_, _, cx| {
+                        clone_self.clone().save_editor_content(cx);
+                        true
+                    })
+                    .on_cancel(|_, _, _| {
+                        true
+                    })
+            });
+
+
             // 关闭前保存内容
-            self.save_editor_content(cx);
+
             self.editor_state.update(cx, |state, cx| {
                 state.editing_cell = None;
                 cx.notify();
@@ -323,21 +356,48 @@ impl DataGrid {
             return;
         };
         let change_count = save_request.changes.len();
+        let sql_content = match self.build_changes_sql(&save_request, cx) {
+            Ok(sql) => sql,
+            Err(message) => {
+                notification(cx, message);
+                return;
+            }
+        };
+
         window.push_notification(format!("Saving {} changes...", change_count), cx);
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
+        let database_name = self.config.database_name.clone();
         let this = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let result = global_state.apply_table_changes(cx, connection_id.clone(), save_request).await;
+            let exec_options = ExecOptions {
+                stop_on_error: true,
+                transactional: true,
+                max_rows: None,
+            };
+
+            let result = global_state
+                .execute_script(
+                    cx,
+                    connection_id.clone(),
+                    sql_content.clone(),
+                    Some(database_name.clone()),
+                    Some(exec_options),
+                )
+                .await;
 
             cx.update(|cx| match result {
-                Ok(response) if response.errors.is_empty() => {
-                    this.clear_changes(cx);
-                    notification(cx, format!("Successfully saved {} changes", response.success_count));
-                }
-                Ok(response) => {
-                    notification(cx, format!("Failed to save {} changes: {}", response.errors.len(), response.errors.first().unwrap_or(&String::new())));
+                Ok(results) => {
+                    if let Some(err_msg) = results.iter().find_map(|res| match res {
+                        SqlResult::Error(err) => Some(err.message.clone()),
+                        _ => None,
+                    }) {
+                        notification(cx, format!("Failed to save changes: {}", err_msg));
+                    } else {
+                        this.clear_changes(cx);
+                        notification(cx, format!("Successfully saved {} changes", change_count));
+                    }
                 }
                 Err(e) => {
                     notification(cx, format!("Failed to save changes: {}", e));
@@ -353,41 +413,123 @@ impl DataGrid {
             return "-- 没有变更数据".to_string();
         };
 
-        let global_state = cx.global::<GlobalDbState>().clone();
-        match global_state.db_manager.get_plugin(&self.config.database_type) {
-            Ok(plugin) => plugin.generate_table_changes_sql(&save_request),
-            Err(_) => "-- 无法获取数据库插件".to_string(),
+        match self.build_changes_sql(&save_request, cx) {
+            Ok(sql) => sql,
+            Err(message) => format!("-- {}", message),
         }
     }
 
     pub fn show_sql_preview(&self, window: &mut Window, cx: &mut App) {
-        let sql_content = self.generate_changes_sql(cx);
-        let sql_shared: SharedString = sql_content.into();
+        let Some(save_request) = self.create_save_request(cx) else {
+            notification(cx, "没有变更数据".to_string());
+            return;
+        };
+
+        let sql_content = match self.build_changes_sql(&save_request, cx) {
+            Ok(sql) => sql,
+            Err(message) => {
+                notification(cx, message);
+                return;
+            }
+        };
+
+        let sql_editor = cx.new(|cx| SqlEditor::new(window, cx));
+        sql_editor.update(cx, |editor, cx| {
+            editor.set_value(sql_content.clone(), window, cx);
+        });
+
+        let global_state = cx.global::<GlobalDbState>().clone();
+        let connection_id = self.config.connection_id.clone();
+        let database_name = self.config.database_name.clone();
+        let this = self.clone();
 
         window.open_dialog(cx, move |dialog, _window, cx| {
+            let editor = sql_editor.clone();
+            let execute_state = global_state.clone();
+            let execute_connection = connection_id.clone();
+            let execute_database = database_name.clone();
+            let data_grid = this.clone();
+
             dialog
                 .title("变更SQL预览")
                 .w(px(800.0))
                 .h(px(600.0))
                 .child(
-                    div()
+                    v_flex()
                         .w_full()
                         .h_full()
-                        .p_4()
-                        .bg(cx.theme().background)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .rounded_lg()
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .child(sql_shared.clone()),
-                        ),
+                        .child(editor.clone()),
                 )
-                .confirm()
-                .on_ok(|_, _, _| true)
+                .footer(move |ok, cancel, window, cx| {
+                    let execute_editor = editor.clone();
+                    let execute_state = execute_state.clone();
+                    let execute_connection = execute_connection.clone();
+                    let execute_database = execute_database.clone();
+                    let data_grid = data_grid.clone();
+
+                    let mut buttons = Vec::new();
+                    buttons.push(cancel(window, cx));
+                    buttons.push(
+                        Button::new("execute-preview-sql")
+                            .with_size(Size::Medium)
+                            .primary()
+                            .icon(IconName::ArrowRight)
+                            .label("执行SQL")
+                            .on_click(move |_, window, cx| {
+                                let sql_text = execute_editor.read(cx).get_text_from_app(cx);
+                                if sql_text.trim().is_empty() {
+                                    window.push_notification("SQL内容为空", cx);
+                                    return;
+                                }
+                                window.push_notification("Executing SQL...", cx);
+                                let execute_state = execute_state.clone();
+                                let execute_connection = execute_connection.clone();
+                                let execute_database = execute_database.clone();
+                                let data_grid = data_grid.clone();
+                                let sql_to_run = sql_text.clone();
+
+                                cx.spawn(async move |cx: &mut AsyncApp| {
+                                    let exec_options = ExecOptions {
+                                        stop_on_error: true,
+                                        transactional: true,
+                                        max_rows: None,
+                                    };
+
+                                    let result = execute_state
+                                        .execute_script(
+                                            cx,
+                                            execute_connection.clone(),
+                                            sql_to_run.clone(),
+                                            Some(execute_database.clone()),
+                                            Some(exec_options),
+                                        )
+                                        .await;
+
+                                    cx.update(|cx| match result {
+                                        Ok(results) => {
+                                            if let Some(err_msg) = results.iter().find_map(|res| match res {
+                                                SqlResult::Error(err) => Some(err.message.clone()),
+                                                _ => None,
+                                            }) {
+                                                notification(cx, format!("执行失败: {}", err_msg));
+                                            } else {
+                                                data_grid.clear_changes(cx);
+                                                notification(cx, "SQL执行成功".to_string());
+                                            }
+                                        }
+                                        Err(e) => {
+                                            notification(cx, format!("执行失败: {}", e));
+                                        }
+                                    })
+                                    .ok();
+                                })
+                                .detach();
+                            })
+                            .into_any_element(),
+                    );
+                    buttons.push(ok(window, cx));
+                    buttons
+                })
         });
     }
 
@@ -497,55 +639,17 @@ impl DataGrid {
     }
 
     pub fn render_table_area(&self, _window: &mut Window, cx: &App) -> AnyElement {
-        let table_view = Table::new(&self.table).stripe(true).bordered(true);
-
-        if !self.editor_state.read(cx).is_visible() {
-            return div()
-                .flex_1()
-                .w_full()
-                .h_full()
-                .bg(cx.theme().background)
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(table_view)
-                .into_any_element();
-        }
-
-        div()
+        let table_view = Table::new(&self.table)
+            .stripe(false)
+            .bordered(true);
+         div()
             .flex_1()
             .w_full()
-            .overflow_hidden()
-            .child(
-                v_resizable("table-editor-split")
-                    .child(
-                        resizable_panel()
-                            .size(px(300.))
-                            .size_range(px(150.)..Pixels::MAX)
-                            .child(
-                                div()
-                                    .size_full()
-                                    .bg(cx.theme().background)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .overflow_hidden()
-                                    .child(table_view),
-                            ),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size(px(300.))
-                            .size_range(px(150.)..Pixels::MAX)
-                            .child(
-                                div()
-                                    .size_full()
-                                    .bg(cx.theme().background)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .overflow_hidden()
-                                    .child(self.text_editor.clone()),
-                            ),
-                    ),
-            )
+            .h_full()
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(table_view)
             .into_any_element()
     }
 }
@@ -567,6 +671,24 @@ impl Clone for DataGrid {
             text_editor: self.text_editor.clone(),
             editor_state: self.editor_state.clone(),
             _table_sub: None,
+        }
+    }
+}
+
+impl DataGrid {
+    fn build_changes_sql(&self, request: &TableSaveRequest, cx: &App) -> Result<String, String> {
+        let global_state = cx.global::<GlobalDbState>().clone();
+        match global_state.db_manager.get_plugin(&self.config.database_type) {
+            Ok(plugin) => {
+                let sql = plugin.generate_table_changes_sql(request);
+                let trimmed = sql.trim();
+                if trimmed.is_empty() || trimmed == "-- 没有变更数据" {
+                    Err("没有变更数据".to_string())
+                } else {
+                    Ok(sql)
+                }
+            }
+            Err(_) => Err("无法获取数据库插件".to_string()),
         }
     }
 }
