@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
-use gpui_component::highlighter::Language::C;
 
 /// Database manager - creates database plugins
 pub struct DbManager {}
@@ -52,6 +51,8 @@ struct ConnectionSession {
     session_id: String,
     /// Whether this session is currently in a transaction
     in_transaction: bool,
+    /// Whether this session is currently checked out for use
+    in_use: bool,
 }
 
 impl ConnectionSession {
@@ -64,7 +65,18 @@ impl ConnectionSession {
             created_at: now,
             session_id,
             in_transaction: false,
+            in_use: false,
         }
+    }
+
+    fn mark_in_use(&mut self) {
+        self.in_use = true;
+        self.update_last_active();
+    }
+
+    fn release(&mut self) {
+        self.in_use = false;
+        self.update_last_active();
     }
 
     fn update_last_active(&mut self) {
@@ -75,6 +87,9 @@ impl ConnectionSession {
     fn is_expired(&self, timeout: Duration) -> bool {
         // Don't expire sessions that are in a transaction
         if self.in_transaction {
+            return false;
+        }
+        if self.in_use {
             return false;
         }
         self.last_active.elapsed() > timeout
@@ -139,6 +154,11 @@ impl ConnectionManager {
         db_manager: &DbManager,
     ) -> Result<String, DbError> {
         let config_id = config.id.clone();
+
+        if let Some(session_id) = self.try_acquire_session(&config).await {
+            return Ok(session_id);
+        }
+
         let session_id = self.generate_session_id(&config_id).await;
 
         // Create new connection
@@ -150,7 +170,8 @@ impl ConnectionManager {
         info!("Created new session: {}", session_id);
 
         // Store session
-        let session = ConnectionSession::new(connection, config, session_id.clone());
+        let mut session = ConnectionSession::new(connection, config, session_id.clone());
+        session.mark_in_use();
 
         let mut sessions = self.sessions.write().await;
         sessions.entry(config_id)
@@ -182,6 +203,21 @@ impl ConnectionManager {
             session_id: session_id.to_string(),
         })
     }
+
+    async fn try_acquire_session(&self, config: &DbConnectionConfig) -> Option<String> {
+        let mut sessions = self.sessions.write().await;
+
+        if let Some(session_list) = sessions.get_mut(&config.id) {
+            if let Some(session) = session_list.iter_mut().find(|s| !s.in_use && !s.in_transaction) {
+                session.config = config.clone();
+                session.mark_in_use();
+                info!("Reusing session: {}", session.session_id);
+                return Some(session.session_id.clone());
+            }
+        }
+
+        None
+    }
 }
 
 /// Guard that holds the write lock and provides access to a session's connection
@@ -195,11 +231,24 @@ impl<'a> SessionConnectionGuard<'a> {
     pub fn connection(&mut self) -> Option<&mut (dyn DbConnection + Send + Sync)> {
         for session_list in self.sessions.values_mut() {
             if let Some(session) = session_list.iter_mut().find(|s| s.session_id == self.session_id) {
-                session.update_last_active();
+                session.mark_in_use();
                 return Some(&mut *session.connection);
             }
         }
         None
+    }
+}
+
+impl<'a> Drop for SessionConnectionGuard<'a> {
+    fn drop(&mut self) {
+        for session_list in self.sessions.values_mut() {
+            if let Some(session) = session_list.iter_mut().find(|s| s.session_id == self.session_id) {
+                if !session.in_transaction {
+                    session.release();
+                }
+                break;
+            }
+        }
     }
 }
 
@@ -225,9 +274,26 @@ impl ConnectionManager {
             if let Some(session) = session_list.iter_mut().find(|s| s.session_id == session_id) {
                 session.in_transaction = in_transaction;
                 info!("Session {} transaction state: {}", session_id, in_transaction);
+                if !in_transaction {
+                    session.release();
+                }
                 break;
             }
         }
+    }
+
+    pub async fn release_session(&self, session_id: &str) -> Result<(), DbError> {
+        let mut sessions = self.sessions.write().await;
+
+        for session_list in sessions.values_mut() {
+            if let Some(session) = session_list.iter_mut().find(|s| s.session_id == session_id) {
+                session.release();
+                info!("Session {} released", session_id);
+                return Ok(());
+            }
+        }
+
+        Err(DbError::new(&format!("Session not found: {}", session_id)))
     }
 
     /// Close a specific session
@@ -254,6 +320,7 @@ impl ConnectionManager {
 
         // Close session after releasing iteration
         if let Some(mut session) = removed_session {
+            session.release();
             session.close().await;
             return Ok(());
         }
@@ -335,6 +402,7 @@ impl ConnectionManager {
                     session_id: s.session_id.clone(),
                     database: s.config.database.clone(),
                     in_transaction: s.in_transaction,
+                    in_use: s.in_use,
                     idle_time: s.last_active.elapsed(),
                     lifetime: s.created_at.elapsed(),
                 }).collect()
@@ -374,6 +442,7 @@ pub struct SessionInfo {
     pub session_id: String,
     pub database: Option<String>,
     pub in_transaction: bool,
+    pub in_use: bool,
     pub idle_time: Duration,
     pub lifetime: Duration,
 }
@@ -445,6 +514,14 @@ impl GlobalDbState {
     pub fn get_plugin(&self, database_type: &DatabaseType) -> Result<Box<dyn DatabasePlugin>, DbError> {
         self.db_manager.get_plugin(database_type)
     }
+
+
+    fn wrapper_result(result: Vec<SqlResult>) -> anyhow::Result<SqlResult> {
+        match result.into_iter().next() {
+            Some(re) => Ok(re),
+            None => Err(anyhow::anyhow!("No result returned")),
+        }
+    }
     
     pub async fn drop_database(
         &self,
@@ -453,37 +530,14 @@ impl GlobalDbState {
         database_name: String,
     ) -> anyhow::Result<SqlResult>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            let config = clone_self.get_config_async(&*config_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-            
-            let plugin = clone_self.get_plugin(&config.database_type)?;
-            let sql = plugin.drop_database(&database_name);
-            
-            // Create session and execute
-            let session_id = clone_self.connection_manager
-                .create_session(config, &clone_self.db_manager)
-                .await?;
-            
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                let results = conn.execute(&sql, ExecOptions::default()).await?;
-                results.into_iter().next().unwrap_or(SqlResult::Exec(crate::executor::ExecResult {
-                    sql: sql.clone(),
-                    rows_affected: 0,
-                    elapsed_ms: 0,
-                    message: None,
-                }))
-            };
-            
-            // Close session after execution
-            let _ = clone_self.connection_manager.close_session(&session_id).await;
-            
-            Ok(result)
-        })?.await
+        let config = self.get_config_async(&config_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
+        let plugin = self.get_plugin(&config.database_type)?;
+        let sql = plugin.drop_database(&database_name);
+
+        let result = self.execute_with_session(cx, config, sql, None).await?;
+
+        Self::wrapper_result(result)
     }
 
     /// Drop table
@@ -756,62 +810,32 @@ impl GlobalDbState {
         opts: Option<ExecOptions>,
     ) -> anyhow::Result<Vec<SqlResult>>
     {
-        let clone_self = self.clone();
-        Tokio::spawn_result(cx, async move {
-            // 1. Get config
-            let mut config = clone_self.get_config_async(&connection_id).await
-                .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+        //  Get config
+        let mut config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
 
-            if let Some(db) = database {
-                config.database = Some(db);
-            }
-
-            // 2. Create session
-            let session_id = clone_self.connection_manager
-                .create_session(config.clone(), &clone_self.db_manager)
-                .await?;
-
-            // 3. Execute query on session
-            let opts = opts.unwrap_or_default();
-            let is_transactional = opts.transactional;
-            let result = {
-                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
-                let conn = guard.connection()
-                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                conn.execute(&script, opts).await?
-            };
-
-            // 4. Detect transaction state
-            let trimmed = script.trim().to_uppercase();
-            let starts_transaction = trimmed.starts_with("BEGIN") || trimmed.starts_with("START TRANSACTION");
-            let ends_transaction = trimmed.starts_with("COMMIT") || trimmed.starts_with("ROLLBACK");
-
-            if starts_transaction || is_transactional {
-                clone_self.connection_manager.set_transaction_state(&session_id, true).await;
-            } else if ends_transaction {
-                clone_self.connection_manager.set_transaction_state(&session_id, false).await;
-                // Close session after transaction ends
-                let _ = clone_self.connection_manager.close_session(&session_id).await;
-            } else {
-                // For non-transaction queries, close session immediately
-                let _ = clone_self.connection_manager.close_session(&session_id).await;
-            }
-
-            Ok(result)
-        })?.await
+        if let Some(db) = database {
+            config.database = Some(db);
+        }
+        self.execute_with_session(cx, config, script, opts).await
     }
 
     /// Execute script with existing session (for transaction scenarios)
     pub async fn execute_with_session(
         &self,
         cx: &mut AsyncApp,
-        session_id: String,
+        config: DbConnectionConfig,
         script: String,
         opts: Option<ExecOptions>,
     ) -> anyhow::Result<Vec<SqlResult>>
     {
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
+            // Create session
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
             // Execute query on session
             let opts = opts.unwrap_or_default();
             let is_transactional = opts.transactional;
@@ -832,6 +856,7 @@ impl GlobalDbState {
             } else if ends_transaction {
                 clone_self.connection_manager.set_transaction_state(&session_id, false).await;
             }
+            clone_self.connection_manager.close_session(&session_id).await?;
 
             Ok(result)
         })?.await
