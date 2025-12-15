@@ -2,7 +2,7 @@ use std::sync::Arc;
 // 2. 外部 crate 导入（按字母顺序）
 use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, Context, Entity, IntoElement, ParentElement, Render, Styled, Window};
 use tracing::log::error;
-use gpui_component::{h_flex, list::ListItem, tab::{Tab, TabBar}, table::Column, v_flex, ActiveTheme, IconName, Sizable, Size, StyledExt};
+use gpui_component::{button::ButtonVariants, h_flex, list::ListItem, tab::{Tab, TabBar}, table::Column, v_flex, ActiveTheme, IconName, Sizable, Size, StyledExt};
 
 use crate::data_grid::{DataGrid, DataGridConfig, DataGridUsage};
 // 3. 当前 crate 导入（按模块分组）
@@ -25,6 +25,8 @@ pub struct SqlResultTabContainer {
     pub active_result_tab: Entity<Arc<usize>>,
     // Store all results for summary view (including non-query results)
     pub all_results: Entity<Vec<SqlResult>>,
+    // 控制结果面板的显示/隐藏状态
+    pub is_visible: Entity<bool>,
 }
 
 impl SqlResultTabContainer {
@@ -32,10 +34,12 @@ impl SqlResultTabContainer {
         let result_tabs = cx.new(|_| vec![]);
         let active_result_tab = cx.new(|_| Arc::new(0));
         let all_results = cx.new(|_| vec![]);
+        let is_visible = cx.new(|_| false); // 默认隐藏
         SqlResultTabContainer {
             result_tabs,
             active_result_tab,
             all_results,
+            is_visible,
         }
     }
 }
@@ -121,7 +125,62 @@ impl SqlResultTabContainer {
             }
         }
 
+        // 更新实体数据
+        self.result_tabs.update(cx, |tabs, cx| {
+            *tabs = query_tabs;
+            cx.notify();
+        });
 
+        self.all_results.update(cx, |results, cx| {
+            *results = all_result_tabs;
+            cx.notify();
+        });
+
+        // 重置活动标签页为摘要页
+        self.active_result_tab.update(cx, |active, cx| {
+            *active = Arc::new(0);
+            cx.notify();
+        });
+
+        // 有新结果时自动显示面板
+        self.is_visible.update(cx, |visible, cx| {
+            *visible = true;
+            cx.notify();
+        });
+    }
+
+    /// 切换结果面板的显示/隐藏状态
+    pub fn toggle_visibility(&mut self, cx: &mut App) {
+        self.is_visible.update(cx, |visible, cx| {
+            *visible = !*visible;
+            cx.notify();
+        });
+    }
+
+    /// 显示结果面板
+    pub fn show(&mut self, cx: &mut App) {
+        self.is_visible.update(cx, |visible, cx| {
+            *visible = true;
+            cx.notify();
+        });
+    }
+
+    /// 隐藏结果面板
+    pub fn hide(&mut self, cx: &mut App) {
+        self.is_visible.update(cx, |visible, cx| {
+            *visible = false;
+            cx.notify();
+        });
+    }
+
+    /// 检查是否有结果数据
+    pub fn has_results(&self, cx: &App) -> bool {
+        !self.all_results.read(cx).is_empty()
+    }
+
+    /// 检查面板是否可见
+    pub fn is_visible(&self, cx: &App) -> bool {
+        *self.is_visible.read(cx)
     }
 
 }
@@ -132,6 +191,12 @@ impl Render for SqlResultTabContainer {
         let query_tabs = self.result_tabs.read(cx);
         let all_results = self.all_results.read(cx);
         let active_idx = **self.active_result_tab.read(cx);
+        let is_visible = *self.is_visible.read(cx);
+
+        // 如果面板不可见，返回空的 div
+        if !is_visible {
+            return div().size_full();
+        }
 
         if all_results.is_empty() {
             // Show empty state
@@ -154,27 +219,48 @@ impl Render for SqlResultTabContainer {
                 .size_full()
                 .gap_0()
                 .child(
-                    // Tab bar for result tabs (摘要 + individual results)
-                    TabBar::new("result-tabs")
+                    // Tab bar container with close button
+                    h_flex()
                         .w_full()
-                        .underline()
-                        .with_size(Size::Small)
-                        .selected_index(active_idx)
-                        .on_click({
-                            let clone_self = clone_self.clone();
-                            move |ix: &usize, _w, cx| {
-                                clone_self.active_result_tab.update(cx, |x, x1| {
-
-                                })
-                            }
-                        })
+                        .items_center()
                         .child(
-                            // Summary tab
-                            Tab::new().label("摘要")
+                            // Tab bar for result tabs (摘要 + individual results)
+                            TabBar::new("result-tabs")
+                                .flex_1()
+                                .underline()
+                                .with_size(Size::Small)
+                                .selected_index(active_idx)
+                                .on_click({
+                                    let clone_self = clone_self.clone();
+                                    move |ix: &usize, _w, cx| {
+                                        clone_self.active_result_tab.update(cx, |active, cx| {
+                                            *active = Arc::new(*ix);
+                                            cx.notify();
+                                        });
+                                    }
+                                })
+                                .child(
+                                    // Summary tab
+                                    Tab::new().label("摘要")
+                                )
+                                .children(query_tabs.iter().enumerate().map(|(idx, tab)| {
+                                    Tab::new().label(format!("结果{} ({}, {})", idx + 1, tab.rows_count, tab.execution_time))
+                                }))
                         )
-                        .children(query_tabs.iter().enumerate().map(|(idx, tab)| {
-                            Tab::new().label(format!("结果{} ({}, {})", idx + 1, tab.rows_count, tab.execution_time))
-                        }))
+                        .child(
+                            // Close button
+                            gpui_component::button::Button::new("close-results")
+                                .with_size(Size::Small)
+                                .ghost()
+                                .icon(IconName::Close)
+                                .tooltip("隐藏结果面板")
+                                .on_click({
+                                    let close_self = clone_self.clone();
+                                    move |_, _, cx| {
+                                        close_self.clone().hide(cx);
+                                    }
+                                })
+                        )
                 )
                 .child(
                     // Active tab content - 优化布局以支持大文本编辑器

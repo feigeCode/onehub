@@ -1,4 +1,4 @@
-use gpui::{div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, Styled, Subscription, Window};
+use gpui::{div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Subscription, Window};
 use gpui::prelude::*;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
@@ -214,36 +214,14 @@ impl DataGrid {
 
     /// 切换编辑器显示状态
     fn toggle_editor(&self, window: &mut Window, cx: &mut App) {
-        let is_visible = self.editor_state.read(cx).is_visible();
-        let text_editor = self.text_editor.clone();
-        if is_visible {
-            let clone_self = self.clone();
-            window.open_dialog(cx, move |dialog, _window, cx| {
-                let clone_self = clone_self.clone();
-                dialog
-                    .title("编辑单元格")
-                    .w(px(800.0))
-                    .h(px(600.0))
-                    .child(text_editor.clone())
-                    .confirm()
-                    .on_ok(|_, _, cx| {
-                        clone_self.clone().save_editor_content(cx);
-                        true
-                    })
-                    .on_cancel(|_, _, _| {
-                        true
-                    })
-            });
+        self.show_large_text_editor(window, cx);
+    }
 
-
-            // 关闭前保存内容
-
-            self.editor_state.update(cx, |state, cx| {
-                state.editing_cell = None;
-                cx.notify();
-            });
-        } else {
-            // 打开编辑器，加载当前选中单元格
+    /// 显示大文本编辑器对话框 - 只使用普通文本编辑器
+    fn show_large_text_editor(&self, window: &mut Window, cx: &mut App) {
+        let state = self.editor_state.read(cx);
+        if state.editing_cell.is_none() {
+            // 如果没有正在编辑的单元格，使用当前选中的单元格
             let (row_ix, col_ix) = {
                 let table = self.table.read(cx);
                 table
@@ -251,8 +229,91 @@ impl DataGrid {
                     .or_else(|| table.selected_cell())
                     .unwrap_or((0, 1))
             };
+            
+            // 先加载单元格内容到编辑器
             self.load_cell_to_editor(row_ix, col_ix, window, cx);
         }
+
+        let state = self.editor_state.read(cx);
+        let Some((row_ix, col_ix)) = state.editing_cell else {
+            return;
+        };
+
+        // 获取当前单元格内容
+        let current_content = self.text_editor.read(cx).get_active_text(cx);
+        
+        // 获取列名用于标题
+        let column_name = self.table.read(cx)
+            .delegate()
+            .columns
+            .get(col_ix.saturating_sub(1))
+            .map(|col| col.name.to_string())
+            .unwrap_or_else(|| format!("列 {}", col_ix));
+
+        let title = format!("编辑单元格 - {} (行 {})", column_name, row_ix + 1);
+        
+        // 大文本编辑器只使用普通文本编辑器，不使用 SQL 编辑器
+        self.show_text_editor_dialog(current_content, &title, row_ix, col_ix, window, cx);
+    }
+
+
+    /// 显示文本编辑器对话框
+    fn show_text_editor_dialog(
+        &self,
+        initial_text: String,
+        title: &str,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        // 创建一个新的文本编辑器用于对话框
+        let dialog_text_editor = create_multi_text_editor_with_content(Some(initial_text), window, cx);
+        let data_grid = self.clone();
+        let title = title.to_string();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let editor = dialog_text_editor.clone();
+            let data_grid = data_grid.clone();
+
+            dialog
+                .title(SharedString::from(title.clone()))
+                .w(px(800.0))
+                .h(px(600.0))
+                .child(
+                    v_flex()
+                        .w_full()
+                        .h_full()
+                        .child(editor.clone()),
+                )
+                .confirm()
+                .on_ok(move |_, window, cx| {
+                    // 保存编辑的内容到单元格
+                    let content = editor.read(cx).get_active_text(cx);
+                    let content_clone = content.clone();
+                    
+                    data_grid.table.update(cx, |state, cx| {
+                        let delegate = state.delegate_mut();
+                        if let Some(row) = delegate.rows.get_mut(row_ix) {
+                            if let Some(cell) = row.get_mut(col_ix - 1) {
+                                if *cell != content {
+                                    *cell = content;
+                                    delegate.modified_cells.insert((row_ix, col_ix - 1));
+                                }
+                            }
+                        }
+                        state.refresh(cx);
+                    });
+                    
+                    // 同时更新内联编辑器的内容
+                    data_grid.text_editor.update(cx, |editor, cx| {
+                        editor.set_active_text(content_clone, window, cx);
+                    });
+                    
+                    true
+                })
+                .on_cancel(|_, _, _| true)
+        });
     }
 
     pub fn handle_cell_selection(
@@ -413,10 +474,7 @@ impl DataGrid {
             return "-- 没有变更数据".to_string();
         };
 
-        match self.build_changes_sql(&save_request, cx) {
-            Ok(sql) => sql,
-            Err(message) => format!("-- {}", message),
-        }
+        self.build_changes_sql(&save_request, cx).unwrap_or_else(|message| format!("-- {}", message))
     }
 
     pub fn show_sql_preview(&self, window: &mut Window, cx: &mut App) {
@@ -433,25 +491,38 @@ impl DataGrid {
             }
         };
 
+        self.show_sql_editor_dialog(sql_content, "变更SQL预览", true, window, cx);
+    }
+
+    /// 显示 SQL 编辑器对话框，支持编辑和执行
+    pub fn show_sql_editor_dialog(
+        &self,
+        initial_sql: String,
+        title: &str,
+        allow_execute: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let sql_editor = cx.new(|cx| SqlEditor::new(window, cx));
         sql_editor.update(cx, |editor, cx| {
-            editor.set_value(sql_content.clone(), window, cx);
+            editor.set_value(initial_sql, window, cx);
         });
 
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
         let this = self.clone();
+        let title = title.to_string();
 
-        window.open_dialog(cx, move |dialog, _window, cx| {
+        window.open_dialog(cx, move |dialog, _window, _cx| {
             let editor = sql_editor.clone();
             let execute_state = global_state.clone();
             let execute_connection = connection_id.clone();
             let execute_database = database_name.clone();
             let data_grid = this.clone();
 
-            dialog
-                .title("变更SQL预览")
+            let mut dialog = dialog
+                .title(SharedString::from(title.clone()))
                 .w(px(800.0))
                 .h(px(600.0))
                 .child(
@@ -459,8 +530,10 @@ impl DataGrid {
                         .w_full()
                         .h_full()
                         .child(editor.clone()),
-                )
-                .footer(move |ok, cancel, window, cx| {
+                );
+
+            if allow_execute {
+                dialog = dialog.footer(move |ok, cancel, window, cx| {
                     let execute_editor = editor.clone();
                     let execute_state = execute_state.clone();
                     let execute_connection = execute_connection.clone();
@@ -469,8 +542,9 @@ impl DataGrid {
 
                     let mut buttons = Vec::new();
                     buttons.push(cancel(window, cx));
+                    // 执行按钮
                     buttons.push(
-                        Button::new("execute-preview-sql")
+                        Button::new("execute-sql")
                             .with_size(Size::Medium)
                             .primary()
                             .icon(IconName::ArrowRight)
@@ -481,56 +555,79 @@ impl DataGrid {
                                     window.push_notification("SQL内容为空", cx);
                                     return;
                                 }
-                                window.push_notification("Executing SQL...", cx);
-                                let execute_state = execute_state.clone();
-                                let execute_connection = execute_connection.clone();
-                                let execute_database = execute_database.clone();
-                                let data_grid = data_grid.clone();
-                                let sql_to_run = sql_text.clone();
-
-                                cx.spawn(async move |cx: &mut AsyncApp| {
-                                    let exec_options = ExecOptions {
-                                        stop_on_error: true,
-                                        transactional: true,
-                                        max_rows: None,
-                                    };
-
-                                    let result = execute_state
-                                        .execute_script(
-                                            cx,
-                                            execute_connection.clone(),
-                                            sql_to_run.clone(),
-                                            Some(execute_database.clone()),
-                                            Some(exec_options),
-                                        )
-                                        .await;
-
-                                    cx.update(|cx| match result {
-                                        Ok(results) => {
-                                            if let Some(err_msg) = results.iter().find_map(|res| match res {
-                                                SqlResult::Error(err) => Some(err.message.clone()),
-                                                _ => None,
-                                            }) {
-                                                notification(cx, format!("执行失败: {}", err_msg));
-                                            } else {
-                                                data_grid.clear_changes(cx);
-                                                notification(cx, "SQL执行成功".to_string());
-                                            }
-                                        }
-                                        Err(e) => {
-                                            notification(cx, format!("执行失败: {}", e));
-                                        }
-                                    })
-                                    .ok();
-                                })
-                                .detach();
+                                
+                                data_grid.execute_sql_and_refresh(
+                                    sql_text,
+                                    execute_state.clone(),
+                                    execute_connection.clone(),
+                                    execute_database.clone(),
+                                    window,
+                                    cx,
+                                );
                             })
                             .into_any_element(),
                     );
+                    
                     buttons.push(ok(window, cx));
                     buttons
-                })
+                });
+            }
+
+            dialog
         });
+    }
+
+    /// 执行 SQL 并刷新数据网格
+    fn execute_sql_and_refresh(
+        &self,
+        sql: String,
+        global_state: GlobalDbState,
+        connection_id: String,
+        database_name: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.push_notification("正在执行SQL...", cx);
+        let data_grid = self.clone();
+
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let exec_options = ExecOptions {
+                stop_on_error: true,
+                transactional: true,
+                max_rows: None,
+            };
+
+            let result = global_state
+                .execute_script(
+                    cx,
+                    connection_id.clone(),
+                    sql.clone(),
+                    Some(database_name.clone()),
+                    Some(exec_options),
+                )
+                .await;
+
+            cx.update(|cx| match result {
+                Ok(results) => {
+                    if let Some(err_msg) = results.iter().find_map(|res| match res {
+                        SqlResult::Error(err) => Some(err.message.clone()),
+                        _ => None,
+                    }) {
+                        notification(cx, format!("执行失败: {}", err_msg));
+                    } else {
+                        data_grid.clear_changes(cx);
+                        notification(cx, "SQL执行成功，数据已刷新".to_string());
+                        // TODO: 这里可以添加刷新数据网格的逻辑
+                        // 需要重新加载表格数据以反映数据库中的最新状态
+                    }
+                }
+                Err(e) => {
+                    notification(cx, format!("执行失败: {}", e));
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     // ========== 渲染 ==========
@@ -617,23 +714,13 @@ impl DataGrid {
                     .tooltip("提交更改")
                     .on_click(move |c, window, cx| on_save.handle_save_changes(c, window, cx)),
             )
-            .child(div().w(px(1.0)).h(px(20.0)).bg(cx.theme().border).mx_2())
-            .child(
-                Button::new("chart-view")
-                    .with_size(Size::Medium)
-                    .icon(IconName::ChartPie)
-                    .tooltip("图表"),
-            )
             .child(div().flex_1())
             .child({
-                let is_visible = self.editor_state.read(cx).is_visible();
-                let btn = Button::new("toggle-editor")
+                Button::new("toggle-editor")
                     .with_size(Size::Medium)
                     .icon(IconName::EditBorder)
-                    .tooltip("编辑器");
-
-                let btn = if is_visible { btn.primary() } else { btn };
-                btn.on_click(move |_, w, cx| this_for_editor.toggle_editor(w, cx))
+                    .tooltip("大文本编辑器")
+                    .on_click(move |_, w, cx| this_for_editor.toggle_editor(w, cx))
             })
             .into_any_element()
     }

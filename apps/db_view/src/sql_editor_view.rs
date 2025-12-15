@@ -5,6 +5,7 @@ use crate::sql_result_tab::SqlResultTabContainer;
 use one_core::tab_container::{TabContent, TabContentType};
 use db::{GlobalDbState};
 use gpui::{px, AnyElement, App, AppContext, AsyncApp, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity, Window};
+use gpui::prelude::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -372,6 +373,12 @@ impl SqlEditorTab {
         })
         .detach();
     }
+
+    fn handle_show_results(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.sql_result_tab_container.update(cx, |container, cx| {
+            container.show(cx);
+        });
+    }
 }
 
 
@@ -380,8 +387,9 @@ impl Render for SqlEditorTab {
         let editor = self.editor.clone();
         let database_select = self.database_select.clone();
 
-        // Check if there are any results to determine layout
-        let has_results = !self.sql_result_tab_container.read(cx).result_tabs.read(cx).is_empty();
+        // Check if there are any results and if the panel is visible
+        let has_results = self.sql_result_tab_container.read(cx).has_results(cx);
+        let results_visible = self.sql_result_tab_container.read(cx).is_visible(cx);
 
         // Build the main layout with conditional resizable panels
         v_flex()
@@ -452,6 +460,16 @@ impl Render for SqlEditorTab {
                                                 }
                                             }),
                                     )
+                                    .when(has_results && !results_visible, |this| {
+                                        this.child(
+                                            Button::new("show-results")
+                                                .with_size(Size::Small)
+                                                .ghost()
+                                                .label("Show Results")
+                                                .icon(IconName::ArrowUp)
+                                                .on_click(cx.listener(Self::handle_show_results))
+                                        )
+                                    })
                             )
                             .child(
                                 // Editor
@@ -461,7 +479,7 @@ impl Render for SqlEditorTab {
                             )
                             )
                     )
-                    .when(has_results, |this| {
+                    .when(has_results && results_visible, |this| {
                         this.child(
                             // Bottom panel: Results with tabs
                             resizable_panel()
