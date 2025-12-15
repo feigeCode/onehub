@@ -18,23 +18,38 @@ use db::{ExecOptions, GlobalDbState, SqlResult, TableCellChange, TableRowChange,
 // ============================================================================
 
 /// 数据表格使用场景
-#[derive(Clone, Debug)]
+///
+/// 定义了数据表格在不同场景下的使用模式，主要用于调整UI布局和交互行为。
+#[derive(Clone, Debug, PartialEq)]
 pub enum DataGridUsage {
     /// 在表格数据页签中使用（编辑器高度较低）
+    ///
+    /// 此模式下表格通常占据较小的空间，适合浏览和编辑少量数据。
     TableData,
     /// 在SQL结果页签中使用（编辑器高度较高）
+    ///
+    /// 此模式下表格通常占据更多空间，适合查看SQL查询结果。
     SqlResult,
 }
 
 /// 数据表格配置
-#[derive(Clone)]
+///
+/// 包含数据表格所需的各种配置信息，如数据库连接、表名、是否可编辑等。
+#[derive(Clone, Debug, PartialEq)]
 pub struct DataGridConfig {
+    /// 数据库名称
     pub database_name: String,
+    /// 表名称
     pub table_name: String,
+    /// 数据库连接ID
     pub connection_id: String,
+    /// 数据库类型
     pub database_type: one_core::storage::DatabaseType,
+    /// 是否允许编辑
     pub editable: bool,
+    /// 是否显示工具栏
     pub show_toolbar: bool,
+    /// 使用场景
     pub usage: DataGridUsage,
 }
 
@@ -73,7 +88,9 @@ impl DataGridConfig {
 }
 
 /// 编辑器状态 - 合并 editing_large_text 和 editor_visible
-#[derive(Clone, Default)]
+///
+/// 跟踪当前编辑器的状态，包括当前正在编辑的单元格位置。
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct EditorState {
     /// 当前编辑的单元格位置，None 表示编辑器不可见
     editing_cell: Option<(usize, usize)>,
@@ -83,14 +100,26 @@ impl EditorState {
     fn is_visible(&self) -> bool {
         self.editing_cell.is_some()
     }
+
+    fn set_editing_cell(&mut self, cell: Option<(usize, usize)>) {
+        self.editing_cell = cell;
+    }
+
 }
 
 /// 数据表格组件
+///
+/// 提供一个可编辑的数据表格界面，支持增删改查操作，并能生成相应的SQL语句。
 pub struct DataGrid {
+    /// 组件配置
     config: DataGridConfig,
+    /// 内部表格状态
     pub(crate) table: Entity<TableState<EditorTableDelegate>>,
+    /// 文本编辑器实体
     text_editor: Entity<MultiTextEditor>,
+    /// 编辑器状态
     editor_state: Entity<EditorState>,
+    /// 表格事件订阅
     _table_sub: Option<Subscription>,
 }
 
@@ -132,16 +161,6 @@ impl DataGrid {
     pub fn table(&self) -> &Entity<TableState<EditorTableDelegate>> {
         &self.table
     }
-
-
-    pub fn editor_visible(&self) -> &Entity<EditorState> {
-        &self.editor_state
-    }
-
-    pub fn editing_large_text(&self) -> &Entity<EditorState> {
-        &self.editor_state
-    }
-
 
     pub fn update_data(
         &self,
@@ -198,7 +217,7 @@ impl DataGrid {
         });
 
         self.editor_state.update(cx, |state, cx| {
-            state.editing_cell = Some((row_ix, col_ix));
+            state.set_editing_cell(Some((row_ix, col_ix)));
             cx.notify();
         });
     }
@@ -316,16 +335,6 @@ impl DataGrid {
         });
     }
 
-    pub fn handle_cell_selection(
-        &self,
-        row_ix: usize,
-        col_ix: usize,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.switch_editing_cell(row_ix, col_ix, window, cx);
-    }
-
     // ========== 数据变更 ==========
 
     pub fn get_changes(&self, cx: &App) -> Vec<RowChange> {
@@ -345,6 +354,11 @@ impl DataGrid {
             state.delegate_mut().clear_changes();
             cx.notify();
         });
+    }
+
+    /// 检查是否有未保存的更改
+    pub fn has_unsaved_changes(&self, cx: &App) -> bool {
+        !self.get_changes(cx).is_empty()
     }
 
     pub fn convert_row_changes(
@@ -578,6 +592,44 @@ impl DataGrid {
     }
 
     /// 执行 SQL 并刷新数据网格
+    async fn execute_sql_and_refresh_async(
+        sql: String,
+        global_state: GlobalDbState,
+        connection_id: String,
+        database_name: String,
+        cx: &mut AsyncApp,
+    ) -> Result<(), String> {
+        let exec_options = ExecOptions {
+            stop_on_error: true,
+            transactional: true,
+            max_rows: None,
+        };
+
+        let result = global_state
+            .execute_script(
+                cx,
+                connection_id.clone(),
+                sql.clone(),
+                Some(database_name.clone()),
+                Some(exec_options),
+            )
+            .await;
+
+        match result {
+            Ok(results) => {
+                if let Some(err_msg) = results.iter().find_map(|res| match res {
+                    SqlResult::Error(err) => Some(err.message.clone()),
+                    _ => None,
+                }) {
+                    Err(format!("执行失败: {}", err_msg))
+                } else {
+                    Ok(())
+                }
+            }
+            Err(e) => Err(format!("执行失败: {}", e)),
+        }
+    }
+
     fn execute_sql_and_refresh(
         &self,
         sql: String,
@@ -591,43 +643,28 @@ impl DataGrid {
         let data_grid = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let exec_options = ExecOptions {
-                stop_on_error: true,
-                transactional: true,
-                max_rows: None,
-            };
-
-            let result = global_state
-                .execute_script(
-                    cx,
-                    connection_id.clone(),
-                    sql.clone(),
-                    Some(database_name.clone()),
-                    Some(exec_options),
-                )
-                .await;
-
-            cx.update(|cx| match result {
-                Ok(results) => {
-                    if let Some(err_msg) = results.iter().find_map(|res| match res {
-                        SqlResult::Error(err) => Some(err.message.clone()),
-                        _ => None,
-                    }) {
-                        notification(cx, format!("执行失败: {}", err_msg));
-                    } else {
+            match Self::execute_sql_and_refresh_async(
+                sql,
+                global_state,
+                connection_id,
+                database_name,
+                cx,
+            ).await {
+                Ok(_) => {
+                    cx.update(|cx| {
                         data_grid.clear_changes(cx);
                         notification(cx, "SQL执行成功，数据已刷新".to_string());
                         // TODO: 这里可以添加刷新数据网格的逻辑
                         // 需要重新加载表格数据以反映数据库中的最新状态
-                    }
+                    }).ok();
                 }
-                Err(e) => {
-                    notification(cx, format!("执行失败: {}", e));
+                Err(error_msg) => {
+                    cx.update(|cx| {
+                        notification(cx, error_msg);
+                    }).ok();
                 }
-            })
-            .ok();
-        })
-        .detach();
+            }
+        }).detach();
     }
 
     // ========== 渲染 ==========
