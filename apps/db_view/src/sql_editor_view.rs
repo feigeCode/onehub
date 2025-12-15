@@ -4,7 +4,7 @@ use crate::sql_editor::SqlEditor;
 use crate::sql_result_tab::SqlResultTabContainer;
 use one_core::tab_container::{TabContent, TabContentType};
 use db::{GlobalDbState};
-use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity, Window};
+use gpui::{px, AnyElement, App, AppContext, AsyncApp, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity, Window};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
@@ -34,15 +34,6 @@ pub struct SqlEditorTab {
 }
 
 impl SqlEditorTab {
-    pub fn new(
-        title: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self {
-        // Create with empty connection_id - should not be used in practice
-        Self::new_with_config(title, "", None, None, window, cx)
-    }
-
     pub fn new_with_config(
         title: impl Into<SharedString>,
         connection_id: impl Into<String>,
@@ -94,17 +85,6 @@ impl SqlEditorTab {
         }).detach();
     }
 
-    // Create a new instance that loads a specific query by ID
-    pub fn new_with_query_id(
-        query_id: i64,
-        title: impl Into<SharedString>,
-        connection_id: impl Into<String>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self {
-        Self::new_with_config(title, connection_id, Some(query_id), None, window, cx)
-    }
-
     pub fn set_sql(&self, sql: String, window: &mut Window, cx: &mut App) {
         self.editor.update(cx, |e, cx| e.set_value(sql, window, cx));
     }
@@ -126,7 +106,8 @@ impl SqlEditorTab {
             let databases = match global_state.list_databases(cx, connection_id.clone()).await {
                 Ok(result) => result,
                 Err(e) => {
-                    eprintln!("Failed to get connection: {}", e);
+                    error!("Failed to load databases for {}: {}", connection_id, e);
+                    Self::notify_async(cx, format!("Failed to load databases: {}", e));
                     return;
                 }
             };
@@ -151,33 +132,21 @@ impl SqlEditorTab {
                             }
                         }
                         Ok(None) => {}
-                        Err(e) => eprintln!("Failed to get query: {}", e),
+                        Err(e) => {
+                            error!("Failed to get query {}: {}", query_id, e);
+                            Self::notify_async(cx, format!("Failed to load saved query: {}", e));
+                        }
                     },
-                    Err(e) => eprintln!("Failed to enqueue query load: {}", e),
+                    Err(e) => {
+                        error!("Failed to enqueue query load: {}", e);
+                        Self::notify_async(cx, format!("Failed to load saved query: {}", e));
+                    }
                 }
             }
-
-            if let Some(ref db) = resolved_database {
-                instance.update_schema_for_db(global_state, db, cx).await;
-            }
-
+            
             let selected_name = resolved_database.clone().or_else(|| databases.get(0).cloned());
 
-            if let Some(sql) = sql_content {
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        cx.update_window(window_id, |_entity, window, cx| {
-                            editor.update(cx, |e, cx| {
-                                e.set_value(sql.clone(), window, cx);
-                            });
-                        })
-                    } else {
-                        Err(anyhow::anyhow!("No active window"))
-                    }
-                });
-            }
-
-            let update_result = cx.update(|cx| {
+           cx.update(|cx| {
                 if let Some(window_id) = cx.active_window() {
                     cx.update_window(window_id, |_entity, window, cx| {
                         database_select.update(cx, |state, cx| {
@@ -195,14 +164,19 @@ impl SqlEditorTab {
                                 }
                             }
                         });
+                        if let Some(sql) = sql_content {
+                            editor.update(cx, |e, cx| {
+                                e.set_value(sql.clone(), window, cx);
+                            });
+                        }
                     })
                 } else {
                     Err(anyhow::anyhow!("No active window"))
                 }
-            });
+            }).ok();
 
-            if let Err(e) = update_result {
-                eprintln!("Failed to update dropdown: {:?}", e);
+            if let Some(ref db) = resolved_database {
+                instance.update_schema_for_db(global_state, db, cx).await;
             }
         }).detach();
     }
@@ -253,19 +227,26 @@ impl SqlEditorTab {
         }
 
         // Update editor with schema and database-specific completion info
-        cx.update(|cx| {
-            if let Some(window_id) = cx.active_window() {
-                let _ = cx.update_window(window_id, |_entity, window, cx| {
-                    editor.update(cx, |e, cx| {
-                        e.set_db_completion_info(db_completion_info, schema, window, cx);
-                    });
-                });
-            }
-        }).ok();
+        _ = editor.update(cx, |e, cx| {
+            e.set_db_completion_info(db_completion_info, schema, cx);
+        });
     }
 
     fn get_sql_text(&self, cx: &App) -> String {
         self.editor.read(cx).get_text_from_app(cx)
+    }
+
+    fn notify_async(cx: &mut AsyncApp, message: String) {
+        let _ = cx.update(|cx| {
+            if let Some(window_id) = cx.active_window() {
+                let notification = message.clone();
+                cx.update_window(window_id, move |_entity, window, cx| {
+                    window.push_notification(notification.clone(), cx);
+                })
+            } else {
+                Err(anyhow::anyhow!("No active window"))
+            }
+        });
     }
 
     fn handle_run_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -274,27 +255,25 @@ impl SqlEditorTab {
         let connection_id = self.connection_id.clone();
         let sql_result_tab_container = self.sql_result_tab_container.clone();
 
-        let current_database = self.database_select.read(cx).selected_value();
-
-        let mut current_database_value = None;
-        if let Some(database) = current_database {
-            current_database_value = Some(database.clone());
-        }else {
-            window.push_notification("Please select a database",cx);
-            return;
-        }
-
+        let current_database_value = match self.database_select.read(cx).selected_value() {
+            Some(database) => Some(database.clone()),
+            None => {
+                window.push_notification("Please select a database", cx);
+                return;
+            }
+        };
 
         if sql.trim().is_empty() {
-            window.push_notification("Please enter a query",cx);
+            window.push_notification("Please enter a query", cx);
             return;
         }
 
         cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let result = global_state.execute_script(cx, connection_id, sql.clone(), current_database_value, None).await;
+            let result = global_state
+                .execute_script(cx, connection_id, sql.clone(), current_database_value, None)
+                .await;
             match result {
                 Ok(results) => {
-                    // Update result tabs
                     let _ = cx.update(|cx| {
                         if let Some(window_id) = cx.active_window() {
                             let _ = cx.update_window(window_id, |_entity, window, cx| {
@@ -304,55 +283,72 @@ impl SqlEditorTab {
                             });
                         }
                     });
+                    SqlEditorTab::notify_async(cx, "Query executed".to_string());
                 }
                 Err(e) => {
-                    error!("Failed to execute script: {}", e)
+                    error!("Failed to execute script: {}", e);
+                    SqlEditorTab::notify_async(cx, format!("Failed to execute query: {}", e));
                 }
             };
-        }).detach();
+        })
+        .detach();
     }
 
-    fn handle_format_query(&self, _: &ClickEvent, window: &mut Window, cx: &mut App) {
+    fn handle_format_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.get_sql_text(cx);
         let formatted = text
             .split('\n')
             .map(|l| l.trim().to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        self.editor
-            .update(cx, |s, cx| s.set_value(formatted, window, cx));
+        self.editor.update(cx, |s, cx| s.set_value(formatted, window, cx));
     }
 
-    fn handle_save_query(&self, _: &ClickEvent, window: &mut Window, cx: &mut App) {
+    fn handle_compress_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.get_sql_text(cx);
+        let compressed = text
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.editor.update(cx, |e, cx| e.set_value(compressed, window, cx));
+    }
+
+    fn handle_save_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         use one_core::storage::query_model::Query;
-        use one_core::storage::traits::Repository;
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let sql = self.get_sql_text(cx);
+        if sql.trim().is_empty() {
+            window.push_notification("Query content is empty", cx);
+            return;
+        }
+
         let connection_id = self.connection_id.clone();
         let storage_manager = cx.global::<GlobalStorageState>().storage.clone();
-        let current_db = self.database_select.read(cx).selected_value();
+        let saved_database = self.database_select.read(cx).selected_value().cloned();
 
-        // Generate a default name for the query
         let start = SystemTime::now();
-        let since_epoch = start.duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
+        let since_epoch = match start.duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration,
+            Err(e) => {
+                error!("Failed to generate query name: {}", e);
+                window.push_notification("Failed to save query: invalid system time", cx);
+                return;
+            }
+        };
         let query_name = format!("Query_{}", since_epoch.as_secs());
 
-        // Create the query object
-        let mut query = Query::new(
-            query_name,
-            sql,
-            connection_id,
-            if let Some (db) = current_db { Some(db.clone())  } else { None }
-        );
-
-        // Spawn the async task
-        cx.spawn(async move |cx: &mut AsyncApp| {
+        let mut query = Query::new(query_name, sql, connection_id.clone(), saved_database.clone());
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            
             let storage = storage_manager.clone();
             match Tokio::spawn_result(cx, async move {
                 let storage = storage.clone();
-                let query_repo = storage.get::<QueryRepository>().await
+                let query_repo = storage
+                    .get::<QueryRepository>()
+                    .await
                     .ok_or_else(|| anyhow::anyhow!("Query repository not found"))?;
                 let pool = storage.get_pool().await?;
                 query_repo.insert(&pool, &mut query).await?;
@@ -360,33 +356,54 @@ impl SqlEditorTab {
             }) {
                 Ok(task) => match task.await {
                     Ok(_) => {
-                        let _ = cx.update(|cx| {
+                        if let Err(e) = cx.update(|cx| {
                             if let Some(window_id) = cx.active_window() {
                                 cx.update_window(window_id, |_entity, window, cx| {
                                     window.push_notification("Query saved", cx);
-
-                                    // TODO - 刷新树
                                 })
                             } else {
                                 Err(anyhow::anyhow!("No active window"))
                             }
-                        });
+                        }) {
+                            error!("Failed to show save notification: {}", e);
+                        }
+
+                        if let Err(e) = cx.update(|cx| {
+                            if let Some(entity) = this.upgrade() {
+                                entity.update(cx, |this, cx| {
+                                    cx.emit(SqlEditorEvent::QuerySaved {
+                                        connection_id: this.connection_id.clone(),
+                                        database: saved_database.clone(),
+                                    });
+                                });
+                                Ok(())
+                            } else {
+                                Err(anyhow::anyhow!("SqlEditorTab dropped"))
+                            }
+                        }) {
+                            error!("Failed to emit QuerySaved event: {}", e);
+                        }
                     }
-                    Err(e) => error!("Failed to save query: {}", e),
+                    Err(e) => {
+                        error!("Failed to save query: {}", e);
+                        SqlEditorTab::notify_async(cx, format!("Failed to save query: {}", e));
+                    }
                 },
-                Err(e) => error!("Failed to enqueue query save: {}", e),
+                Err(e) => {
+                    error!("Failed to enqueue query save: {}", e);
+                    SqlEditorTab::notify_async(cx, format!("Failed to save query: {}", e));
+                }
             }
 
             Ok::<(), anyhow::Error>(())
-        }).detach();
-
-        // TODO - 刷新树
+        })
+        .detach();
     }
 }
 
 
 impl Render for SqlEditorTab {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.clone();
         let database_select = self.database_select.clone();
 
@@ -434,10 +451,7 @@ impl Render for SqlEditorTab {
                                                 .ghost()
                                                 .label("Format")
                                                 .icon(IconName::Star)
-                                                .on_click({
-                                                    let this = self.clone();
-                                                    move |e, w, cx| this.handle_format_query(e, w, cx)
-                                                }),
+                                                .on_click(cx.listener(Self::handle_format_query)),
                                         )
                                         .child(
                                             Button::new("save-query")
@@ -445,28 +459,14 @@ impl Render for SqlEditorTab {
                                                 .ghost()
                                                 .label("Save Query")
                                                 .icon(IconName::Plus)
-                                                .on_click({
-                                                    let this = self.clone();
-                                                    move |e, w, cx| this.handle_save_query(e, w, cx)
-                                                }),
+                                                .on_click(cx.listener(Self::handle_save_query)),
                                         )
                                         .child(
                                             Button::new("compress-query")
                                                 .with_size(Size::Small)
                                                 .ghost()
                                                 .label("Compress")
-                                                .on_click({
-                                                    let this = self.clone();
-                                                    move |_e, w, cx| {
-                                                        let text = this.get_sql_text(cx);
-                                                        let compressed = text.lines()
-                                                            .map(|l| l.trim())
-                                                            .filter(|l| !l.is_empty())
-                                                            .collect::<Vec<_>>()
-                                                            .join(" ");
-                                                        this.editor.update(cx, |e, cx| e.set_value(compressed, w, cx));
-                                                    }
-                                                }),
+                                                .on_click(cx.listener(Self::handle_compress_query)),
                                         )
                                         .child(
                                             Button::new("export-query")
@@ -492,9 +492,7 @@ impl Render for SqlEditorTab {
                     // Bottom panel: Results with tabs
                     resizable_panel()
                         .child(self.sql_result_tab_container.clone())
-                )
-                .into_any_element())
-            .into_any_element()
+                ))
     }
 }
 
@@ -579,16 +577,16 @@ impl TabContent for SqlEditorTabContent {
         true
     }
 
+    fn render_content(&self, _window: &mut Window, _cx: &mut App) -> AnyElement {
+        self.sql_editor_tab.clone().into_any_element()
+    }
+
     fn content_type(&self) -> TabContentType {
         TabContentType::SqlEditor
     }
 
     fn as_any(&self) -> &dyn Any {
         self
-    }
-
-    fn render_content(&self, _window: &mut Window, cx: &mut App) -> AnyElement {
-        self.sql_editor_tab.clone().into_any_element()
     }
 }
 

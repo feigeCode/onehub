@@ -1199,7 +1199,6 @@ impl SqlEditor {
         &mut self,
         info: SqlCompletionInfo,
         schema: SqlSchema,
-        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let completion_provider = DefaultSqlCompletionProvider::new(schema)
