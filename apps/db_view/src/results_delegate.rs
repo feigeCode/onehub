@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use db::{FieldType, TableColumnMeta};
-use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement, Styled, Subscription, Window};
+use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, InteractiveElement as _, ParentElement as _, Styled, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::table::Column;
 use gpui_component::{h_flex, table::{ TableDelegate, TableState}};
@@ -532,11 +532,10 @@ impl TableDelegate for EditorTableDelegate {
             state
         });
 
-        let _sub = cx.subscribe_in(&input, window,move |_table, _, evt: &InputEvent, _window, _cx| {
+        let _sub = cx.subscribe_in(&input, window,move |table, _, evt: &InputEvent, window, cx| {
             match evt {
                 InputEvent::Blur => {
-                    // Don't cancel the edit on blur - let the normal input handling take care of it
-                    // This allows the user's changes to be preserved
+                    table.commit_cell_edit(window,cx);
                 }
                 _ => {}
             }
@@ -602,8 +601,13 @@ impl TableDelegate for EditorTableDelegate {
     fn is_cell_modified(&self, row_ix: usize, col_ix: usize, _cx: &App) -> bool {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
-
         self.modified_cells.contains(&(actual_row, col_ix))
+    }
+
+    fn is_row_deleted(&self, row_ix: usize, _cx: &App) -> bool {
+        // Map display row index to actual row index
+        let actual_row = self.map_display_to_actual_row(row_ix);
+        self.is_deleted_row(actual_row)
     }
 
     fn on_row_added(&mut self, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> usize {
@@ -636,7 +640,7 @@ impl TableDelegate for EditorTableDelegate {
 
         // Check if this is a new row (not yet saved to DB)
         if self.is_new_row(row_ix) {
-            // Just remove it completely
+            // For new rows, remove them immediately since they don't exist in DB
             if let Some(new_row_id) = self.find_new_row_id(row_ix) {
                 self.new_rows.remove(&new_row_id);
             }
@@ -647,17 +651,16 @@ impl TableDelegate for EditorTableDelegate {
             // Re-index rows after deletion
             self.reindex_after_deletion(row_ix);
         } else {
-            // Mark existing row for deletion
+            // For existing rows (from DB), only mark as deleted but keep the row visible
+            // This allows users to see deleted rows with special styling and undo the deletion
             if let Some(&original_ix) = self.row_index_map.get(&row_ix) {
                 self.deleted_original_rows.insert(original_ix);
             }
             self.row_status.insert(row_ix, RowStatus::Deleted);
 
-            // Remove from display
-            self.rows.remove(row_ix);
-
-            // Re-index rows after deletion
-            self.reindex_after_deletion(row_ix);
+            // Keep the row in display - don't remove it yet
+            // It will be visually marked as deleted (e.g., strikethrough)
+            // and will only be truly removed when changes are submitted
         }
 
         // Clean up cell changes for deleted row

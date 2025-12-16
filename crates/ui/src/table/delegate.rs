@@ -220,6 +220,12 @@ pub trait TableDelegate: Sized + 'static {
         false
     }
 
+    /// Return true if the row has been marked for deletion.
+    /// Used to highlight deleted rows with special styling.
+    fn is_row_deleted(&self, row_ix: usize, cx: &App) -> bool {
+        false
+    }
+
     /// Called when a row is added.
     fn on_row_added(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) -> usize {
         0

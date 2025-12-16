@@ -1656,6 +1656,7 @@ where
         let horizontal_scroll_handle = self.horizontal_scroll_handle.clone();
         let is_stripe_row = self.options.stripe && row_ix % 2 != 0;
         let is_selected = self.selected_row == Some(row_ix);
+        let is_row_deleted = self.delegate.is_row_deleted(row_ix, cx);
         let view = cx.entity().clone();
         let row_height = self.options.size.table_row_height();
 
@@ -1672,10 +1673,16 @@ where
                 .when(need_render_border, |this| {
                     this.border_b_1().border_color(cx.theme().table_row_border)
                 })
-                .when(is_stripe_row, |this| this.bg(cx.theme().table_even))
+                .when(is_stripe_row && !is_row_deleted, |this| this.bg(cx.theme().table_even))
+                .when(is_row_deleted, |this| {
+                    this.opacity(0.5).line_through().bg(cx.theme().warning.opacity(0.1))
+                })
                 .refine_style(&style)
                 .hover(|this| {
-                    if is_selected || self.right_clicked_row == Some(row_ix) {
+                    if is_row_deleted {
+                        // Don't hover deleted rows
+                        this
+                    } else if is_selected || self.right_clicked_row == Some(row_ix) {
                         this
                     } else {
                         this.bg(cx.theme().table_hover)
