@@ -1,5 +1,5 @@
-use gpui::{div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Subscription, Window};
 use gpui::prelude::*;
+use gpui::{div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Subscription, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
@@ -8,7 +8,7 @@ use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _, Size, WindowExt,
 };
 
-use crate::multi_text_editor::{create_multi_text_editor_with_content, MultiTextEditor};
+use crate::multi_text_editor::create_multi_text_editor_with_content;
 use crate::results_delegate::{EditorTableDelegate, RowChange};
 use crate::sql_editor::SqlEditor;
 use db::{ExecOptions, GlobalDbState, SqlResult, TableCellChange, TableRowChange, TableSaveRequest};
@@ -115,8 +115,6 @@ pub struct DataGrid {
     config: DataGridConfig,
     /// 内部表格状态
     pub(crate) table: Entity<TableState<EditorTableDelegate>>,
-    /// 文本编辑器实体
-    text_editor: Entity<MultiTextEditor>,
     /// 编辑器状态
     editor_state: Entity<EditorState>,
     /// 表格事件订阅
@@ -129,12 +127,10 @@ impl DataGrid {
             TableState::new(EditorTableDelegate::new(vec![], vec![], window, cx), window, cx)
         });
         let editor_state = cx.new(|_| EditorState::default());
-        let text_editor = create_multi_text_editor_with_content(None, window, cx);
 
         let mut result = Self {
             config,
             table,
-            text_editor,
             editor_state,
             _table_sub: None,
         };
@@ -148,7 +144,7 @@ impl DataGrid {
                 let state = this.editor_state.read(cx);
                 if let Some((old_row, old_col)) = state.editing_cell {
                     if *row != old_row || *col != old_col {
-                        this.switch_editing_cell(*row, *col, window, cx);
+                        // TODO 待完成
                     }
                 }
             }
@@ -176,45 +172,22 @@ impl DataGrid {
         });
     }
 
-    // ========== 编辑器操作 ==========
-
-    /// 保存当前编辑器内容到单元格
-    fn save_editor_content(&self, cx: &mut App) {
-        let state = self.editor_state.read(cx);
-        let Some((row_ix, col_ix)) = state.editing_cell else {
-            return;
-        };
-
-        let content = self.text_editor.read(cx).get_active_text(cx);
-        self.table.update(cx, |state, cx| {
-            let delegate = state.delegate_mut();
-            if let Some(row) = delegate.rows.get_mut(row_ix) {
-                if let Some(cell) = row.get_mut(col_ix - 1) {
-                    if *cell != content {
-                        *cell = content;
-                        delegate.modified_cells.insert((row_ix, col_ix - 1));
-                    }
-                }
-            }
-            state.refresh(cx);
-        });
-    }
 
     /// 加载单元格内容到编辑器
     fn load_cell_to_editor(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) {
-        let value = self
-            .table
-            .read(cx)
-            .delegate()
-            .rows
-            .get(row_ix)
-            .and_then(|r| r.get(col_ix - 1))
-            .cloned()
-            .unwrap_or_default();
-
-        self.text_editor.update(cx, |editor, cx| {
-            editor.set_active_text(value, window, cx);
-        });
+        let value = {
+            let table = self.table.read(cx);
+            let delegate = table.delegate();
+            let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
+                return;
+            };
+            delegate
+                .rows
+                .get(actual_row_ix)
+                .and_then(|r| r.get(col_ix - 1))
+                .cloned()
+                .unwrap_or_default()
+        };
 
         self.editor_state.update(cx, |state, cx| {
             state.set_editing_cell(Some((row_ix, col_ix)));
@@ -222,14 +195,7 @@ impl DataGrid {
         });
     }
 
-    /// 切换编辑单元格（保存旧内容，加载新内容）
-    fn switch_editing_cell(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) {
-        if !self.editor_state.read(cx).is_visible() {
-            return;
-        }
-        self.save_editor_content(cx);
-        self.load_cell_to_editor(row_ix, col_ix, window, cx);
-    }
+
 
     /// 切换编辑器显示状态
     fn toggle_editor(&self, window: &mut Window, cx: &mut App) {
@@ -248,7 +214,7 @@ impl DataGrid {
                     .or_else(|| table.selected_cell())
                     .unwrap_or((0, 1))
             };
-            
+
             // 先加载单元格内容到编辑器
             self.load_cell_to_editor(row_ix, col_ix, window, cx);
         }
@@ -257,10 +223,19 @@ impl DataGrid {
         let Some((row_ix, col_ix)) = state.editing_cell else {
             return;
         };
-
+        let table = self.table.read(cx);
+        let delegate = table.delegate();
+        let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
+            return;
+        };
         // 获取当前单元格内容
-        let current_content = self.text_editor.read(cx).get_active_text(cx);
-        
+        let current_content =  delegate
+            .rows
+            .get(actual_row_ix)
+            .and_then(|r| r.get(col_ix - 1))
+            .cloned()
+            .unwrap_or_default();
+
         // 获取列名用于标题
         let column_name = self.table.read(cx)
             .delegate()
@@ -268,13 +243,10 @@ impl DataGrid {
             .get(col_ix.saturating_sub(1))
             .map(|col| col.name.to_string())
             .unwrap_or_else(|| format!("列 {}", col_ix));
-
         let title = format!("编辑单元格 - {} (行 {})", column_name, row_ix + 1);
-        
-        // 大文本编辑器只使用普通文本编辑器，不使用 SQL 编辑器
+
         self.show_text_editor_dialog(current_content, &title, row_ix, col_ix, window, cx);
     }
-
 
     /// 显示文本编辑器对话框
     fn show_text_editor_dialog(
@@ -286,7 +258,6 @@ impl DataGrid {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // 创建一个新的文本编辑器用于对话框
         let dialog_text_editor = create_multi_text_editor_with_content(Some(initial_text), window, cx);
         let data_grid = self.clone();
         let title = title.to_string();
@@ -307,28 +278,29 @@ impl DataGrid {
                 )
                 .confirm()
                 .on_ok(move |_, window, cx| {
-                    // 保存编辑的内容到单元格
                     let content = editor.read(cx).get_active_text(cx);
                     let content_clone = content.clone();
-                    
-                    data_grid.table.update(cx, |state, cx| {
+
+                    let _ = data_grid.table.update(cx, |state, cx| {
                         let delegate = state.delegate_mut();
-                        if let Some(row) = delegate.rows.get_mut(row_ix) {
-                            if let Some(cell) = row.get_mut(col_ix - 1) {
-                                if *cell != content {
-                                    *cell = content;
-                                    delegate.modified_cells.insert((row_ix, col_ix - 1));
-                                }
-                            }
+                        let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
+                            return false;
+                        };
+
+                        let col_index = col_ix.saturating_sub(1);
+                        let changed = delegate.record_cell_change(actual_row_ix, col_index, content.clone());
+
+                        if changed {
+                            state.refresh(cx);
                         }
-                        state.refresh(cx);
+
+                        changed
                     });
-                    
-                    // 同时更新内联编辑器的内容
-                    data_grid.text_editor.update(cx, |editor, cx| {
+
+                    editor.update(cx, |editor, cx| {
                         editor.set_active_text(content_clone, window, cx);
                     });
-                    
+
                     true
                 })
                 .on_cancel(|_, _, _| true)
@@ -352,6 +324,15 @@ impl DataGrid {
     pub fn clear_changes(&self, cx: &mut App) {
         self.table.update(cx, |state, cx| {
             state.delegate_mut().clear_changes();
+            cx.notify();
+        });
+    }
+
+    /// 撤销所有更改并恢复到原始状态
+    pub fn revert_changes(&self, cx: &mut App) {
+        self.table.update(cx, |state, cx| {
+            state.delegate_mut().revert_all_changes();
+            state.refresh(cx);
             cx.notify();
         });
     }
@@ -676,6 +657,7 @@ impl DataGrid {
         let table = self.table.clone();
         let this_for_sql = self.clone();
         let this_for_editor = self.clone();
+        let this_for_undo = self.clone();
         let on_save = self.clone();
 
         h_flex()
@@ -727,15 +709,7 @@ impl DataGrid {
                     .with_size(Size::Medium)
                     .icon(IconName::Undo)
                     .tooltip("撤销")
-                    .on_click({
-                        let table = table.clone();
-                        move |_, _, cx| {
-                            table.update(cx, |state, cx| {
-                                state.delegate_mut().clear_changes();
-                                cx.notify();
-                            })
-                        }
-                    }),
+                    .on_click(move |_, _, cx| this_for_undo.revert_changes(cx)),
             )
             .child(
                 Button::new("sql-preview")
@@ -792,7 +766,6 @@ impl Clone for DataGrid {
         Self {
             config: self.config.clone(),
             table: self.table.clone(),
-            text_editor: self.text_editor.clone(),
             editor_state: self.editor_state.clone(),
             _table_sub: None,
         }

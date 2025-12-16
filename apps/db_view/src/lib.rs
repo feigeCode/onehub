@@ -1,6 +1,5 @@
 pub mod ai_chat_panel;
 pub mod ai_input;
-pub mod connection_list_panel;
 pub mod data_export_view;
 pub mod data_grid;
 pub mod data_import_view;

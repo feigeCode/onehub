@@ -5,7 +5,7 @@ use crate::postgresql::PostgresPlugin;
 use crate::{DbNode, ExecOptions, SqlResult};
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
-use gpui::{AppContext, AsyncApp, Global, Task};
+use gpui::{AppContext, AsyncApp, Global};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

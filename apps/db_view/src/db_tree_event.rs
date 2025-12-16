@@ -2,6 +2,7 @@
 // (无需标准库导入)
 
 // 2. 外部 crate 导入（按字母顺序）
+use anyhow::anyhow;
 use db::{DbNode, DbNodeType, GlobalDbState};
 use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::{error, warn};
@@ -224,52 +225,6 @@ impl DatabaseEventHandler {
         objects_panel: Entity<DatabaseObjectsPanel>,
         cx: &mut App,
     ) {
-        // 当连接节点未连接时显示连接列表信息
-        if node.node_type == DbNodeType::Connection && !node.children_loaded {
-            use one_core::storage::traits::Repository;
-            use one_core::storage::{ConnectionRepository, GlobalStorageState, WorkspaceRepository};
-
-            let connection_id = node.connection_id.clone();
-            let storage_manager = cx.global::<GlobalStorageState>().storage.clone();
-
-            let result = Tokio::block_on(cx, async move {
-                let pool = storage_manager.get_pool().await.ok()?;
-
-                // 获取当前连接的信息
-                let conn_id = connection_id.parse::<i64>().ok()?;
-                let conn_repo_arc = storage_manager.get::<ConnectionRepository>().await?;
-                let conn_repo = (*conn_repo_arc).clone();
-                let current_conn = conn_repo.get(&pool, conn_id).await.ok()??;
-                let workspace_id = current_conn.workspace_id;
-
-                // 获取工作区名称
-                let workspace_name = if let Some(ws_id) = workspace_id {
-                    let workspace_repo_arc = storage_manager.get::<WorkspaceRepository>().await?;
-                    let workspace_repo = (*workspace_repo_arc).clone();
-                    workspace_repo
-                        .get(&pool, ws_id)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|ws| ws.name)
-                } else {
-                    None
-                };
-
-                // 获取同工作区的所有连接
-                let connections = conn_repo.list_by_workspace(&pool, workspace_id).await.ok()?;
-
-                Some((connections, workspace_name))
-            });
-
-            if let Some((connections, workspace_name)) = result {
-                objects_panel.update(cx, |panel, cx| {
-                    panel.show_connection_list(connections, workspace_name, cx);
-                });
-            }
-
-            return;
-        }
 
         let connection_id = node.connection_id.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -354,36 +309,59 @@ impl DatabaseEventHandler {
         let tab_id = format!("table-data-{}.{}", database, table);
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
-        if let Some(config) = config {
-            let database_clone = database.clone();
-            let table_clone = table.clone();
-            let config_id = config.id.clone();
-            let tab_id_clone = tab_id.clone();
+        let tab_container_clone = tab_container.clone();
+        let database_string = database.clone();
+        let table_string = table.clone();
 
-            tab_container.update(cx, |container, cx| {
-                container.activate_or_add_tab_lazy(
-                    tab_id,
-                    move |window, cx| {
-                        let table_data = TableDataTabContent::new(
-                            database_clone,
-                            table_clone,
-                            config_id,
-                            config.database_type,
-                            window,
-                            cx,
-                        );
-                        TabItem::new(tab_id_clone, table_data)
-                    },
-                    window,
-                    cx,
-                );
-            });
-        } else {
-            Self::show_error(window, format!("打开表数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
+
+            if let Some(config) = config {
+                let config_id = config.id.clone();
+                let database_type = config.database_type;
+                let tab_id_for_lazy = tab_id.clone();
+                let database_for_lazy = database_string.clone();
+                let table_for_lazy = table_string.clone();
+
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            tab_container_clone.update(cx, |container, cx| {
+                                let tab_id_clone = tab_id_for_lazy.clone();
+                                let database_clone = database_for_lazy.clone();
+                                let table_clone = table_for_lazy.clone();
+                                let config_id_clone = config_id.clone();
+                                container.activate_or_add_tab_lazy(
+                                    tab_id_for_lazy.clone(),
+                                    move |window, cx| {
+                                        let table_data = TableDataTabContent::new(
+                                            database_clone.clone(),
+                                            table_clone.clone(),
+                                            config_id_clone.clone(),
+                                            database_type,
+                                            window,
+                                            cx,
+                                        );
+                                        TabItem::new(tab_id_clone.clone(), table_data)
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                        });
+                    }
+                });
+            } else {
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("打开表数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
+                });
+            }
+        }).detach();
     }
 
     /// 处理打开视图数据事件
@@ -403,37 +381,59 @@ impl DatabaseEventHandler {
         let tab_id = format!("view-data-{}.{}", database, view);
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
+        let tab_container_clone = tab_container.clone();
+        let database_string = database.clone();
+        let view_string = view.clone();
 
-        if let Some(config) = config {
-            let database_clone = database.clone();
-            let view_clone = view.clone();
-            let config_id = config.id.clone();
-            let tab_id_clone = tab_id.clone();
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
 
-            tab_container.update(cx, |container, cx| {
-                container.activate_or_add_tab_lazy(
-                    tab_id,
-                    move |window, cx| {
-                        let view_data = TableDataTabContent::new(
-                            database_clone,
-                            view_clone,
-                            config_id,
-                            config.database_type,
-                            window,
-                            cx,
-                        );
-                        TabItem::new(tab_id_clone, view_data)
-                    },
-                    window,
-                    cx,
-                );
-            });
-        } else {
-            Self::show_error(window, format!("打开视图数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+            if let Some(config) = config {
+                let config_id = config.id.clone();
+                let database_type = config.database_type;
+                let tab_id_for_lazy = tab_id.clone();
+                let database_for_lazy = database_string.clone();
+                let view_for_lazy = view_string.clone();
+
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            tab_container_clone.update(cx, |container, cx| {
+                                let tab_id_clone = tab_id_for_lazy.clone();
+                                let database_clone = database_for_lazy.clone();
+                                let view_clone = view_for_lazy.clone();
+                                let config_id_clone = config_id.clone();
+                                container.activate_or_add_tab_lazy(
+                                    tab_id_for_lazy.clone(),
+                                    move |window, cx| {
+                                        let view_data = TableDataTabContent::new(
+                                            database_clone.clone(),
+                                            view_clone.clone(),
+                                            config_id_clone.clone(),
+                                            database_type,
+                                            window,
+                                            cx,
+                                        );
+                                        TabItem::new(tab_id_clone.clone(), view_data)
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                        });
+                    }
+                });
+            } else {
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("打开视图数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
+                });
+            }
+        }).detach();
     }
 
     /// 处理打开表结构事件
@@ -452,16 +452,34 @@ impl DatabaseEventHandler {
         let _tab_id = format!("table-designer-{}.{}", database, table);
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
+        let database_string = database.clone();
+        let table_string = table.clone();
 
-        if let Some(_config) = config {
-            // TODO: 实现表结构设计器
-            Self::show_warning(window, "表结构设计器功能尚未实现", cx);
-        } else {
-            Self::show_error(window, format!("打开表结构失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
+
+            if config.is_some() {
+                let database_string = database_string.clone();
+                let table_string = table_string.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            let _ = (&database_string, &table_string);
+                            Self::show_warning(window, "表结构设计器功能尚未实现", cx);
+                        });
+                    }
+                });
+            } else {
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("打开表结构失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
+                });
+            }
+        }).detach();
     }
 
     /// 处理导入数据事件
@@ -487,29 +505,49 @@ impl DatabaseEventHandler {
             let table_name = node.name.clone();
 
             let connection_id_for_error = connection_id.clone();
-            let config = Tokio::block_on(cx, async move {
-                global_state.get_config_async(&connection_id).await
-            });
+            let db_string = db.clone();
+            let table_string = table_name.clone();
 
-            if let Some(config) = config {
-                let import_view = TableImportView::new(
-                    config.id,
-                    db,
-                    Some(table_name),
-                    window,
-                    cx,
-                );
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let config = global_state.get_config_async(&connection_id).await;
 
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    dialog
-                        .title("导入数据到表")
-                        .child(import_view.clone())
-                        .width(px(900.0))
-                        .on_cancel(|_, _window, _cx| true)
-                });
-            } else {
-                Self::show_error(window, format!("导入数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-            }
+                if let Some(config) = config {
+                    let config_id = config.id;
+                    let db_for_view = db_string.clone();
+                    let table_for_view = table_string.clone();
+
+                    let _ = cx.update(|cx| {
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                let import_view = TableImportView::new(
+                                    config_id.clone(),
+                                    db_for_view.clone(),
+                                    Some(table_for_view.clone()),
+                                    window,
+                                    cx,
+                                );
+
+                                window.open_dialog(cx, move |dialog, _window, _cx| {
+                                    dialog
+                                        .title("导入数据到表")
+                                        .child(import_view.clone())
+                                        .width(px(900.0))
+                                        .on_cancel(|_, _window, _cx| true)
+                                });
+                            });
+                        }
+                    });
+                } else {
+                    let connection_id_for_error = connection_id_for_error.clone();
+                    let _ = cx.update(|cx| {
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                Self::show_error(window, format!("导入数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                            });
+                        }
+                    });
+                }
+            }).detach();
         } else {
             // 数据库节点：使用原有的导入视图（支持 SQL）
             use crate::data_import_view::DataImportView;
@@ -517,28 +555,46 @@ impl DatabaseEventHandler {
             let database = node.name.clone();
 
             let connection_id_for_error = connection_id.clone();
-            let config = Tokio::block_on(cx, async move {
-                global_state.get_config_async(&connection_id).await
-            });
+            let database_string = database.clone();
 
-            if let Some(config) = config {
-                let import_view = DataImportView::new(
-                    config.id,
-                    database,
-                    window,
-                    cx,
-                );
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let config = global_state.get_config_async(&connection_id).await;
 
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    dialog
-                        .title("导入数据")
-                        .child(import_view.clone())
-                        .width(px(800.0))
-                        .on_cancel(|_, _window, _cx| true)
-                });
-            } else {
-                Self::show_error(window, format!("导入数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-            }
+                if let Some(config) = config {
+                    let config_id = config.id;
+                    let database_for_view = database_string.clone();
+
+                    let _ = cx.update(|cx| {
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                let import_view = DataImportView::new(
+                                    config_id.clone(),
+                                    database_for_view.clone(),
+                                    window,
+                                    cx,
+                                );
+
+                                window.open_dialog(cx, move |dialog, _window, _cx| {
+                                    dialog
+                                        .title("导入数据")
+                                        .child(import_view.clone())
+                                        .width(px(800.0))
+                                        .on_cancel(|_, _window, _cx| true)
+                                });
+                            });
+                        }
+                    });
+                } else {
+                    let connection_id_for_error = connection_id_for_error.clone();
+                    let _ = cx.update(|cx| {
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                Self::show_error(window, format!("导入数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                            });
+                        }
+                    });
+                }
+            }).detach();
         }
     }
 
@@ -563,37 +619,56 @@ impl DatabaseEventHandler {
         };
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
+        let database_string = database.clone();
+        let tab_name_option = table_name.clone();
 
-        if let Some(config) = config {
-            let export_view = DataExportView::new(
-                config.id,
-                database.clone(),
-                window,
-                cx,
-            );
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
 
-            // 如果有表名则预填
-            if let Some(table) = table_name {
-                export_view.update(cx, |view, cx| {
-                    view.tables.update(cx, |state, cx| {
-                        state.set_value(table, window, cx);
-                    });
+            if let Some(config) = config {
+                let config_id = config.id;
+                let database_for_view = database_string.clone();
+                let table_name_for_view = tab_name_option.clone();
+
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            let export_view = DataExportView::new(
+                                config_id.clone(),
+                                database_for_view.clone(),
+                                window,
+                                cx,
+                            );
+
+                            if let Some(table) = table_name_for_view.clone() {
+                                export_view.update(cx, |view, cx| {
+                                    view.tables.update(cx, |state, cx| {
+                                        state.set_value(table, window, cx);
+                                    });
+                                });
+                            }
+
+                            window.open_dialog(cx, move |dialog, _window, _cx| {
+                                dialog
+                                    .title("Export Data")
+                                    .child(export_view.clone())
+                                    .width(px(800.0))
+                                    .on_cancel(|_, _window, _cx| true)
+                            });
+                        });
+                    }
+                });
+            } else {
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("导出数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
                 });
             }
-
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                dialog
-                    .title("Export Data")
-                    .child(export_view.clone())
-                    .width(px(800.0))
-                    .on_cancel(|_, _window, _cx| true)
-            });
-        } else {
-            Self::show_error(window, format!("导出数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+        }).detach();
     }
 
     /// 处理关闭连接事件
@@ -749,35 +824,50 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
 
-        if let Some(config) = config {
-            let db_type = config.database_type;
-            let registry = DatabaseViewPluginRegistry::new();
-            
-            if let Some(plugin) = registry.get(&db_type) {
-                let form = plugin.create_database_form(window, cx);
-                
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    dialog
-                        .title("创建数据库")
-                        .child(form.clone())
-                        .width(px(600.0))
-                        .on_ok(move |_, _window, _cx| {
-                           true 
-                        })
-                        .on_cancel(|_, _window, _cx| {
-                             true
-                        })
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
+
+            if let Some(config) = config {
+                let db_type = config.database_type;
+
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            let registry = DatabaseViewPluginRegistry::new();
+
+                            if let Some(plugin) = registry.get(&db_type) {
+                                let form = plugin.create_database_form(window, cx);
+
+                                window.open_dialog(cx, move |dialog, _window, _cx| {
+                                    dialog
+                                        .title("创建数据库")
+                                        .child(form.clone())
+                                        .width(px(600.0))
+                                        .on_ok(move |_, _window, _cx| {
+                                            true
+                                        })
+                                        .on_cancel(|_, _window, _cx| {
+                                            true
+                                        })
+                                });
+                            } else {
+                                Self::show_error(window, format!("创建数据库失败：不支持的数据库类型 {:?}", db_type), cx);
+                            }
+                        });
+                    }
                 });
             } else {
-                Self::show_error(window, format!("创建数据库失败：不支持的数据库类型 {:?}", db_type), cx);
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("创建数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
+                });
             }
-        } else {
-            Self::show_error(window, format!("创建数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+        }).detach();
     }
 
     /// 处理编辑数据库事件
@@ -794,37 +884,52 @@ impl DatabaseEventHandler {
         let database_name = node.name.clone();
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
+        let database_name_string = database_name.clone();
 
-        if let Some(config) = config {
-            let db_type = config.database_type;
-            let registry = DatabaseViewPluginRegistry::new();
-            
-            if let Some(plugin) = registry.get(&db_type) {
-                let form = plugin.create_database_form(window, cx);
-                
-                // TODO: 预填充现有数据库的配置信息
-                
-                window.open_dialog(cx, move |dialog, _window, _cx| {
-                    dialog
-                        .title(format!("编辑数据库: {}", database_name))
-                        .child(form.clone())
-                        .width(px(600.0))
-                        .on_ok(move |_, _window, _cx| {
-                           true 
-                        })
-                        .on_cancel(|_, _window, _cx| {
-                             true
-                        })
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
+
+            if let Some(config) = config {
+                let db_type = config.database_type;
+
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let database_name = database_name_string.clone();
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            let registry = DatabaseViewPluginRegistry::new();
+
+                            if let Some(plugin) = registry.get(&db_type) {
+                                let form = plugin.create_database_form(window, cx);
+
+                                window.open_dialog(cx, move |dialog, _window, _cx| {
+                                    dialog
+                                        .title(format!("编辑数据库: {}", database_name))
+                                        .child(form.clone())
+                                        .width(px(600.0))
+                                        .on_ok(move |_, _window, _cx| {
+                                            true
+                                        })
+                                        .on_cancel(|_, _window, _cx| {
+                                            true
+                                        })
+                                });
+                            } else {
+                                Self::show_error(window, format!("编辑数据库失败：不支持的数据库类型 {:?}", db_type), cx);
+                            }
+                        });
+                    }
                 });
             } else {
-                Self::show_error(window, format!("编辑数据库失败：不支持的数据库类型 {:?}", db_type), cx);
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("编辑数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
+                });
             }
-        } else {
-            Self::show_error(window, format!("编辑数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+        }).detach();
     }
 
 
@@ -1505,22 +1610,40 @@ impl DatabaseEventHandler {
         let database = node.name.clone();
 
         let connection_id_for_error = connection_id.clone();
-        let config = Tokio::block_on(cx, async move {
-            global_state.get_config_async(&connection_id).await
-        });
+        let database_string = database.clone();
 
-        if let Some(config) = config {
-            let dump_view = SqlDumpView::new(config.id, database, window, cx);
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
 
-            window.open_dialog(cx, move |dialog, _window, _cx| {
-                dialog
-                    .title("转储SQL文件")
-                    .child(dump_view.clone())
-                    .width(px(800.0))
-                    .on_cancel(|_, _window, _cx| true)
-            });
-        } else {
-            Self::show_error(window, format!("转储SQL文件失败：无法获取连接配置 {}", connection_id_for_error), cx);
-        }
+            if let Some(config) = config {
+                let config_id = config.id;
+                let database_for_view = database_string.clone();
+
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            let dump_view = SqlDumpView::new(config_id.clone(), database_for_view.clone(), window, cx);
+
+                            window.open_dialog(cx, move |dialog, _window, _cx| {
+                                dialog
+                                    .title("转储SQL文件")
+                                    .child(dump_view.clone())
+                                    .width(px(800.0))
+                                    .on_cancel(|_, _window, _cx| true)
+                            });
+                        });
+                    }
+                });
+            } else {
+                let connection_id_for_error = connection_id_for_error.clone();
+                let _ = cx.update(|cx| {
+                    if let Some(window_id) = cx.active_window() {
+                        let _ = cx.update_window(window_id, |_entity, window, cx| {
+                            Self::show_error(window, format!("转储SQL文件失败：无法获取连接配置 {}", connection_id_for_error), cx);
+                        });
+                    }
+                });
+            }
+        }).detach();
     }
 }

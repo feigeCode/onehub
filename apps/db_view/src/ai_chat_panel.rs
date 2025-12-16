@@ -188,7 +188,7 @@ impl AiChatPanel {
         let storage_manager = self.storage_manager.clone();
         let ai_input = self.ai_input.clone();
 
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
             use crate::ai_input::ProviderItem;
 
@@ -262,7 +262,7 @@ impl AiChatPanel {
     fn load_history_sessions(&mut self, cx: &mut Context<Self>) {
         let storage_manager = self.storage_manager.clone();
 
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
@@ -290,7 +290,7 @@ impl AiChatPanel {
     fn delete_session(&mut self, session_id: i64, cx: &mut Context<Self>) {
         let storage_manager = self.storage_manager.clone();
 
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
@@ -330,7 +330,7 @@ impl AiChatPanel {
     fn rename_session(&mut self, session_id: i64, new_name: String, cx: &mut Context<Self>) {
         let storage_manager = self.storage_manager.clone();
 
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
@@ -363,7 +363,7 @@ impl AiChatPanel {
     fn load_session(&mut self, session_id: i64, cx: &mut Context<Self>) {
         let storage_manager = self.storage_manager.clone();
 
-        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
@@ -410,7 +410,7 @@ impl AiChatPanel {
         let message_content = content.to_string();
         let message_role = role.to_string();
 
-        cx.spawn(async move |_this, cx: &mut gpui::AsyncApp| {
+        cx.spawn(async move |_this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
             if let Ok(task) = Tokio::spawn(cx, async move {
                 let pool = storage_manager.get_pool().await?;
@@ -522,17 +522,22 @@ impl AiChatPanel {
             // 保存用户消息
             let content_clone = content.clone();
             let storage_manager_for_save = storage_manager.clone();
-            let _ = Tokio::block_on(cx, async move {
+            if let Ok(task) = Tokio::spawn_result(cx, async move {
                 let pool = storage_manager_for_save.get_pool().await?;
                 let message_repo = storage_manager_for_save.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
                 let mut message = ChatMessage::new(session_db_id, "user".to_string(), content_clone);
-                message_repo.insert(&pool, &mut message).await
-            });
+                message_repo.insert(&pool, &mut message).await?;
+                Ok(())
+            }) {
+                if let Err(e) = task.await {
+                    eprintln!("Failed to save user message: {}", e);
+                }
+            }
 
             // 获取聊天历史（不包含当前消息）
             let storage_manager_for_history = storage_manager.clone();
-            let history_re = Tokio::block_on(cx, async move {
+            let history_task = Tokio::spawn_result(cx, async move {
                 let pool = storage_manager_for_history.get_pool().await?;
                 let message_repo = storage_manager_for_history.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
@@ -543,9 +548,18 @@ impl AiChatPanel {
                         content: msg.content.clone(),
                     }).collect()
                 )
-            }).unwrap();
+            });
 
-            let mut history = history_re.unwrap_or_else(|_| vec![]);
+            let mut history = match history_task {
+                Ok(task) => task.await.unwrap_or_else(|e| {
+                    eprintln!("Failed to load chat history: {}", e);
+                    vec![]
+                }),
+                Err(e) => {
+                    eprintln!("Failed to start chat history task: {}", e);
+                    vec![]
+                }
+            };
 
             // 确保当前用户消息在历史中
             if history.is_empty() || history.last().map(|m| &m.content) != Some(&content) {
@@ -673,17 +687,21 @@ impl AiChatPanel {
                         let final_content_inner = final_content.clone();
                         cx.spawn(async move |_this, cx: &mut AsyncApp| {
                             use one_core::gpui_tokio::Tokio;
-                            let res = Tokio::block_on(cx, async move {
+                            match Tokio::spawn_result(cx, async move {
                                 let pool = storage_manager_final.get_pool().await?;
                                 let message_repo = storage_manager_final.get::<MessageRepository>().await
                                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
                                 let mut assistant_message = ChatMessage::new(session_db_id, "assistant".to_string(), final_content_inner);
-                                message_repo.insert(&pool, &mut assistant_message).await
-                            }).unwrap();
-                            match res {
-                                Ok(_) => {}
+                                message_repo.insert(&pool, &mut assistant_message).await?;
+                                Ok(())
+                            }) {
+                                Ok(task) => {
+                                    if let Err(e) = task.await {
+                                        eprintln!("Error saving assistant message: {}", e);
+                                    }
+                                }
                                 Err(e) => {
-                                    eprintln!("Error saving assistant message: {:?}", e);
+                                    eprintln!("Failed to schedule assistant message save: {}", e);
                                 }
                             }
                         }).detach();
@@ -1009,7 +1027,7 @@ impl AiChatPanel {
             .into_any_element()
     }
 
-    fn render_assistant_message(&self, msg: &ChatMessageUI, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_assistant_message(&self, msg: &ChatMessageUI, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if msg.is_streaming && msg.content.is_empty() {
             return h_flex()
                 .gap_2()

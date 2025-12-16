@@ -158,6 +158,45 @@ impl EditorTableDelegate {
         &self.primary_key_columns
     }
 
+    /// Record a cell change (used by external editors like large text editor)
+    ///
+    /// This method handles tracking cell changes and updating row status.
+    /// It's similar to `on_cell_edited` but can be called directly from external code.
+    pub fn record_cell_change(&mut self, row_ix: usize, col_ix: usize, new_value: String) -> bool {
+        // Get old value from current rows
+        let Some(row) = self.rows.get_mut(row_ix) else {
+            return false;
+        };
+        let Some(cell) = row.get_mut(col_ix) else {
+            return false;
+        };
+
+        // If value hasn't changed, don't record
+        if *cell == new_value {
+            self.modified_cells.retain(|&(r, c)| r != row_ix || c != col_ix);
+            return false;
+        }
+
+        let old_value = cell.clone();
+        *cell = new_value.clone();
+
+        // Mark cell as modified for UI
+        self.modified_cells.insert((row_ix, col_ix));
+
+        // Track the change only if not a new row
+        if !self.is_new_row(row_ix) {
+            self.cell_changes
+                .entry((row_ix, col_ix))
+                .and_modify(|(_, new)| *new = new_value.clone())
+                .or_insert((old_value, new_value));
+
+            // Update row status
+            self.row_status.insert(row_ix, RowStatus::Modified);
+        }
+
+        true
+    }
+
     pub fn update_data(&mut self, columns: Vec<Column>, rows: Vec<Vec<String>>, _cx: &mut App) {
         // Calculate column widths based on content
         let mut col_widths: Vec<usize> = columns.iter().map(|c| c.name.len()).collect();
@@ -262,6 +301,25 @@ impl EditorTableDelegate {
         self.new_rows.clear();
     }
 
+    /// Revert all changes and restore to original state
+    ///
+    /// This method:
+    /// 1. Restores row data to original values
+    /// 2. Removes all newly added rows
+    /// 3. Restores deleted rows
+    /// 4. Clears all change tracking
+    pub fn revert_all_changes(&mut self) {
+        // Restore rows to original state
+        self.rows = self.original_rows.clone();
+
+        // Restore row_index_map for restored rows
+        let row_count = self.rows.len();
+        self.row_index_map = (0..row_count).map(|i| (i, i)).collect();
+
+        // Clear all change tracking
+        self.clear_changes();
+    }
+
     /// Check if there are any pending changes
     pub fn has_changes(&self) -> bool {
         !self.cell_changes.is_empty()
@@ -323,6 +381,16 @@ impl EditorTableDelegate {
             indices.len()
         } else {
             self.rows.len()
+        }
+    }
+
+    pub fn resolve_display_row(&self, display_row_ix: usize) -> Option<usize> {
+        if let Some(ref indices) = self.filtered_row_indices {
+            indices.get(display_row_ix).copied()
+        } else if display_row_ix < self.rows.len() {
+            Some(display_row_ix)
+        } else {
+            None
         }
     }
 
@@ -464,10 +532,11 @@ impl TableDelegate for EditorTableDelegate {
             state
         });
 
-        let _sub = cx.subscribe_in(&input, window,move |table, _, evt: &InputEvent, window, cx| {
+        let _sub = cx.subscribe_in(&input, window,move |_table, _, evt: &InputEvent, _window, _cx| {
             match evt {
                 InputEvent::Blur => {
-                    table.cancel_cell_edit(cx)
+                    // Don't cancel the edit on blur - let the normal input handling take care of it
+                    // This allows the user's changes to be preserved
                 }
                 _ => {}
             }
@@ -718,58 +787,3 @@ impl EditorTableDelegate {
 }
 
 
-pub struct ResultsDelegate {
-    pub columns: Vec<Column>,
-    pub rows: Vec<Vec<String>>,
-}
-
-impl Clone for ResultsDelegate {
-    fn clone(&self) -> Self {
-        Self {
-            columns: self.columns.clone(),
-            rows: self.rows.clone(),
-        }
-    }
-}
-
-impl ResultsDelegate {
-    pub(crate) fn new(columns: Vec<Column>, rows: Vec<Vec<String>>) -> Self {
-        Self {
-            columns,
-            rows,
-        }
-    }
-
-    pub(crate) fn update_data(&mut self, columns: Vec<Column>, rows: Vec<Vec<String>>) {
-        self.columns = columns;
-        self.rows = rows;
-    }
-}
-
-impl TableDelegate for ResultsDelegate {
-    fn row_number_enabled(&self, _cx: &App) -> bool {
-        true
-    }
-    fn columns_count(&self, _cx: &App) -> usize {
-        self.columns.len()
-    }
-    fn rows_count(&self, _cx: &App) -> usize {
-        self.rows.len()
-    }
-    fn column(&self, col_ix: usize, _cx: &App) -> Column {
-        self.columns[col_ix].clone()
-    }
-    fn render_td(
-        &mut self,
-        row: usize,
-        col: usize,
-        _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        self.rows
-            .get(row)
-            .and_then(|r| r.get(col))
-            .cloned()
-            .unwrap_or_default()
-    }
-}

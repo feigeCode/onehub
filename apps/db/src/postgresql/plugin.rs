@@ -285,6 +285,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Database,
             title: format!("{} database(s)", databases.len()),
             columns,
             rows,
@@ -393,6 +394,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Table,
             title: format!("{} table(s)", tables.len()),
             columns,
             rows,
@@ -457,6 +459,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Column,
             title: format!("{} column(s)", columns_data.len()),
             columns,
             rows,
@@ -527,6 +530,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Index,
             title: format!("{} index(es)", indexes.len()),
             columns,
             rows,
@@ -574,6 +578,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::View,
             title: format!("{} view(s)", views.len()),
             columns,
             rows,
@@ -622,6 +627,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Function,
             title: format!("{} function(s)", functions.len()),
             columns,
             rows,
@@ -667,6 +673,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Procedure,
             title: format!("{} procedure(s)", procedures.len()),
             columns,
             rows,
@@ -723,6 +730,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Trigger,
             title: format!("{} trigger(s)", triggers.len()),
             columns,
             rows,
@@ -781,6 +789,7 @@ impl DatabasePlugin for PostgresPlugin {
         }).collect();
         
         Ok(ObjectView {
+            db_node_type: DbNodeType::Sequence,
             title: format!("{} sequence(s)", sequences.len()),
             columns,
             rows,

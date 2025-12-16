@@ -16,8 +16,9 @@ pub enum SqlValue {
 }
 
 /// Database tree node types for hierarchical display
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum DbNodeType {
+    #[default]
     Connection,
     Database,
     TablesFolder,
@@ -449,8 +450,9 @@ pub struct AlterSequenceRequest {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ObjectView {
+    pub db_node_type: DbNodeType,
     pub title: String,
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<String>>,

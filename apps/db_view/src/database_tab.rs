@@ -3,7 +3,6 @@ use std::any::Any;
 use db::GlobalDbState;
 use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, AsyncApp, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window};
 use gpui_component::{h_flex, resizable::{h_resizable, resizable_panel}, v_flex, ActiveTheme, IconName};
-
 use crate::database_objects_tab::DatabaseObjectsPanel;
 use crate::db_tree_event::DatabaseEventHandler;
 use crate::db_tree_view::DbTreeView;
@@ -37,7 +36,7 @@ impl DatabaseTabContent {
 
         // Create objects panel
         let objects_panel = cx.new(|cx| {
-            DatabaseObjectsPanel::new(window, cx)
+            DatabaseObjectsPanel::new(workspace.clone(),window, cx)
         });
 
 
