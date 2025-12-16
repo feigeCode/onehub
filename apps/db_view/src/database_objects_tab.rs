@@ -1,15 +1,16 @@
 use std::any::Any;
-
+use std::sync::Arc;
+use std::time::Duration;
 use anyhow::anyhow;
 use db::{DbNode, DbNodeType, GlobalDbState, ObjectView};
-use gpui::{div, AnyElement, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, SharedString, Styled, Window};
-use gpui_component::{
-    table::{Column, Table, TableDelegate, TableState},
-    v_flex, Size,
-};
+use gpui::{div, AnyElement, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window};
+use gpui_component::{h_flex, table::{Column, Table, TableDelegate, TableState}, v_flex, ActiveTheme, Icon, IconName, Sizable, Size};
+use gpui_component::button::Button;
+use gpui_component::input::{Input, InputEvent, InputState};
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{ConnectionRepository, DbConnectionConfig, GlobalStorageState, Workspace};
 use one_core::tab_container::{TabContent, TabContentType};
+use one_core::utils::debouncer::Debouncer;
 
 fn format_timestamp(ts: i64) -> String {
     let secs = ts / 1000;
@@ -25,25 +26,65 @@ pub enum DatabaseObjectsEvent {
     TableFirstColumnClicked { row: usize },
 }
 
-pub struct DatabaseObjectsPanel {
+pub struct DatabaseObjects {
     loaded_data: Entity<ObjectView>,
     table_state: Entity<TableState<ResultsDelegate>>,
     focus_handle: FocusHandle,
-    workspace: Option<Workspace>
+    workspace: Option<Workspace>,
+    // 搜索输入框状态
+    search_input: Entity<InputState>,
+    // 搜索关键字
+    search_query: String,
+    // 搜索防抖序列号
+    search_seq: u64,
+    search_debouncer: Arc<Debouncer>,
+
+    _sub: Option<Subscription>
 }
 
-impl DatabaseObjectsPanel {
+impl DatabaseObjects {
     pub fn new(workspace: Option<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let loaded_data = cx.new(|_| ObjectView::default());
         let delegate = ResultsDelegate::new(vec![], vec![]);
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
         let focus_handle = cx.focus_handle();
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索...").clean_on_escape()
+        });
+        let search_debouncer = Arc::new(Debouncer::new(Duration::from_millis(250)));
 
+        let _sub = cx.subscribe_in(&search_input, window, |this: &mut Self, input: &Entity<InputState>, event: &InputEvent, _window, cx: &mut Context<Self>| {
+            if let InputEvent::Change = event {
+                let query = input.read(cx).text().to_string();
+
+                this.search_seq += 1;
+                let current_seq = this.search_seq;
+                let debouncer = Arc::clone(&this.search_debouncer);
+                let query_for_task = query.clone();
+
+                cx.spawn(async move |view, cx| {
+                    if debouncer.debounce().await {
+                        _ = view.update(cx, |this, cx| {
+                            if this.search_seq == current_seq {
+                                this.search_query = query_for_task.clone();
+                                // TODO 待实现搜索
+                                println!("Searching for {}", query)
+                            }
+                        });
+                    }
+                }).detach();
+            }
+        });
         Self {
             loaded_data,
             table_state,
             focus_handle,
-            workspace
+            workspace,
+            search_input,
+            search_query: "".to_string(),
+            search_seq: 0,
+            search_debouncer,
+            _sub: Some(_sub)
         }
     }
 
@@ -220,6 +261,124 @@ impl DatabaseObjectsPanel {
     }
 }
 
+impl Render for DatabaseObjects {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let loaded_data = self.loaded_data.read(cx);
+        let title = loaded_data.title.clone();
+
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .child(
+                        Button::new("refresh-data")
+                            .with_size(Size::Medium)
+                            .icon(IconName::Refresh)
+                            .tooltip("刷新")
+                    )
+                    .child(
+                        Button::new("add-row")
+                            .with_size(Size::Medium)
+                            .icon(IconName::Plus)
+                            .tooltip("新增")
+                    )
+                    .child(
+                        Button::new("delete-row")
+                            .with_size(Size::Medium)
+                            .icon(IconName::Minus)
+                            .tooltip("删除")
+                    )
+                    .child(
+                        Button::new("edit")
+                            .with_size(Size::Medium)
+                            .icon(IconName::Edit)
+                            .tooltip("撤销")
+                    )
+                    .child(div().flex_1())
+                    .child({
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.search_input)
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .cleanable(true)
+                                .small()
+                                .w_full())
+                    })
+                    .into_any_element()
+            )
+            .child(
+                v_flex()
+                    .size_full()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_hidden()
+                            .child(Table::new(&self.table_state)
+                                .stripe(false)
+                                .bordered(true)),
+                    ))
+            .child(div().p_2().text_sm().child(title))
+    }
+}
+
+
+impl Clone for DatabaseObjects {
+    fn clone(&self) -> Self {
+        Self {
+            loaded_data: self.loaded_data.clone(),
+            table_state: self.table_state.clone(),
+            focus_handle: self.focus_handle.clone(),
+            workspace: self.workspace.clone(),
+            search_input: self.search_input.clone(),
+            search_seq: self.search_seq.clone(),
+            search_query: self.search_query.clone(),
+            search_debouncer: self.search_debouncer.clone(),
+
+            _sub: None
+        }
+    }
+}
+
+impl Focusable for DatabaseObjects {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+
+pub struct DatabaseObjectsPanel {
+    database_objects: Entity<DatabaseObjects>
+}
+
+impl DatabaseObjectsPanel {
+
+
+    pub fn new(workspace: Option<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+
+        let database_objects = cx.new(|cx| DatabaseObjects::new(workspace, window, cx));
+
+        Self {
+            database_objects
+        }
+    }
+
+    pub fn handle_node_selected(&self, node: DbNode, config: DbConnectionConfig, cx: &mut App) {
+        self.database_objects.update(cx, |database_objects, cx| {
+            database_objects.handle_node_selected(node, config, cx);
+        })
+    }
+}
 
 impl TabContent for DatabaseObjectsPanel {
     fn title(&self) -> SharedString {
@@ -230,25 +389,7 @@ impl TabContent for DatabaseObjectsPanel {
         false
     }
     fn render_content(&self, _window: &mut Window, cx: &mut App) -> AnyElement {
-        let loaded_data = self.loaded_data.read(cx);
-        let title = loaded_data.title.clone();
-        // TODO 支持搜索表格，安装第一列过滤
-        div()
-            .size_full()
-            .child( 
-                v_flex()
-                .size_full()
-                .gap_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .child(Table::new(&self.table_state)
-                            .stripe(true)
-                            .bordered(true)),
-                ))
-            .child(div().p_2().text_sm().child(title))
-            .into_any_element()
+            self.database_objects.clone().into_any_element()
     }
 
     fn content_type(&self) -> TabContentType {
@@ -263,19 +404,11 @@ impl TabContent for DatabaseObjectsPanel {
     }
 }
 
-impl Focusable for DatabaseObjectsPanel {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
 impl Clone for DatabaseObjectsPanel {
     fn clone(&self) -> Self {
+
         Self {
-            loaded_data: self.loaded_data.clone(),
-            table_state: self.table_state.clone(),
-            focus_handle: self.focus_handle.clone(),
-            workspace: self.workspace.clone()
+            database_objects: self.database_objects.clone(),
         }
     }
 }
