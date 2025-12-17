@@ -163,11 +163,13 @@ impl DataGrid {
         columns: Vec<Column>,
         rows: Vec<Vec<String>>,
         pk_columns: Vec<usize>,
+        uk_columns: Vec<usize>,
         cx: &mut App,
     ) {
         self.table.update(cx, |state, cx| {
             state.delegate_mut().update_data(columns, rows, cx);
             state.delegate_mut().set_primary_keys(pk_columns);
+            state.delegate_mut().set_unique_keys(uk_columns);
             state.refresh(cx);
         });
     }
@@ -321,6 +323,10 @@ impl DataGrid {
         self.table.read(cx).delegate().primary_key_columns().to_vec()
     }
 
+    pub fn unique_key_columns(&self, cx: &App) -> Vec<usize> {
+        self.table.read(cx).delegate().unique_key_columns().to_vec()
+    }
+
     pub fn clear_changes(&self, cx: &mut App) {
         self.table.update(cx, |state, cx| {
             state.delegate_mut().clear_changes();
@@ -392,6 +398,7 @@ impl DataGrid {
 
         let column_names = self.column_names(cx);
         let pk_columns = self.primary_key_columns(cx);
+        let uk_columns = self.unique_key_columns(cx);
         let table_changes = Self::convert_row_changes(changes, &column_names);
 
         if table_changes.is_empty() {
@@ -403,6 +410,7 @@ impl DataGrid {
             table: self.config.table_name.clone(),
             column_names,
             primary_key_indices: pk_columns,
+            unique_key_indices: uk_columns,
             changes: table_changes,
         })
     }

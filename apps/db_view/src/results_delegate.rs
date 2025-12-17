@@ -76,6 +76,8 @@ pub struct EditorTableDelegate {
     new_rows: HashMap<usize, Vec<String>>,
     /// Primary key column indices
     primary_key_columns: Vec<usize>,
+    /// Unique key column indices (alternative when no primary key)
+    unique_key_columns: Vec<usize>,
     /// Active filter columns (for UI indication)
     active_filter_columns: HashSet<usize>,
     /// Filtered row indices (None means no filter, show all rows)
@@ -100,6 +102,7 @@ impl Clone for EditorTableDelegate {
             next_new_row_id: self.next_new_row_id,
             new_rows: self.new_rows.clone(),
             primary_key_columns: self.primary_key_columns.clone(),
+            unique_key_columns: self.unique_key_columns.clone(),
             active_filter_columns: self.active_filter_columns.clone(),
             filtered_row_indices: self.filtered_row_indices.clone(),
             column_filters: self.column_filters.clone(),
@@ -124,6 +127,7 @@ impl EditorTableDelegate {
             next_new_row_id: 1_000_000,
             new_rows: HashMap::new(),
             primary_key_columns: Vec::new(),
+            unique_key_columns: Vec::new(),
             active_filter_columns: HashSet::new(),
             filtered_row_indices: None,
             column_filters: HashMap::new(),
@@ -156,6 +160,16 @@ impl EditorTableDelegate {
     /// Get primary key column indices
     pub fn primary_key_columns(&self) -> &[usize] {
         &self.primary_key_columns
+    }
+
+    /// Set unique key column indices
+    pub fn set_unique_keys(&mut self, uk_columns: Vec<usize>) {
+        self.unique_key_columns = uk_columns;
+    }
+
+    /// Get unique key column indices
+    pub fn unique_key_columns(&self) -> &[usize] {
+        &self.unique_key_columns
     }
 
     /// Record a cell change (used by external editors like large text editor)

@@ -626,6 +626,8 @@ pub struct TableSaveRequest {
     pub table: String,
     pub column_names: Vec<String>,
     pub primary_key_indices: Vec<usize>,
+    /// Indices of columns that form unique constraints (alternative to primary key)
+    pub unique_key_indices: Vec<usize>,
     pub changes: Vec<TableRowChange>,
 }
 
@@ -715,6 +717,8 @@ pub struct TableDataResponse {
     pub page_size: usize,
     /// Primary key column indices
     pub primary_key_indices: Vec<usize>,
+    /// Unique key column indices (alternative when no primary key)
+    pub unique_key_indices: Vec<usize>,
     /// The SQL query that was executed
     pub executed_sql: String,
     /// Duration of the query

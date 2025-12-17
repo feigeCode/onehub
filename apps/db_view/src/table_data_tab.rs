@@ -181,6 +181,7 @@ impl TableData {
                         .collect();
 
                     let pk_columns = response.primary_key_indices;
+                    let uk_columns = response.unique_key_indices;
 
                     // 更新统一的状态信息
                     cx.update(|cx| {
@@ -224,7 +225,7 @@ impl TableData {
 
                         // Update DataGrid
                         data_grid.update(cx, |grid, cx| {
-                            grid.update_data(columns, rows, pk_columns, cx)
+                            grid.update_data(columns, rows, pk_columns, uk_columns, cx)
                         });
                     }).ok();
                 }

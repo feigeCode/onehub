@@ -540,6 +540,26 @@ pub trait DatabasePlugin: Send + Sync {
             .map(|c| c.index)
             .collect();
 
+        // Get unique key indices from indexes
+        let unique_key_indices = if primary_key_indices.is_empty() {
+            let indexes = self.list_indexes(connection, &request.database, &request.table).await.unwrap_or_default();
+            // Find first unique index and get its column indices
+            indexes
+                .iter()
+                .find(|idx| idx.is_unique)
+                .map(|idx| {
+                    idx.columns
+                        .iter()
+                        .filter_map(|col_name| {
+                            columns.iter().find(|c| &c.name == col_name).map(|c| c.index)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         // Build WHERE clause: raw clause takes priority, then structured filters
         let where_clause = if let Some(raw_where) = &request.where_clause {
             if raw_where.is_empty() {
@@ -656,6 +676,7 @@ pub trait DatabasePlugin: Send + Sync {
             page: request.page,
             page_size: request.page_size,
             primary_key_indices,
+            unique_key_indices,
             executed_sql: data_sql,
             duration,
         })
@@ -787,26 +808,57 @@ pub trait DatabasePlugin: Send + Sync {
                     })
                     .collect();
 
-                let where_clause = self.build_table_change_where_clause(request, original_data);
+                let (where_clause, limit_clause) = self.build_where_and_limit_clause(request, original_data);
 
                 Some(format!(
-                    "UPDATE {} SET {}{}{}",
+                    "UPDATE {} SET {}{}{}{}",
                     table_ident,
                     set_clause.join(", "),
                     if where_clause.is_empty() { "" } else { " WHERE " },
-                    where_clause
+                    where_clause,
+                    limit_clause
                 ))
             }
             TableRowChange::Deleted { original_data } => {
-                let where_clause = self.build_table_change_where_clause(request, original_data);
+                let (where_clause, limit_clause) = self.build_where_and_limit_clause(request, original_data);
 
                 Some(format!(
-                    "DELETE FROM {}{}{}",
+                    "DELETE FROM {}{}{}{}",
                     table_ident,
                     if where_clause.is_empty() { "" } else { " WHERE " },
-                    where_clause
+                    where_clause,
+                    limit_clause
                 ))
             }
+        }
+    }
+
+    fn build_limit_clause(&self) -> String {
+        match self.name() {
+            DatabaseType::MySQL => " LIMIT 1".to_string(),
+            DatabaseType::PostgreSQL => " LIMIT 1".to_string(),
+            DatabaseType::MSSQL => " FETCH FIRST 1 ROWS ONLY".to_string(),
+            DatabaseType::Oracle => String::new(),
+        }
+    }
+
+    fn build_where_and_limit_clause(
+        &self,
+        request: &TableSaveRequest,
+        original_data: &[String],
+    ) -> (String, String) {
+        let mut where_clause = self.build_table_change_where_clause(request, original_data);
+
+        // Add LIMIT/ROWNUM constraint based on database type
+        if self.name() == DatabaseType::Oracle {
+            if where_clause.is_empty() {
+                where_clause = "ROWNUM <= 1".to_string();
+            } else {
+                where_clause = format!("{} AND ROWNUM <= 1", where_clause);
+            }
+            (where_clause, String::new())
+        } else {
+            (where_clause, self.build_limit_clause())
         }
     }
 
@@ -815,10 +867,14 @@ pub trait DatabasePlugin: Send + Sync {
         request: &TableSaveRequest,
         original_data: &[String],
     ) -> String {
-        let indices: Vec<usize> = if request.primary_key_indices.is_empty() {
-            (0..request.column_names.len()).collect()
-        } else {
+        // Priority: use primary key > unique key > all columns
+        let indices: Vec<usize> = if !request.primary_key_indices.is_empty() {
             request.primary_key_indices.clone()
+        } else if !request.unique_key_indices.is_empty() {
+            request.unique_key_indices.clone()
+        } else {
+            // Fallback: use all columns when no primary key or unique key
+            (0..request.column_names.len()).collect()
         };
 
         let mut parts = Vec::new();

@@ -106,7 +106,7 @@ impl SqlResultTabContainer {
 
                     // 更新DataGrid数据
                     data_grid.update(cx, |this,cx|{
-                        this.update_data(columns, rows, vec![], cx);
+                        this.update_data(columns, rows, vec![], vec![], cx);
                     });
 
                     let tab = SqlResultTab {
