@@ -322,9 +322,7 @@ where
         self.selected_cell = Some((row_ix, col_ix));
         self.selected_col = None;
         self.selected_row = None;
-        if let Some(col_ix) = self.selected_col {
-            self.scroll_to_col(col_ix, cx);
-        }
+        self.scroll_to_col(col_ix, cx);
         cx.emit(TableEvent::SelectCell(row_ix, col_ix));
         cx.notify();
     }
@@ -1268,7 +1266,7 @@ where
 
     fn render_sort_icon(
         &self,
-        col_ix: usize,
+        col_ix: usize,  // Note: This is the col_groups index (including row number column)
         col_group: &ColGroup,
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -1311,7 +1309,7 @@ where
 
     fn render_filter_icon(
         &self,
-        col_ix: usize,
+        col_ix: usize,  // Note: This is delegate_col_ix (excluding row number column)
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
@@ -1498,7 +1496,7 @@ where
                                 this.children(self.render_filter_icon(delegate_col_ix, window, cx))
                             })
                             .when(!is_row_number_col, |this| {
-                                this.children(self.render_sort_icon(delegate_col_ix,&col_group, window, cx))
+                                this.children(self.render_sort_icon(col_ix, &col_group, window, cx))
                             })
                     )
                     .when(movable, |this| {
@@ -1533,7 +1531,7 @@ where
                     }),
             )
             // resize handle
-            .child(self.render_resize_handle(delegate_col_ix, window, cx))
+            .child(self.render_resize_handle(col_ix, window, cx))
             // to save the bounds of this col.
             .child({
                 let view = cx.entity().clone();
@@ -1657,6 +1655,7 @@ where
         let is_stripe_row = self.options.stripe && row_ix % 2 != 0;
         let is_selected = self.selected_row == Some(row_ix);
         let is_row_deleted = self.delegate.is_row_deleted(row_ix, cx);
+        let is_row_added = self.delegate.is_row_added(row_ix, cx);
         let view = cx.entity().clone();
         let row_height = self.options.size.table_row_height();
 
@@ -1676,6 +1675,9 @@ where
                 .when(is_stripe_row && !is_row_deleted, |this| this.bg(cx.theme().table_even))
                 .when(is_row_deleted, |this| {
                     this.opacity(0.5).line_through().bg(cx.theme().warning.opacity(0.1))
+                })
+                .when(is_row_added && !is_row_deleted, |this| {
+                    this.bg(cx.theme().success.opacity(0.1))
                 })
                 .refine_style(&style)
                 .hover(|this| {

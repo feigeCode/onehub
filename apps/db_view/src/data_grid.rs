@@ -1,5 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, px, AnyElement, App, AsyncApp, ClickEvent, Context, Entity, IntoElement, ParentElement, SharedString, Styled, Subscription, Window};
+use tracing::log::trace;
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
@@ -87,26 +88,6 @@ impl DataGridConfig {
     }
 }
 
-/// 编辑器状态 - 合并 editing_large_text 和 editor_visible
-///
-/// 跟踪当前编辑器的状态，包括当前正在编辑的单元格位置。
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct EditorState {
-    /// 当前编辑的单元格位置，None 表示编辑器不可见
-    editing_cell: Option<(usize, usize)>,
-}
-
-impl EditorState {
-    fn is_visible(&self) -> bool {
-        self.editing_cell.is_some()
-    }
-
-    fn set_editing_cell(&mut self, cell: Option<(usize, usize)>) {
-        self.editing_cell = cell;
-    }
-
-}
-
 /// 数据表格组件
 ///
 /// 提供一个可编辑的数据表格界面，支持增删改查操作，并能生成相应的SQL语句。
@@ -115,23 +96,19 @@ pub struct DataGrid {
     config: DataGridConfig,
     /// 内部表格状态
     pub(crate) table: Entity<TableState<EditorTableDelegate>>,
-    /// 编辑器状态
-    editor_state: Entity<EditorState>,
     /// 表格事件订阅
     _table_sub: Option<Subscription>,
 }
 
 impl DataGrid {
     pub fn new(config: DataGridConfig, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let editable = config.editable;
         let table = cx.new(|cx| {
-            TableState::new(EditorTableDelegate::new(vec![], vec![], window, cx), window, cx)
+            TableState::new(EditorTableDelegate::new(vec![], vec![], editable, window, cx), window, cx)
         });
-        let editor_state = cx.new(|_| EditorState::default());
-
         let mut result = Self {
             config,
             table,
-            editor_state,
             _table_sub: None,
         };
         result.bind_table_event(window, cx);
@@ -139,14 +116,9 @@ impl DataGrid {
     }
 
     fn bind_table_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let sub = cx.subscribe_in(&self.table, window, |this, _, evt: &TableEvent, window, cx| {
+        let sub = cx.subscribe_in(&self.table, window, |_this, _, evt: &TableEvent, _window, _cx| {
             if let TableEvent::SelectCell(row, col) = evt {
-                let state = this.editor_state.read(cx);
-                if let Some((old_row, old_col)) = state.editing_cell {
-                    if *row != old_row || *col != old_col {
-                        // TODO 待完成
-                    }
-                }
+               trace!("select cell: {:?}", (row, col))
             }
         });
         self._table_sub = Some(sub);
@@ -174,58 +146,16 @@ impl DataGrid {
         });
     }
 
-
-    /// 加载单元格内容到编辑器
-    fn load_cell_to_editor(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut App) {
-        let value = {
-            let table = self.table.read(cx);
-            let delegate = table.delegate();
-            let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
-                return;
-            };
-            delegate
-                .rows
-                .get(actual_row_ix)
-                .and_then(|r| r.get(col_ix - 1))
-                .cloned()
-                .unwrap_or_default()
-        };
-
-        self.editor_state.update(cx, |state, cx| {
-            state.set_editing_cell(Some((row_ix, col_ix)));
-            cx.notify();
-        });
-    }
-
-
-
-    /// 切换编辑器显示状态
-    fn toggle_editor(&self, window: &mut Window, cx: &mut App) {
-        self.show_large_text_editor(window, cx);
-    }
-
     /// 显示大文本编辑器对话框 - 只使用普通文本编辑器
     fn show_large_text_editor(&self, window: &mut Window, cx: &mut App) {
-        let state = self.editor_state.read(cx);
-        if state.editing_cell.is_none() {
-            // 如果没有正在编辑的单元格，使用当前选中的单元格
-            let (row_ix, col_ix) = {
-                let table = self.table.read(cx);
-                table
-                    .editing_cell()
-                    .or_else(|| table.selected_cell())
-                    .unwrap_or((0, 1))
-            };
-
-            // 先加载单元格内容到编辑器
-            self.load_cell_to_editor(row_ix, col_ix, window, cx);
-        }
-
-        let state = self.editor_state.read(cx);
-        let Some((row_ix, col_ix)) = state.editing_cell else {
-            return;
-        };
+        // 如果没有正在编辑的单元格，使用当前选中的单元格
         let table = self.table.read(cx);
+        let cell = table.selected_cell();
+        if cell.is_none() {
+            window.push_notification("请选择一个单元格".to_string(), cx);
+            return;
+        }
+        let (row_ix, col_ix) = cell.unwrap();
         let delegate = table.delegate();
         let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
             return;
@@ -625,10 +555,9 @@ impl DataGrid {
         global_state: GlobalDbState,
         connection_id: String,
         database_name: String,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
-        window.push_notification("正在执行SQL...", cx);
         let data_grid = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -642,9 +571,6 @@ impl DataGrid {
                 Ok(_) => {
                     cx.update(|cx| {
                         data_grid.clear_changes(cx);
-                        notification(cx, "SQL执行成功，数据已刷新".to_string());
-                        // TODO: 这里可以添加刷新数据网格的逻辑
-                        // 需要重新加载表格数据以反映数据库中的最新状态
                     }).ok();
                 }
                 Err(error_msg) => {
@@ -667,6 +593,7 @@ impl DataGrid {
         let this_for_editor = self.clone();
         let this_for_undo = self.clone();
         let on_save = self.clone();
+        let editable = self.config.editable;
 
         h_flex()
             .gap_1()
@@ -686,68 +613,81 @@ impl DataGrid {
                         move |_, _, cx| on_refresh(cx)
                     }),
             )
-            .child(
-                Button::new("add-row")
-                    .with_size(Size::Medium)
-                    .icon(IconName::Plus)
-                    .tooltip("添加行")
-                    .on_click({
-                        let table = table.clone();
-                        move |_, w, cx| table.update(cx, |state, cx| state.add_row(w, cx))
-                    }),
-            )
-            .child(
-                Button::new("delete-row")
-                    .with_size(Size::Medium)
-                    .icon(IconName::Minus)
-                    .tooltip("删除行")
-                    .on_click({
-                        let table = table.clone();
-                        move |_, w, cx| {
-                            table.update(cx, |state, cx| {
-                                if let Some(row_ix) = state.selected_row() {
-                                    state.delete_row(row_ix, w, cx);
-                                }
-                            })
-                        }
-                    }),
-            )
-            .child(
-                Button::new("undo-changes")
-                    .with_size(Size::Medium)
-                    .icon(IconName::Undo)
-                    .tooltip("撤销")
-                    .on_click(move |_, _, cx| this_for_undo.revert_changes(cx)),
-            )
-            .child(
-                Button::new("sql-preview")
-                    .with_size(Size::Medium)
-                    .icon(IconName::Eye)
-                    .tooltip("SQL预览")
-                    .on_click(move |_, w, cx| this_for_sql.show_sql_preview(w, cx)),
-            )
-            .child(
-                Button::new("commit-changes")
-                    .with_size(Size::Medium)
-                    .icon(IconName::ArrowUp)
-                    .tooltip("提交更改")
-                    .on_click(move |c, window, cx| on_save.handle_save_changes(c, window, cx)),
-            )
+            // 添加行按钮 - 只在可编辑时显示
+            .when(editable, |this| {
+                this.child(
+                    Button::new("add-row")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("添加行")
+                        .on_click({
+                            let table = table.clone();
+                            move |_, w, cx| table.update(cx, |state, cx| state.add_row(w, cx))
+                        }),
+                )
+            })
+            // 删除行按钮 - 只在可编辑时显示
+            .when(editable, |this| {
+                this.child(
+                    Button::new("delete-row")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除行")
+                        .on_click({
+                            let table = table.clone();
+                            move |_, w, cx| {
+                                table.update(cx, |state, cx| {
+                                    if let Some(row_ix) = state.selected_row() {
+                                        state.delete_row(row_ix, w, cx);
+                                    }
+                                })
+                            }
+                        }),
+                )
+            })
+            // 撤销按钮 - 只在可编辑时显示
+            .when(editable, |this| {
+                this.child(
+                    Button::new("undo-changes")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Undo)
+                        .tooltip("撤销")
+                        .on_click(move |_, _, cx| this_for_undo.clone().revert_changes(cx)),
+                )
+            })
+            // SQL预览按钮 - 只在可编辑时显示
+            .when(editable, |this| {
+                this.child(
+                    Button::new("sql-preview")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Eye)
+                        .tooltip("SQL预览")
+                        .on_click(move |_, w, cx| this_for_sql.clone().show_sql_preview(w, cx)),
+                )
+            })
+            // 提交更改按钮 - 只在可编辑时显示
+            .when(editable, |this| {
+                this.child(
+                    Button::new("commit-changes")
+                        .with_size(Size::Medium)
+                        .icon(IconName::ArrowUp)
+                        .tooltip("提交更改")
+                        .on_click(move |c, window, cx| on_save.clone().handle_save_changes(c, window, cx)),
+                )
+            })
             .child(div().flex_1())
             .child({
                 Button::new("toggle-editor")
                     .with_size(Size::Medium)
                     .icon(IconName::EditBorder)
                     .tooltip("大文本编辑器")
-                    .on_click(move |_, w, cx| this_for_editor.toggle_editor(w, cx))
+                    .on_click(move |_, w, cx| this_for_editor.clone().show_large_text_editor(w, cx))
             })
             .into_any_element()
     }
 
     pub fn render_table_area(&self, _window: &mut Window, cx: &App) -> AnyElement {
-        let table_view = Table::new(&self.table)
-            .stripe(false)
-            .bordered(true);
+        let table_view = Table::new(&self.table);
          div()
             .flex_1()
             .w_full()
@@ -774,7 +714,6 @@ impl Clone for DataGrid {
         Self {
             config: self.config.clone(),
             table: self.table.clone(),
-            editor_state: self.editor_state.clone(),
             _table_sub: None,
         }
     }

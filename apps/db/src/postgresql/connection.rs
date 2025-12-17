@@ -283,6 +283,9 @@ impl DbConnection for PostgresDbConnection {
                                     columns: Vec::new(),
                                     rows: Vec::new(),
                                     elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
                                 })
                             } else {
                                 let columns: Vec<String> = rows[0]
@@ -305,6 +308,9 @@ impl DbConnection for PostgresDbConnection {
                                     columns,
                                     rows: all_rows,
                                     elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
                                 })
                             }
                         }
@@ -415,6 +421,9 @@ impl DbConnection for PostgresDbConnection {
                                     columns: Vec::new(),
                                     rows: Vec::new(),
                                     elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
                                 })
                             } else {
                                 let columns: Vec<String> = rows[0]
@@ -437,6 +446,9 @@ impl DbConnection for PostgresDbConnection {
                                     columns,
                                     rows: all_rows,
                                     elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
                                 })
                             }
                         }
@@ -523,6 +535,9 @@ impl DbConnection for PostgresDbConnection {
                                 columns: Vec::new(),
                                 rows: Vec::new(),
                                 elapsed_ms,
+                                table_name: None,
+                                primary_keys: Vec::new(),
+                                editable: false,
                             }))
                         } else {
                             let columns: Vec<String> = rows[0]
@@ -545,6 +560,9 @@ impl DbConnection for PostgresDbConnection {
                                 columns,
                                 rows: all_rows,
                                 elapsed_ms,
+                                table_name: None,
+                                primary_keys: Vec::new(),
+                                editable: false,
                             }))
                         }
                     }
@@ -585,6 +603,9 @@ impl DbConnection for PostgresDbConnection {
                                 columns: Vec::new(),
                                 rows: Vec::new(),
                                 elapsed_ms,
+                                table_name: None,
+                                primary_keys: Vec::new(),
+                                editable: false,
                             }))
                         } else {
                             let columns: Vec<String> = rows[0]
@@ -607,6 +628,9 @@ impl DbConnection for PostgresDbConnection {
                                 columns,
                                 rows: all_rows,
                                 elapsed_ms,
+                                table_name: None,
+                                primary_keys: Vec::new(),
+                                editable: false,
                             }))
                         }
                     }

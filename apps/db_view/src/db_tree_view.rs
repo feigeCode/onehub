@@ -19,6 +19,7 @@ use tracing::log::{error, info, trace};
 
 // 3. 当前 crate 导入（按模块分组）
 use db::{GlobalDbState, DbNode, DbNodeType};
+use gpui_component::label::Label;
 use one_core::{
     storage::{GlobalStorageState, StoredConnection},
 };
@@ -783,28 +784,6 @@ impl Render for DbTreeView {
                                         let view_clone = view.clone();
                                         let node_id_clone = node_id.clone();
                                         trace!("node_id: {}, item: {}", &node_id, &item.label);
-                                        let highlight_color = cx.theme().primary;
-                                        
-                                        // 构建带高亮的 label
-                                        let label_element = if !search_query.is_empty() {
-                                            let query_lower = search_query.to_lowercase();
-                                            let label_lower = label_text.to_lowercase();
-                                            if let Some(start) = label_lower.find(&query_lower) {
-                                                let end = start + search_query.len();
-                                                let before = &label_text[..start];
-                                                let matched = &label_text[start..end];
-                                                let after = &label_text[end..];
-                                                h_flex()
-                                                    .when(!before.is_empty(), |el| el.child(div().child(before.to_string())))
-                                                    .child(div().text_color(highlight_color).child(matched.to_string()))
-                                                    .when(!after.is_empty(), |el| el.child(div().child(after.to_string())))
-                                                    .into_any_element()
-                                            } else {
-                                                div().child(label_text).into_any_element()
-                                            }
-                                        } else {
-                                            div().child(label_text).into_any_element()
-                                        };
 
                                         let (is_loading, error_msg) = view.update(cx, |this, _cx| {
                                             let is_loading = this.loading_nodes.contains(&node_id);
@@ -835,7 +814,7 @@ impl Render for DbTreeView {
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
                                                             .text_sm()
-                                                            .child(label_element)
+                                                            .child(Label::new(label_text).highlights(search_query).into_any_element())
                                                             .tooltip(move |window, cx| {
                                                                 Tooltip::new(label_for_tooltip.clone()).build(window, cx)
                                                             })

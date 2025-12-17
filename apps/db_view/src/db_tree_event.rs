@@ -2,7 +2,6 @@
 // (无需标准库导入)
 
 // 2. 外部 crate 导入（按字母顺序）
-use anyhow::anyhow;
 use db::{DbNode, DbNodeType, GlobalDbState};
 use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::{error, warn};
@@ -66,6 +65,62 @@ impl DatabaseEventHandler {
                     Notification::success(message.into()).autohide(true),
                     cx
                 );
+            });
+        }
+    }
+
+    /// 从节点获取数据库名的辅助方法
+    fn get_database_from_node(node: &DbNode) -> String {
+        if node.node_type == DbNodeType::Database {
+            node.name.clone()
+        } else if let Some(metadata) = &node.metadata {
+            metadata.get("database").cloned().unwrap_or_else(|| {
+                node.parent_context.as_ref()
+                    .and_then(|p| p.split(':').nth(1))
+                    .unwrap_or("")
+                    .to_string()
+            })
+        } else {
+            node.parent_context.as_ref()
+                .and_then(|p| p.split(':').nth(1))
+                .unwrap_or("")
+                .to_string()
+        }
+    }
+
+    /// 在异步上下文中执行窗口操作的辅助方法
+    async fn with_window<F>(cx: &mut AsyncApp, f: F)
+    where
+        F: FnOnce(&mut Window, &mut App) + Send + 'static,
+    {
+        let _ = cx.update(|cx| {
+            if let Some(window_id) = cx.active_window() {
+                let _ = cx.update_window(window_id, |_, window, cx| {
+                    f(window, cx);
+                });
+            }
+        });
+    }
+
+    /// 异步获取配置并执行操作，处理错误情况
+    async fn with_config<F>(
+        global_state: GlobalDbState,
+        connection_id: String,
+        cx: &mut AsyncApp,
+        error_msg: impl Into<String>,
+        f: F,
+    )
+    where
+        F: FnOnce(&mut Window, &mut App) + Send + 'static,
+    {
+        let config = global_state.get_config_async(&connection_id).await;
+        let error_message = error_msg.into();
+
+        if config.is_some() {
+            Self::with_window(cx, f).await;
+        } else {
+            let _ = cx.update(|cx| {
+                Self::show_error_async(cx, format!("{}: 无法获取连接配置 {}", error_message, connection_id));
             });
         }
     }
@@ -172,7 +227,7 @@ impl DatabaseEventHandler {
                 }
                 DbTreeViewEvent::RenameTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_rename_table(node, global_state, window, cx);
+                        Self::handle_rename_table(node, global_state, tree_view.clone(), window, cx);
                     }
                 }
                 DbTreeViewEvent::TruncateTable { node_id } => {
@@ -252,29 +307,7 @@ impl DatabaseEventHandler {
         use crate::sql_editor_view::SqlEditorTabContent;
 
         let connection_id = node.connection_id.clone();
-
-        // 获取数据库名：
-        // 1. 如果是数据库节点，直接使用 node.name
-        // 2. 如果是 QueriesFolder 或其他节点，从 metadata 中获取 database
-        // 3. 如果 metadata 没有，尝试从 parent_context 解析
-        let database = if node.node_type == DbNodeType::Database {
-            node.name.clone()
-        } else if let Some(metadata) = &node.metadata {
-            metadata.get("database").cloned().unwrap_or_else(|| {
-                // 从 parent_context 解析数据库名
-                // parent_context 格式: "connection_id:database_name"
-                if let Some(parent) = &node.parent_context {
-                    parent.split(':').nth(1).unwrap_or("").to_string()
-                } else {
-                    "".to_string()
-                }
-            })
-        } else if let Some(parent) = &node.parent_context {
-            // 从 parent_context 解析数据库名
-            parent.split(':').nth(1).unwrap_or("").to_string()
-        } else {
-            "".to_string()
-        };
+        let database = Self::get_database_from_node(&node);
 
         let sql_editor = SqlEditorTabContent::new_with_config(
             format!("{} - Query", if database.is_empty() { "New Query" } else { &database }),
@@ -297,7 +330,7 @@ impl DatabaseEventHandler {
         node: DbNode,
         global_state: GlobalDbState,
         tab_container: Entity<TabContainer>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use crate::table_data_tab::TableDataTabContent;
@@ -369,7 +402,7 @@ impl DatabaseEventHandler {
         node: DbNode,
         global_state: GlobalDbState,
         tab_container: Entity<TabContainer>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use crate::table_data_tab::TableDataTabContent;
@@ -441,7 +474,7 @@ impl DatabaseEventHandler {
         node: DbNode,
         global_state: GlobalDbState,
         _tab_container: Entity<TabContainer>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
 
@@ -486,7 +519,7 @@ impl DatabaseEventHandler {
     fn handle_import_data(
         node: DbNode,
         global_state: GlobalDbState,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use gpui_component::WindowExt;
@@ -602,16 +635,14 @@ impl DatabaseEventHandler {
     fn handle_export_data(
         node: DbNode,
         global_state: GlobalDbState,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use crate::data_export_view::DataExportView;
         use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();
-        // 获取数据库名：如果是数据库节点则用 name，否则用 parent_context
-        let database = node.parent_context.clone().unwrap_or_else(|| node.name.clone());
-        // 如果是表节点，预填表名
+        let database = Self::get_database_from_node(&node);
         let table_name = if node.node_type == DbNodeType::Table {
             Some(node.name.clone())
         } else {
@@ -620,7 +651,7 @@ impl DatabaseEventHandler {
 
         let connection_id_for_error = connection_id.clone();
         let database_string = database.clone();
-        let tab_name_option = table_name.clone();
+        let table_name_option = table_name.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
             let config = global_state.get_config_async(&connection_id).await;
@@ -628,44 +659,35 @@ impl DatabaseEventHandler {
             if let Some(config) = config {
                 let config_id = config.id;
                 let database_for_view = database_string.clone();
-                let table_name_for_view = tab_name_option.clone();
+                let table_name_for_view = table_name_option.clone();
 
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            let export_view = DataExportView::new(
-                                config_id.clone(),
-                                database_for_view.clone(),
-                                window,
-                                cx,
-                            );
+                Self::with_window(cx, move |window, cx| {
+                    let export_view = DataExportView::new(
+                        config_id.clone(),
+                        database_for_view.clone(),
+                        window,
+                        cx,
+                    );
 
-                            if let Some(table) = table_name_for_view.clone() {
-                                export_view.update(cx, |view, cx| {
-                                    view.tables.update(cx, |state, cx| {
-                                        state.set_value(table, window, cx);
-                                    });
-                                });
-                            }
-
-                            window.open_dialog(cx, move |dialog, _window, _cx| {
-                                dialog
-                                    .title("Export Data")
-                                    .child(export_view.clone())
-                                    .width(px(800.0))
-                                    .on_cancel(|_, _window, _cx| true)
+                    if let Some(table) = table_name_for_view.clone() {
+                        export_view.update(cx, |view, cx| {
+                            view.tables.update(cx, |state, cx| {
+                                state.set_value(table, window, cx);
                             });
                         });
                     }
-                });
+
+                    window.open_dialog(cx, move |dialog, _window, _cx| {
+                        dialog
+                            .title("Export Data")
+                            .child(export_view.clone())
+                            .width(px(800.0))
+                            .on_cancel(|_, _window, _cx| true)
+                    });
+                }).await;
             } else {
-                let connection_id_for_error = connection_id_for_error.clone();
                 let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            Self::show_error(window, format!("导出数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-                        });
-                    }
+                    Self::show_error_async(cx, format!("导出数据失败：无法获取连接配置 {}", connection_id_for_error));
                 });
             }
         }).detach();
@@ -815,7 +837,7 @@ impl DatabaseEventHandler {
     fn handle_create_database(
         node: DbNode,
         global_state: GlobalDbState,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use crate::database_view_plugin::DatabaseViewPluginRegistry;
@@ -874,7 +896,7 @@ impl DatabaseEventHandler {
     fn handle_edit_database(
         node: DbNode,
         global_state: GlobalDbState,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use crate::database_view_plugin::DatabaseViewPluginRegistry;
@@ -1126,6 +1148,7 @@ impl DatabaseEventHandler {
     fn handle_rename_table(
         node: DbNode,
         global_state: GlobalDbState,
+        tree_view: Entity<DbTreeView>,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -1149,6 +1172,7 @@ impl DatabaseEventHandler {
             let meta = metadata.clone();
             let state = global_state.clone();
             let input = input_state.clone();
+            let tree = tree_view.clone();
 
             dialog
                 .title("重命名表")
@@ -1198,16 +1222,22 @@ impl DatabaseEventHandler {
                     let old_name = old_name.clone();
                     let meta = meta.clone();
                     let state = state.clone();
+                    let tree = tree.clone();
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let old_name_log = old_name.clone();
                         let new_name_log = new_name.clone();
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
+                        let db_node_id = format!("{}:{}", conn_id, database);
 
                         let task = state.rename_table(cx, conn_id.clone(), database, old_name.clone(), new_name.clone()).await;
                         match task {
                             Ok(_) => {
                                 let _ = cx.update(|cx| {
+                                    // 刷新数据库节点以显示新表名
+                                    tree.update(cx, |tree, cx| {
+                                        tree.refresh_tree(db_node_id, cx);
+                                    });
                                     Self::show_success_async(cx, format!("表已重命名: {} -> {}", old_name_log, new_name_log));
                                 });
                             }
@@ -1581,12 +1611,12 @@ impl DatabaseEventHandler {
         use crate::sql_run_view::SqlRunView;
 
         let connection_id = node.connection_id.clone();
-        // 获取数据库名：如果是数据库节点则用 name，否则为空（连接级别）
         let database = if node.node_type == DbNodeType::Database {
             Some(node.name.clone())
         } else {
             None
         };
+
         let run_view = SqlRunView::new(connection_id, database, window, cx);
         window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog
@@ -1601,7 +1631,7 @@ impl DatabaseEventHandler {
     fn handle_dump_sql_file(
         node: DbNode,
         global_state: GlobalDbState,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut App,
     ) {
         use crate::sql_dump_view::SqlDumpView;

@@ -79,14 +79,14 @@ impl SqlResultTabContainer {
             match result {
                 SqlResult::Query(query_result) => {
                     let clone_query_result = query_result.clone();
-                    // 创建DataGrid配置（只读模式，但显示工具栏）
+                    // 创建DataGrid配置，根据查询结果的可编辑性设置
                     let config = DataGridConfig::new(
                         "query_result",
                         format!("result_{}", idx),
                         "sql_result",
                         one_core::storage::DatabaseType::MySQL, // 默认类型，实际不影响只读模式
                     )
-                    .editable(false)
+                    .editable(query_result.editable) // 根据查询分析结果设置可编辑性
                     .show_toolbar(true)
                     .usage(DataGridUsage::SqlResult); // SQL结果场景，编辑器高度较高
 
@@ -104,9 +104,20 @@ impl SqlResultTabContainer {
                         })
                         .collect();
 
+                    // 如果可编辑，将主键列名转换为列索引；否则传入空列表
+                    let primary_key_indices = if query_result.editable {
+                        query_result.primary_keys.iter()
+                            .filter_map(|pk_name| {
+                                query_result.columns.iter().position(|col| col == pk_name)
+                            })
+                            .collect()
+                    } else {
+                        vec![]
+                    };
+
                     // 更新DataGrid数据
                     data_grid.update(cx, |this,cx|{
-                        this.update_data(columns, rows, vec![], vec![], cx);
+                        this.update_data(columns, rows, primary_key_indices, vec![], cx);
                     });
 
                     let tab = SqlResultTab {

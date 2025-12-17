@@ -52,6 +52,12 @@ pub struct QueryResult {
     pub rows: Vec<Vec<Option<String>>>,
     /// Execution time in milliseconds
     pub elapsed_ms: u128,
+    /// Table name if this is a single-table query
+    pub table_name: Option<String>,
+    /// Primary key column names
+    pub primary_keys: Vec<String>,
+    /// Whether this result set is editable
+    pub editable: bool,
 }
 
 /// Execution result for non-query statements
@@ -203,6 +209,69 @@ impl SqlStatementClassifier {
             || trimmed.starts_with("EXPLAIN")
             || trimmed.starts_with("WITH") // CTE
             || trimmed.starts_with("TABLE") // PostgreSQL TABLE command
+    }
+
+    /// Check if a SELECT query might be editable (basic heuristic)
+    /// Returns None if cannot determine, Some(table_name) if looks like simple single-table query
+    pub fn analyze_select_editability(sql: &str) -> Option<String> {
+        let upper = sql.trim().to_uppercase();
+
+        // Must be a SELECT statement
+        if !upper.starts_with("SELECT") {
+            return None;
+        }
+
+        // Cannot have these keywords (indicate complex queries)
+        let complex_keywords = [
+            " JOIN ", " INNER JOIN ", " LEFT JOIN ", " RIGHT JOIN ", " OUTER JOIN ",
+            " CROSS JOIN ", " FULL JOIN ",
+            " UNION ", " INTERSECT ", " EXCEPT ",
+            " GROUP BY ", " HAVING ",
+            "DISTINCT", " DISTINCT ",
+        ];
+
+        for keyword in &complex_keywords {
+            if upper.contains(keyword) {
+                return None;
+            }
+        }
+
+        // Check for aggregate functions in SELECT clause
+        let aggregate_functions = [
+            "COUNT(", "SUM(", "AVG(", "MAX(", "MIN(",
+            "GROUP_CONCAT(", "STRING_AGG(",
+        ];
+
+        for func in &aggregate_functions {
+            if upper.contains(func) {
+                return None;
+            }
+        }
+
+        // Try to extract table name from "FROM table_name"
+        // Simple regex-like parsing
+        if let Some(from_pos) = upper.find(" FROM ") {
+            let after_from = &sql[from_pos + 6..].trim();
+
+            // Extract table name (stop at WHERE, ORDER, LIMIT, semicolon, or whitespace)
+            let table_name = after_from
+                .split_whitespace()
+                .next()?
+                .trim_end_matches(';')
+                .trim_matches('`')
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string();
+
+            // Check if table name contains subquery or complex syntax
+            if table_name.contains('(') || table_name.contains(',') {
+                return None;
+            }
+
+            return Some(table_name);
+        }
+
+        None
     }
 
     /// Determine the statement category
@@ -401,5 +470,27 @@ mod tests {
         assert_eq!(SqlStatementClassifier::classify("CREATE TABLE test (id INT)"), StatementType::Ddl);
         assert_eq!(SqlStatementClassifier::classify("BEGIN"), StatementType::Transaction);
         assert_eq!(SqlStatementClassifier::classify("USE mydb"), StatementType::Command);
+    }
+
+    #[test]
+    fn test_analyze_select_editability() {
+        // Simple single-table queries should be editable (return Some)
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT * FROM users").is_some());
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT id, name FROM users WHERE id > 10").is_some());
+
+        // Aggregate functions should NOT be editable (return None)
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT COUNT(*) FROM login_user").is_none());
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT SUM(amount) FROM orders").is_none());
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT AVG(price) FROM products").is_none());
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT MAX(score), MIN(score) FROM results").is_none());
+
+        // JOIN queries should NOT be editable
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT u.*, o.* FROM users u JOIN orders o").is_none());
+
+        // GROUP BY should NOT be editable
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT city, COUNT(*) FROM users GROUP BY city").is_none());
+
+        // DISTINCT should NOT be editable
+        assert!(SqlStatementClassifier::analyze_select_editability("SELECT DISTINCT city FROM users").is_none());
     }
 }

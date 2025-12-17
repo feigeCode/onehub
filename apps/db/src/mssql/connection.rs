@@ -175,6 +175,9 @@ impl MssqlConnection {
                             columns,
                             rows: data_rows,
                             elapsed_ms,
+                            table_name: None,
+                            primary_keys: Vec::new(),
+                            editable: false,
                         }));
                     }
                     Err(e) => {
@@ -251,6 +254,9 @@ impl MssqlConnection {
                         columns,
                         rows: data_rows,
                         elapsed_ms,
+                        table_name: None,
+                        primary_keys: Vec::new(),
+                        editable: false,
                     }))
                 }
                 Err(e) => Ok(SqlResult::Error(SqlErrorInfo {

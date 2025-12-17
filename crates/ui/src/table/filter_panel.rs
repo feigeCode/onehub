@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::list::{ListDelegate, ListItem, ListState};
+use crate::tooltip::Tooltip;
 use crate::{checkbox::Checkbox, h_flex, label::Label, ActiveTheme, IndexPath, Selectable};
 
 /// 筛选值项
@@ -72,6 +73,7 @@ impl RenderOnce for FilterListItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let on_toggle = self.on_toggle.clone();
         let value_str = self.value.value.clone();
+        let checked = self.value.checked;
 
         h_flex()
             .id(SharedString::from(format!("filter-item-{}", value_str)))
@@ -89,6 +91,7 @@ impl RenderOnce for FilterListItem {
             })
             .child(
                 h_flex()
+                    .id(SharedString::from(format!("label-{}", value_str)))
                     .flex_1()
                     .gap_2()
                     .items_center()
@@ -97,14 +100,14 @@ impl RenderOnce for FilterListItem {
                         Checkbox::new(
                             SharedString::from(format!("filter-{}", value_str)),
                         )
-                            .checked(self.value.checked),
+                            .checked(checked),
                     )
                     .child(
                         Label::new(self.value.value.clone())
-                            .whitespace_nowrap()
-                            .overflow_hidden()
-                            .text_ellipsis(),
-                    ),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(value_str.clone()).build(window, cx)
+                    })
             )
             .child(
                 div()
@@ -243,10 +246,6 @@ impl FilterPanel {
 impl ListDelegate for FilterPanel {
     type Item = FilterListItem;
 
-    fn items_count(&self, _section: usize, _cx: &App) -> usize {
-        self.filtered_values.len()
-    }
-
     fn perform_search(&mut self, query: &str, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> Task<()> {
         let query = query.to_string();
         cx.spawn(async move |entity: WeakEntity<ListState<Self>>, cx: &mut AsyncApp| {
@@ -258,6 +257,10 @@ impl ListDelegate for FilterPanel {
                 ()
             })
         })
+    }
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.filtered_values.len()
     }
     fn render_item(
         &mut self,

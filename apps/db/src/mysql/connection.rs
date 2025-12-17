@@ -82,9 +82,41 @@ impl MysqlDbConnection {
         }
     }
 
+    /// Get primary key columns for a table
+    async fn get_primary_keys(
+        conn: &mut Conn,
+        database: Option<&String>,
+        table_name: &str,
+    ) -> Vec<String> {
+        let query = if let Some(db) = database {
+            format!(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
+                 ORDER BY ORDINAL_POSITION",
+                db, table_name
+            )
+        } else {
+            format!(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
+                 ORDER BY ORDINAL_POSITION",
+                table_name
+            )
+        };
+
+        match conn.query::<Row, _>(query).await {
+            Ok(rows) => rows
+                .iter()
+                .filter_map(|row| Self::extract_value(&row[0]))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Execute a single statement and return the result
     async fn execute_single(
         conn: &mut Conn,
+        database: Option<&String>,
         sql: &str,
         is_query: bool,
     ) -> Result<SqlResult, DbError> {
@@ -92,6 +124,9 @@ impl MysqlDbConnection {
         let sql_string = sql.to_string();
 
         if is_query {
+            // Analyze if query might be editable
+            let table_name = SqlStatementClassifier::analyze_select_editability(sql);
+
             // Execute SELECT or other query statements
             match conn.query::<Row, _>(sql).await {
                 Ok(rows) => {
@@ -103,6 +138,9 @@ impl MysqlDbConnection {
                             columns: Vec::new(),
                             rows: Vec::new(),
                             elapsed_ms,
+                            table_name: None,
+                            primary_keys: Vec::new(),
+                            editable: false,
                         }))
                     } else {
                         // Get column names from first row
@@ -122,11 +160,23 @@ impl MysqlDbConnection {
                             })
                             .collect();
 
+                        // Get primary keys if table name was identified
+                        let (final_table_name, primary_keys, editable) = if let Some(ref table) = table_name {
+                            let pks = Self::get_primary_keys(conn, database, table).await;
+                            let is_editable = !pks.is_empty();
+                            (table_name, pks, is_editable)
+                        } else {
+                            (None, Vec::new(), false)
+                        };
+
                         Ok(SqlResult::Query(QueryResult {
                             sql: sql_string,
                             columns,
                             rows: all_rows,
                             elapsed_ms,
+                            table_name: final_table_name,
+                            primary_keys,
+                            editable,
                         }))
                     }
                 }
@@ -228,6 +278,9 @@ impl DbConnection for MysqlDbConnection {
             .await
             .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
 
+        // Get current database for metadata queries
+        let current_db = self.current_database.read().unwrap().clone();
+
         // Split script into statements
         let statements = SqlScriptSplitter::split(script);
         let mut results = Vec::new();
@@ -265,6 +318,9 @@ impl DbConnection for MysqlDbConnection {
                 let sql_string = modified_sql.clone();
 
                 let result = if is_query {
+                    // Analyze if query might be editable
+                    let table_name = SqlStatementClassifier::analyze_select_editability(&modified_sql);
+
                     match tx.query::<Row, _>(&modified_sql).await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
@@ -275,6 +331,9 @@ impl DbConnection for MysqlDbConnection {
                                     columns: Vec::new(),
                                     rows: Vec::new(),
                                     elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
                                 })
                             } else {
                                 let columns: Vec<String> = rows[0]
@@ -292,11 +351,16 @@ impl DbConnection for MysqlDbConnection {
                                     })
                                     .collect();
 
+                                // Note: Cannot query primary keys within transaction using same connection
+                                // Set editable to false for transactional queries for safety
                                 SqlResult::Query(QueryResult {
                                     sql: sql.to_string(),
                                     columns,
                                     rows: all_rows,
                                     elapsed_ms,
+                                    table_name,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
                                 })
                             }
                         }
@@ -411,7 +475,7 @@ impl DbConnection for MysqlDbConnection {
                 };
 
                 let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
-                let result = Self::execute_single(&mut conn, &modified_sql, is_query).await?;
+                let result = Self::execute_single(&mut conn, current_db.as_ref(), &modified_sql, is_query).await?;
 
                 let is_error = result.is_error();
                 results.push(result);
@@ -437,6 +501,9 @@ impl DbConnection for MysqlDbConnection {
             .await
             .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
 
+        // Get current database for metadata queries
+        let current_db = self.current_database.read().unwrap().clone();
+
         let start = Instant::now();
         let is_query = SqlStatementClassifier::is_query_statement(query);
         let query_string = query.to_string();
@@ -446,6 +513,9 @@ impl DbConnection for MysqlDbConnection {
             let mysql_params: Vec<Value> = params.iter().map(Self::convert_param).collect();
 
             if is_query {
+                // Analyze if query might be editable
+                let table_name = SqlStatementClassifier::analyze_select_editability(query);
+
                 match conn.exec::<Row, _, _>(query, mysql_params).await {
                     Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
@@ -456,6 +526,9 @@ impl DbConnection for MysqlDbConnection {
                                 columns: Vec::new(),
                                 rows: Vec::new(),
                                 elapsed_ms,
+                                table_name: None,
+                                primary_keys: Vec::new(),
+                                editable: false,
                             }))
                         } else {
                             let columns: Vec<String> = rows[0]
@@ -473,11 +546,23 @@ impl DbConnection for MysqlDbConnection {
                                 })
                                 .collect();
 
+                            // Get primary keys if table name was identified
+                            let (final_table_name, primary_keys, editable) = if let Some(ref table) = table_name {
+                                let pks = Self::get_primary_keys(&mut conn, current_db.as_ref(), table).await;
+                                let is_editable = !pks.is_empty();
+                                (table_name, pks, is_editable)
+                            } else {
+                                (None, Vec::new(), false)
+                            };
+
                             Ok(SqlResult::Query(QueryResult {
                                 sql: query_string,
                                 columns,
                                 rows: all_rows,
                                 elapsed_ms,
+                                table_name: final_table_name,
+                                primary_keys,
+                                editable,
                             }))
                         }
                     }
@@ -508,7 +593,7 @@ impl DbConnection for MysqlDbConnection {
             }
         } else {
             // Execute without parameters
-            Self::execute_single(&mut conn, query, is_query).await
+            Self::execute_single(&mut conn, current_db.as_ref(), query, is_query).await
         }
     }
 }

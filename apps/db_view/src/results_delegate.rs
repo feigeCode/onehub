@@ -85,6 +85,8 @@ pub struct EditorTableDelegate {
     filtered_row_indices: Option<Vec<usize>>,
     /// Column filter conditions: col_ix -> selected values
     column_filters: HashMap<usize, HashSet<String>>,
+    /// Whether cells are editable
+    editable: bool,
 }
 
 impl Clone for EditorTableDelegate {
@@ -106,12 +108,13 @@ impl Clone for EditorTableDelegate {
             active_filter_columns: self.active_filter_columns.clone(),
             filtered_row_indices: self.filtered_row_indices.clone(),
             column_filters: self.column_filters.clone(),
+            editable: self.editable,
         }
     }
 }
 
 impl EditorTableDelegate {
-    pub fn new(columns: Vec<Column>, rows: Vec<Vec<String>>, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> Self {
+    pub fn new(columns: Vec<Column>, rows: Vec<Vec<String>>, editable: bool, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> Self {
         let row_count = rows.len();
         let row_index_map: HashMap<usize, usize> = (0..row_count).map(|i| (i, i)).collect();
         Self {
@@ -131,6 +134,7 @@ impl EditorTableDelegate {
             active_filter_columns: HashSet::new(),
             filtered_row_indices: None,
             column_filters: HashMap::new(),
+            editable,
         }
     }
 
@@ -532,6 +536,11 @@ impl TableDelegate for EditorTableDelegate {
     }
 
     fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut Context<TableState<Self>>) -> Option<(Entity<InputState>, Subscription)> {
+        // If not editable, return None to disable editing
+        if !self.editable {
+            return None;
+        }
+
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
 
