@@ -13,7 +13,7 @@ use crate::multi_text_editor::create_multi_text_editor_with_content;
 use crate::results_delegate::{EditorTableDelegate, RowChange};
 use crate::sql_editor::SqlEditor;
 use db::{ExecOptions, GlobalDbState, SqlResult, TableCellChange, TableRowChange, TableSaveRequest};
-
+use gpui_component::dialog::DialogButtonProps;
 // ============================================================================
 // DataGrid - 可复用的数据表格组件
 // ============================================================================
@@ -208,32 +208,38 @@ impl DataGrid {
                         .h_full()
                         .child(editor.clone()),
                 )
-                .confirm()
+                .close_button(true)
+                .overlay(false)
+                .content_center()
+                .footer(|ok, cancel, window, cx| {
+                    vec![ok(window, cx), cancel(window, cx)]
+                })
                 .on_ok(move |_, window, cx| {
                     let content = editor.read(cx).get_active_text(cx);
-                    let content_clone = content.clone();
+                    return match content {
+                        Ok(val) => {
+                            data_grid.table.update(cx, |state, cx| {
+                                let delegate = state.delegate_mut();
+                                let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
+                                    return false;
+                                };
 
-                    let _ = data_grid.table.update(cx, |state, cx| {
-                        let delegate = state.delegate_mut();
-                        let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
-                            return false;
-                        };
+                                let col_index = col_ix.saturating_sub(1);
+                                let changed = delegate.record_cell_change(actual_row_ix, col_index, val);
 
-                        let col_index = col_ix.saturating_sub(1);
-                        let changed = delegate.record_cell_change(actual_row_ix, col_index, content.clone());
+                                if changed {
+                                    state.refresh(cx);
+                                }
 
-                        if changed {
-                            state.refresh(cx);
+                                changed
+                            });
+                            true
                         }
-
-                        changed
-                    });
-
-                    editor.update(cx, |editor, cx| {
-                        editor.set_active_text(content_clone, window, cx);
-                    });
-
-                    true
+                        Err(err) => {
+                            window.push_notification(format!("错误: {}", err), cx);
+                            false
+                        }
+                    }
                 })
                 .on_cancel(|_, _, _| true)
         });
@@ -345,7 +351,7 @@ impl DataGrid {
         })
     }
 
-    fn handle_save_changes(&self, _: &ClickEvent, window: &mut Window, cx: &mut App) {
+    fn handle_save_changes(&self, _: &ClickEvent, _window: &mut Window, cx: &mut App) {
         let Some(save_request) = self.create_save_request(cx) else {
             return;
         };
@@ -357,8 +363,6 @@ impl DataGrid {
                 return;
             }
         };
-
-        window.push_notification(format!("Saving {} changes...", change_count), cx);
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
@@ -402,29 +406,21 @@ impl DataGrid {
         .detach();
     }
 
-    pub fn generate_changes_sql(&self, cx: &mut App) -> String {
-        let Some(save_request) = self.create_save_request(cx) else {
-            return "-- 没有变更数据".to_string();
-        };
-
-        self.build_changes_sql(&save_request, cx).unwrap_or_else(|message| format!("-- {}", message))
-    }
-
     pub fn show_sql_preview(&self, window: &mut Window, cx: &mut App) {
         let Some(save_request) = self.create_save_request(cx) else {
-            notification(cx, "没有变更数据".to_string());
+            window.push_notification("没有变更数据".to_string(),cx);
             return;
         };
 
         let sql_content = match self.build_changes_sql(&save_request, cx) {
             Ok(sql) => sql,
             Err(message) => {
-                notification(cx, message);
+                window.push_notification(message,cx);
                 return;
             }
         };
 
-        self.show_sql_editor_dialog(sql_content, "变更SQL预览", true, window, cx);
+        self.show_sql_editor_dialog(sql_content, "变更SQL预览", window, cx);
     }
 
     /// 显示 SQL 编辑器对话框，支持编辑和执行
@@ -432,7 +428,6 @@ impl DataGrid {
         &self,
         initial_sql: String,
         title: &str,
-        allow_execute: bool,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -454,7 +449,7 @@ impl DataGrid {
             let execute_database = database_name.clone();
             let data_grid = this.clone();
 
-            let mut dialog = dialog
+            dialog
                 .title(SharedString::from(title.clone()))
                 .w(px(800.0))
                 .h(px(600.0))
@@ -463,50 +458,30 @@ impl DataGrid {
                         .w_full()
                         .h_full()
                         .child(editor.clone()),
-                );
-
-            if allow_execute {
-                dialog = dialog.footer(move |ok, cancel, window, cx| {
-                    let execute_editor = editor.clone();
-                    let execute_state = execute_state.clone();
-                    let execute_connection = execute_connection.clone();
-                    let execute_database = execute_database.clone();
-                    let data_grid = data_grid.clone();
-
-                    let mut buttons = Vec::new();
-                    buttons.push(cancel(window, cx));
-                    // 执行按钮
-                    buttons.push(
-                        Button::new("execute-sql")
-                            .with_size(Size::Medium)
-                            .primary()
-                            .icon(IconName::ArrowRight)
-                            .label("执行SQL")
-                            .on_click(move |_, window, cx| {
-                                let sql_text = execute_editor.read(cx).get_text_from_app(cx);
-                                if sql_text.trim().is_empty() {
-                                    window.push_notification("SQL内容为空", cx);
-                                    return;
-                                }
-                                
-                                data_grid.execute_sql_and_refresh(
-                                    sql_text,
-                                    execute_state.clone(),
-                                    execute_connection.clone(),
-                                    execute_database.clone(),
-                                    window,
-                                    cx,
-                                );
-                            })
-                            .into_any_element(),
+                )
+                .close_button(true)
+                .overlay(false)
+                .content_center()
+                .button_props(DialogButtonProps::default().ok_text("执行SQL"))
+                .footer(|ok, cancel, window, cx| {
+                    vec![ok(window, cx), cancel(window, cx)]
+                })
+                .on_ok(move |_, window, cx| {
+                    let sql_text = editor.read(cx).get_text_from_app(cx);
+                    if sql_text.trim().is_empty() {
+                        window.push_notification("SQL内容为空", cx);
+                        return false;
+                    }
+                    data_grid.execute_sql_and_refresh(
+                        sql_text,
+                        execute_state.clone(),
+                        execute_connection.clone(),
+                        execute_database.clone(),
+                        window,
+                        cx,
                     );
-                    
-                    buttons.push(ok(window, cx));
-                    buttons
-                });
-            }
-
-            dialog
+                    false // 保持对话框打开，等待异步任务完成后手动关闭
+                })
         });
     }
 
@@ -570,12 +545,23 @@ impl DataGrid {
             ).await {
                 Ok(_) => {
                     cx.update(|cx| {
-                        data_grid.clear_changes(cx);
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                data_grid.clear_changes(cx);
+                                window.close_dialog(cx); // 成功后关闭对话框
+                                window.push_notification("执行成功".to_string(), cx);
+                            });
+                        }
                     }).ok();
                 }
                 Err(error_msg) => {
                     cx.update(|cx| {
-                        notification(cx, error_msg);
+                        if let Some(window_id) = cx.active_window() {
+                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                window.push_notification(error_msg, cx);
+                                // 失败时保持对话框打开，让用户看到错误并修改 SQL
+                            });
+                        }
                     }).ok();
                 }
             }

@@ -1,4 +1,5 @@
 use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Styled as _, Window};
+use serde_json::from_str;
 use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, TabSize};
 use gpui_component::v_flex;
@@ -87,8 +88,15 @@ impl MultiTextEditor {
         }
     }
 
-    pub fn get_active_text(&self, cx: &App) -> String {
-        self.get_active_editor().read(cx).text().to_string()
+    pub fn get_active_text(&self, cx: &App) -> Result<String, serde_json::error::Error> {
+        let value = self.get_active_editor().read(cx).text().to_string();
+        if self.active_tab == EditorTab::Json {
+            return match from_str::<serde_json::Value>(&value) {
+                Ok(v) => Ok(v.to_string()),
+                Err(e) => Err(e)
+            }
+        }
+        Ok(value)
     }
 
     pub fn set_active_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -98,7 +106,7 @@ impl MultiTextEditor {
         });
         
         // Try to parse and format as JSON for json editor
-        let json_text = match serde_json::from_str::<serde_json::Value>(&text) {
+        let json_text = match from_str::<serde_json::Value>(&text) {
             Ok(value) => {
                 serde_json::to_string_pretty(&value).unwrap_or(text.clone())
             }
@@ -114,7 +122,7 @@ impl MultiTextEditor {
 
     pub fn format_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.json_editor.read(cx).text().to_string();
-        match serde_json::from_str::<serde_json::Value>(&text) {
+        match from_str::<serde_json::Value>(&text) {
             Ok(value) => {
                 if let Ok(formatted) = serde_json::to_string_pretty(&value) {
                     self.json_editor.update(cx, |s, cx| {
@@ -130,7 +138,7 @@ impl MultiTextEditor {
 
     pub fn minify_json(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.json_editor.read(cx).text().to_string();
-        match serde_json::from_str::<serde_json::Value>(&text) {
+        match from_str::<serde_json::Value>(&text) {
             Ok(value) => {
                 if let Ok(minified) = serde_json::to_string(&value) {
                     self.json_editor.update(cx, |s, cx| {

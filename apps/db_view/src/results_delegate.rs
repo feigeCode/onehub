@@ -578,17 +578,71 @@ impl TableDelegate for EditorTableDelegate {
         col_ix: usize,
         new_value: String,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> bool {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
 
-        // Update the cell value
+        // Check if cell is already modified
+        if self.is_cell_modified(row_ix, col_ix, cx) {
+            // Check if user reverted to original value
+            if let Some(row) = self.original_rows.get(actual_row) {
+                if let Some(original_cell) = row.get(col_ix) {
+                    if *original_cell == new_value {
+                        // User reverted to original value - clear modification markers
+                        self.modified_cells.retain(|&(r, c)| r != actual_row || c != col_ix);
+                        self.cell_changes.remove(&(actual_row, col_ix));
+
+                        // Update the cell value
+                        if let Some(current_row) = self.rows.get_mut(actual_row) {
+                            if let Some(cell) = current_row.get_mut(col_ix) {
+                                *cell = new_value;
+                            }
+                        }
+
+                        // Check if row still has any modifications
+                        let row_has_changes = (0..self.columns.len())
+                            .any(|c| self.modified_cells.contains(&(actual_row, c)));
+
+                        if !row_has_changes && !self.is_new_row(actual_row) {
+                            self.row_status.insert(actual_row, RowStatus::Original);
+                        }
+
+                        return true; // Still need to refresh UI
+                    }
+                }
+            }
+
+            // Cell is modified and new value is different from original
+            // Update the cell value
+            if let Some(current_row) = self.rows.get_mut(actual_row) {
+                if let Some(cell) = current_row.get_mut(col_ix) {
+                    if *cell == new_value {
+                        // No actual change
+                        return false;
+                    }
+
+                    let old_value = cell.clone();
+                    *cell = new_value.clone();
+
+                    // Update cell_changes
+                    if !self.is_new_row(actual_row) {
+                        self.cell_changes
+                            .entry((actual_row, col_ix))
+                            .and_modify(|(_, new)| *new = new_value.clone())
+                            .or_insert((old_value, new_value));
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        // Cell not yet modified - initial edit
         if let Some(row) = self.rows.get_mut(actual_row) {
             if let Some(cell) = row.get_mut(col_ix) {
                 // Only mark as modified if value actually changed
                 if *cell == new_value {
-                    self.modified_cells.retain(|&(row_ix, col_ix)| row_ix != actual_row || col_ix != col_ix);
                     return false;
                 }
 
