@@ -308,6 +308,7 @@ impl EditorTableDelegate {
     /// 2. Removes all newly added rows
     /// 3. Restores deleted rows
     /// 4. Clears all change tracking
+    /// 5. Recalculates filter results
     pub fn revert_all_changes(&mut self) {
         // Restore rows to original state
         self.rows = self.original_rows.clone();
@@ -318,6 +319,11 @@ impl EditorTableDelegate {
 
         // Clear all change tracking
         self.clear_changes();
+
+        // Recalculate filter results with restored data
+        if !self.column_filters.is_empty() {
+            self.recalculate_filtered_indices();
+        }
     }
 
     /// Check if there are any pending changes
