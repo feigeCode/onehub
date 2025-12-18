@@ -6,16 +6,15 @@ use one_core::storage::DbConnectionConfig;
 use tokio::sync::{Mutex, RwLock};
 use tokio_postgres::{Client, Config, NoTls, Row, types::Type};
 
-use crate::connection::{DbConnection, DbError};
+use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
+use tokio::sync::mpsc;
 use crate::SqlValue;
 
 pub struct PostgresDbConnection {
     config: Option<DbConnectionConfig>,
     // PostgreSQL client wrapped in Mutex for interior mutability
     client: Arc<Mutex<Option<Client>>>,
-    // Track current database (schema)
-    current_database: Arc<RwLock<Option<String>>>,
 }
 
 impl PostgresDbConnection {
@@ -23,7 +22,6 @@ impl PostgresDbConnection {
         Self {
             config: Some(config),
             client: Arc::new(Mutex::new(None)),
-            current_database: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -218,10 +216,6 @@ impl DbConnection for PostgresDbConnection {
         {
             let mut guard = self.client.lock().await;
             *guard = Some(client);
-        }
-        {
-            let mut db_guard = self.current_database.write().await;
-            *db_guard = config.database.clone();
         }
 
         Ok(())
@@ -659,5 +653,250 @@ impl DbConnection for PostgresDbConnection {
                 }
             }
         }
+    }
+
+    async fn execute_streaming(
+        &self,
+        script: &str,
+        options: ExecOptions,
+        sender: mpsc::Sender<StreamingProgress>,
+    ) -> Result<(), DbError> {
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected".into()))?;
+
+        let statements: Vec<String> = SqlScriptSplitter::split(script)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let total = statements.len();
+
+        if options.transactional {
+            let tx = client
+                .transaction()
+                .await
+                .map_err(|e| DbError::QueryError(format!("Failed to begin transaction: {}", e)))?;
+
+            let mut has_error = false;
+
+            for (index, sql) in statements.into_iter().enumerate() {
+                let current = index + 1;
+
+                let modified_sql = if let Some(max_rows) = options.max_rows {
+                    if SqlStatementClassifier::is_query_statement(&sql)
+                        && !sql.to_uppercase().contains(" LIMIT ")
+                    {
+                        format!("{} LIMIT {}", sql, max_rows)
+                    } else {
+                        sql.clone()
+                    }
+                } else {
+                    sql.clone()
+                };
+
+                let start = Instant::now();
+                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+
+                let result = if is_query {
+                    match tx.query(&modified_sql, &[]).await {
+                        Ok(rows) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            if rows.is_empty() {
+                                SqlResult::Query(QueryResult {
+                                    sql: sql.clone(),
+                                    columns: Vec::new(),
+                                    rows: Vec::new(),
+                                    elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
+                                })
+                            } else {
+                                let columns: Vec<String> = rows[0]
+                                    .columns()
+                                    .iter()
+                                    .map(|col| col.name().to_string())
+                                    .collect();
+
+                                let all_rows: Vec<Vec<Option<String>>> = rows
+                                    .iter()
+                                    .map(|row| {
+                                        (0..columns.len())
+                                            .map(|i| Self::extract_value(row, i))
+                                            .collect()
+                                    })
+                                    .collect();
+
+                                SqlResult::Query(QueryResult {
+                                    sql: sql.clone(),
+                                    columns,
+                                    rows: all_rows,
+                                    elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
+                                })
+                            }
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.clone(),
+                            message: e.to_string(),
+                        }),
+                    }
+                } else {
+                    match tx.execute(&modified_sql, &[]).await {
+                        Ok(rows_affected) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            let message = SqlStatementClassifier::format_message(&sql, rows_affected);
+
+                            SqlResult::Exec(ExecResult {
+                                sql: sql.clone(),
+                                rows_affected,
+                                elapsed_ms,
+                                message: Some(message),
+                            })
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.clone(),
+                            message: e.to_string(),
+                        }),
+                    }
+                };
+
+                let is_error = result.is_error();
+                if is_error {
+                    has_error = true;
+                }
+
+                let progress = StreamingProgress {
+                    current,
+                    total,
+                    result,
+                };
+
+                if sender.send(progress).await.is_err() {
+                    break;
+                }
+
+                if is_error {
+                    break;
+                }
+            }
+
+            if has_error {
+                tx.rollback()
+                    .await
+                    .map_err(|e| DbError::QueryError(format!("Failed to rollback: {}", e)))?;
+            } else {
+                tx.commit()
+                    .await
+                    .map_err(|e| DbError::QueryError(format!("Failed to commit: {}", e)))?;
+            }
+        } else {
+            for (index, sql) in statements.into_iter().enumerate() {
+                let current = index + 1;
+
+                let modified_sql = if let Some(max_rows) = options.max_rows {
+                    if SqlStatementClassifier::is_query_statement(&sql)
+                        && !sql.to_uppercase().contains(" LIMIT ")
+                    {
+                        format!("{} LIMIT {}", sql, max_rows)
+                    } else {
+                        sql.clone()
+                    }
+                } else {
+                    sql.clone()
+                };
+
+                let start = Instant::now();
+                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+
+                let result = if is_query {
+                    match client.query(&modified_sql, &[]).await {
+                        Ok(rows) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+
+                            if rows.is_empty() {
+                                SqlResult::Query(QueryResult {
+                                    sql: sql.clone(),
+                                    columns: Vec::new(),
+                                    rows: Vec::new(),
+                                    elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
+                                })
+                            } else {
+                                let columns: Vec<String> = rows[0]
+                                    .columns()
+                                    .iter()
+                                    .map(|col| col.name().to_string())
+                                    .collect();
+
+                                let all_rows: Vec<Vec<Option<String>>> = rows
+                                    .iter()
+                                    .map(|row| {
+                                        (0..columns.len())
+                                            .map(|i| Self::extract_value(row, i))
+                                            .collect()
+                                    })
+                                    .collect();
+
+                                SqlResult::Query(QueryResult {
+                                    sql: sql.clone(),
+                                    columns,
+                                    rows: all_rows,
+                                    elapsed_ms,
+                                    table_name: None,
+                                    primary_keys: Vec::new(),
+                                    editable: false,
+                                })
+                            }
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.clone(),
+                            message: e.to_string(),
+                        }),
+                    }
+                } else {
+                    match client.execute(&modified_sql, &[]).await {
+                        Ok(rows_affected) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            let message = SqlStatementClassifier::format_message(&sql, rows_affected);
+
+                            SqlResult::Exec(ExecResult {
+                                sql: sql.clone(),
+                                rows_affected,
+                                elapsed_ms,
+                                message: Some(message),
+                            })
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.clone(),
+                            message: e.to_string(),
+                        }),
+                    }
+                };
+
+                let is_error = result.is_error();
+                let progress = StreamingProgress {
+                    current,
+                    total,
+                    result,
+                };
+
+                if sender.send(progress).await.is_err() {
+                    break;
+                }
+
+                if is_error && options.stop_on_error {
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 }

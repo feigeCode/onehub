@@ -49,16 +49,21 @@ impl SqlResultTabContainer {
     pub fn handle_run_query(&mut self, sql: String, connection_id: String, current_database_value: Option<String> , _window: &mut Window, cx: &mut App) {
         let global_state = cx.global::<GlobalDbState>().clone();
         let mut clone_self = self.clone();
+        let connection_id_clone = connection_id.clone();
+        let database_clone = current_database_value.clone();
         cx.spawn(async move |cx: &mut AsyncApp| {
+            let config = global_state.get_config_async(&connection_id).await;
+            let database_type = config.map(|c| c.database_type).unwrap_or(one_core::storage::DatabaseType::MySQL);
+
             let result = global_state
-                .execute_script(cx, connection_id, sql.clone(), current_database_value, None)
+                .execute_script(cx, connection_id_clone.clone(), sql.clone(), current_database_value, None)
                 .await;
             match result {
                 Ok(results) => {
                     let _ = cx.update(|cx| {
                         if let Some(window_id) = cx.active_window() {
                             let _ = cx.update_window(window_id, |_entity, window, cx| {
-                                clone_self.set_result(results, window, cx);
+                                clone_self.set_result(results, connection_id_clone.clone(), database_clone.clone(), database_type.clone(), window, cx);
                             });
                         }
                     });
@@ -70,7 +75,15 @@ impl SqlResultTabContainer {
         }).detach();
     }
 
-    pub fn set_result(&mut self, results: Vec<SqlResult>, window: &mut Window, cx: &mut App) {
+    pub fn set_result(
+        &mut self,
+        results: Vec<SqlResult>,
+        connection_id: String,
+        database: Option<String>,
+        database_type: one_core::storage::DatabaseType,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         // Create tabs only for query results, store all results for summary
         let mut query_tabs: Vec<SqlResultTab> = vec![];
         let mut all_result_tabs: Vec<SqlResult> = vec![];
@@ -79,16 +92,18 @@ impl SqlResultTabContainer {
             match result {
                 SqlResult::Query(query_result) => {
                     let clone_query_result = query_result.clone();
-                    // 创建DataGrid配置，根据查询结果的可编辑性设置
+                    // 使用真实的数据库名和表名
+                    let db_name = database.clone().unwrap_or_default();
+                    let table_name = query_result.table_name.clone().unwrap_or_else(|| format!("result_{}", idx));
                     let config = DataGridConfig::new(
-                        "query_result",
-                        format!("result_{}", idx),
-                        "sql_result",
-                        one_core::storage::DatabaseType::MySQL, // 默认类型，实际不影响只读模式
+                        db_name,
+                        table_name,
+                        &connection_id,
+                        database_type.clone(),
                     )
-                    .editable(query_result.editable) // 根据查询分析结果设置可编辑性
+                    .editable(query_result.editable)
                     .show_toolbar(true)
-                    .usage(DataGridUsage::SqlResult); // SQL结果场景，编辑器高度较高
+                    .usage(DataGridUsage::SqlResult);
 
                     let data_grid = cx.new(|cx| DataGrid::new(config, window, cx));
 

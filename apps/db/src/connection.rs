@@ -1,7 +1,8 @@
 use crate::executor::{ExecOptions, SqlResult};
-use crate::types::{ SqlValue};
+use crate::types::SqlValue;
 use async_trait::async_trait;
 use one_core::storage::DbConnectionConfig;
+use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum DbError {
@@ -28,6 +29,14 @@ impl std::fmt::Display for DbError {
 
 impl std::error::Error for DbError {}
 
+/// 流式执行进度信息
+#[derive(Clone, Debug)]
+pub struct StreamingProgress {
+    pub current: usize,
+    pub total: usize,
+    pub result: SqlResult,
+}
+
 #[async_trait]
 pub trait DbConnection: Sync + Send {
     fn config(&self) -> Option<DbConnectionConfig>;
@@ -35,8 +44,15 @@ pub trait DbConnection: Sync + Send {
     async fn disconnect(&mut self) -> Result<(), DbError>;
     async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError>;
     async fn query(&self, query: &str, params: Option<Vec<SqlValue>>, options: ExecOptions) -> Result<SqlResult, DbError>;
-    
+
     async fn ping(&self) -> Result<(), DbError> {
         self.query("SELECT 1", None, ExecOptions::default()).await.map(|_| ())
     }
+
+    async fn execute_streaming(
+        &self,
+        script: &str,
+        options: ExecOptions,
+        sender: mpsc::Sender<StreamingProgress>,
+    ) -> Result<(), DbError>;
 }

@@ -1,4 +1,4 @@
-use crate::connection::{DbConnection, DbError};
+use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
 use crate::SqlValue;
 
@@ -7,13 +7,12 @@ use std::time::Instant;
 use async_trait::async_trait;
 use std::sync::RwLock;
 use one_core::storage::DbConnectionConfig;
+use tokio::sync::mpsc;
 
 pub struct MysqlDbConnection {
     config: Option<DbConnectionConfig>,
     // Use Pool for connection management
     pool: RwLock<Option<Pool>>,
-    // Track current database
-    current_database: RwLock<Option<String>>,
 }
 
 impl MysqlDbConnection {
@@ -21,7 +20,6 @@ impl MysqlDbConnection {
         Self {
             config: Some(config),
             pool: RwLock::new(None),
-            current_database: RwLock::new(None),
         }
     }
 
@@ -85,24 +83,14 @@ impl MysqlDbConnection {
     /// Get primary key columns for a table
     async fn get_primary_keys(
         conn: &mut Conn,
-        database: Option<&String>,
         table_name: &str,
     ) -> Vec<String> {
-        let query = if let Some(db) = database {
-            format!(
-                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
-                 WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
-                 ORDER BY ORDINAL_POSITION",
-                db, table_name
-            )
-        } else {
-            format!(
-                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
-                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
-                 ORDER BY ORDINAL_POSITION",
-                table_name
-            )
-        };
+        let query = format!(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
+             ORDER BY ORDINAL_POSITION",
+            table_name
+        );
 
         match conn.query::<Row, _>(query).await {
             Ok(rows) => rows
@@ -113,10 +101,76 @@ impl MysqlDbConnection {
         }
     }
 
+    fn apply_max_rows_limit(sql: &str, max_rows: Option<usize>) -> String {
+        if let Some(max) = max_rows {
+            if SqlStatementClassifier::is_query_statement(sql)
+                && !sql.to_uppercase().contains(" LIMIT ")
+            {
+                return format!("{} LIMIT {}", sql, max);
+            }
+        }
+        sql.to_string()
+    }
+
+    fn rows_to_query_result(
+        rows: Vec<Row>,
+        sql: String,
+        elapsed_ms: u128,
+        table_name: Option<String>,
+        primary_keys: Vec<String>,
+    ) -> SqlResult {
+        if rows.is_empty() {
+            return SqlResult::Query(QueryResult {
+                sql,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                elapsed_ms,
+                table_name: None,
+                primary_keys: Vec::new(),
+                editable: false,
+            });
+        }
+
+        let columns: Vec<String> = rows[0]
+            .columns_ref()
+            .iter()
+            .map(|col| col.name_str().to_string())
+            .collect();
+
+        let all_rows: Vec<Vec<Option<String>>> = rows
+            .iter()
+            .map(|row| {
+                (0..row.len())
+                    .map(|i| Self::extract_value(&row[i]))
+                    .collect()
+            })
+            .collect();
+
+        let editable = table_name.is_some() && !primary_keys.is_empty();
+        SqlResult::Query(QueryResult {
+            sql,
+            columns,
+            rows: all_rows,
+            elapsed_ms,
+            table_name,
+            primary_keys,
+            editable,
+        })
+    }
+
+    fn build_exec_result(sql: String, rows_affected: u64, elapsed_ms: u128) -> SqlResult {
+        let message = SqlStatementClassifier::format_message(&sql, rows_affected);
+        SqlResult::Exec(ExecResult {
+            sql,
+            rows_affected,
+            elapsed_ms,
+            message: Some(message),
+        })
+    }
+
     /// Execute a single statement and return the result
     async fn execute_single(
         conn: &mut Conn,
-        database: Option<&String>,
         sql: &str,
         is_query: bool,
     ) -> Result<SqlResult, DbError> {
@@ -124,61 +178,17 @@ impl MysqlDbConnection {
         let sql_string = sql.to_string();
 
         if is_query {
-            // Analyze if query might be editable
             let table_name = SqlStatementClassifier::analyze_select_editability(sql);
 
-            // Execute SELECT or other query statements
             match conn.query::<Row, _>(sql).await {
                 Ok(rows) => {
                     let elapsed_ms = start.elapsed().as_millis();
-
-                    if rows.is_empty() {
-                        Ok(SqlResult::Query(QueryResult {
-                            sql: sql_string,
-                            columns: Vec::new(),
-                            rows: Vec::new(),
-                            elapsed_ms,
-                            table_name: None,
-                            primary_keys: Vec::new(),
-                            editable: false,
-                        }))
+                    let primary_keys = if let Some(ref table) = table_name {
+                        Self::get_primary_keys(conn, table).await
                     } else {
-                        // Get column names from first row
-                        let columns: Vec<String> = rows[0]
-                            .columns_ref()
-                            .iter()
-                            .map(|col| col.name_str().to_string())
-                            .collect();
-
-                        // Extract row data
-                        let all_rows: Vec<Vec<Option<String>>> = rows
-                            .iter()
-                            .map(|row| {
-                                (0..row.len())
-                                    .map(|i| Self::extract_value(&row[i]))
-                                    .collect()
-                            })
-                            .collect();
-
-                        // Get primary keys if table name was identified
-                        let (final_table_name, primary_keys, editable) = if let Some(ref table) = table_name {
-                            let pks = Self::get_primary_keys(conn, database, table).await;
-                            let is_editable = !pks.is_empty();
-                            (table_name, pks, is_editable)
-                        } else {
-                            (None, Vec::new(), false)
-                        };
-
-                        Ok(SqlResult::Query(QueryResult {
-                            sql: sql_string,
-                            columns,
-                            rows: all_rows,
-                            elapsed_ms,
-                            table_name: final_table_name,
-                            primary_keys,
-                            editable,
-                        }))
-                    }
+                        Vec::new()
+                    };
+                    Ok(Self::rows_to_query_result(rows, sql_string, elapsed_ms, table_name, primary_keys))
                 }
                 Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                     sql: sql_string,
@@ -186,19 +196,10 @@ impl MysqlDbConnection {
                 })),
             }
         } else {
-            // Execute DML/DDL statements
             match conn.query_drop(sql).await {
                 Ok(_) => {
                     let elapsed_ms = start.elapsed().as_millis();
-                    let rows_affected = conn.affected_rows();
-                    let message = SqlStatementClassifier::format_message(&sql_string, rows_affected);
-
-                    Ok(SqlResult::Exec(ExecResult {
-                        sql: sql_string,
-                        rows_affected,
-                        elapsed_ms,
-                        message: Some(message),
-                    }))
+                    Ok(Self::build_exec_result(sql_string, conn.affected_rows(), elapsed_ms))
                 }
                 Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                     sql: sql_string,
@@ -248,10 +249,6 @@ impl DbConnection for MysqlDbConnection {
             let mut guard = self.pool.write().unwrap();
             *guard = Some(pool);
         }
-        {
-            let mut db_guard = self.current_database.write().unwrap();
-            *db_guard = config.database.clone();
-        }
 
         Ok(())
     }
@@ -278,15 +275,10 @@ impl DbConnection for MysqlDbConnection {
             .await
             .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
 
-        // Get current database for metadata queries
-        let current_db = self.current_database.read().unwrap().clone();
-
-        // Split script into statements
         let statements = SqlScriptSplitter::split(script);
         let mut results = Vec::new();
 
         if options.transactional {
-            // Start transaction
             let mut tx = conn
                 .start_transaction(Default::default())
                 .await
@@ -298,71 +290,16 @@ impl DbConnection for MysqlDbConnection {
                     continue;
                 }
 
-                // Apply max_rows limit
-                let modified_sql = if let Some(max_rows) = options.max_rows {
-                    if SqlStatementClassifier::is_query_statement(sql)
-                        && !sql.to_uppercase().contains(" LIMIT ")
-                    {
-                        format!("{} LIMIT {}", sql, max_rows)
-                    } else {
-                        sql.to_string()
-                    }
-                } else {
-                    sql.to_string()
-                };
-
+                let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
                 let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
-
-                // Execute within transaction
                 let start = Instant::now();
-                let sql_string = modified_sql.clone();
 
                 let result = if is_query {
-                    // Analyze if query might be editable
                     let table_name = SqlStatementClassifier::analyze_select_editability(&modified_sql);
-
                     match tx.query::<Row, _>(&modified_sql).await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
-
-                            if rows.is_empty() {
-                                SqlResult::Query(QueryResult {
-                                    sql: sql.to_string(),
-                                    columns: Vec::new(),
-                                    rows: Vec::new(),
-                                    elapsed_ms,
-                                    table_name: None,
-                                    primary_keys: Vec::new(),
-                                    editable: false,
-                                })
-                            } else {
-                                let columns: Vec<String> = rows[0]
-                                    .columns_ref()
-                                    .iter()
-                                    .map(|col| col.name_str().to_string())
-                                    .collect();
-
-                                let all_rows: Vec<Vec<Option<String>>> = rows
-                                    .iter()
-                                    .map(|row| {
-                                        (0..row.len())
-                                            .map(|i| Self::extract_value(&row[i]))
-                                            .collect()
-                                    })
-                                    .collect();
-
-                                // Note: Cannot query primary keys within transaction using same connection
-                                // Set editable to false for transactional queries for safety
-                                SqlResult::Query(QueryResult {
-                                    sql: sql.to_string(),
-                                    columns,
-                                    rows: all_rows,
-                                    elapsed_ms,
-                                    table_name,
-                                    primary_keys: Vec::new(),
-                                    editable: false,
-                                })
-                            }
+                            Self::rows_to_query_result(rows, sql.to_string(), elapsed_ms, table_name, Vec::new())
                         }
                         Err(e) => SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
@@ -373,15 +310,7 @@ impl DbConnection for MysqlDbConnection {
                     match tx.query_drop(&modified_sql).await {
                         Ok(_) => {
                             let elapsed_ms = start.elapsed().as_millis();
-                            let rows_affected = tx.affected_rows();
-                            let message = SqlStatementClassifier::format_message(&sql_string, rows_affected);
-
-                            SqlResult::Exec(ExecResult {
-                                sql: sql.to_string(),
-                                rows_affected,
-                                elapsed_ms,
-                                message: Some(message),
-                            })
+                            Self::build_exec_result(sql.to_string(), tx.affected_rows(), elapsed_ms)
                         }
                         Err(e) => SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
@@ -398,7 +327,6 @@ impl DbConnection for MysqlDbConnection {
                 }
             }
 
-            // Commit or rollback
             let has_error = results.iter().any(|r| r.is_error());
             if has_error {
                 tx.rollback()
@@ -410,72 +338,15 @@ impl DbConnection for MysqlDbConnection {
                     .map_err(|e| DbError::QueryError(format!("Failed to commit: {}", e)))?;
             }
         } else {
-            // Execute statements one by one
             for sql in statements {
                 let sql = sql.trim();
                 if sql.is_empty() {
                     continue;
                 }
 
-                let sql_upper = sql.to_uppercase();
-                let is_use_statement = sql_upper.starts_with("USE ");
-
-                // Handle USE statement specially
-                if is_use_statement {
-                    let start = Instant::now();
-                    let db_name = sql
-                        .trim_start_matches("USE ")
-                        .trim_start_matches("use ")
-                        .trim()
-                        .trim_matches('`')
-                        .trim_matches(';')
-                        .to_string();
-
-                    match conn.query_drop(sql).await {
-                        Ok(_) => {
-                            // Update current database
-                            {
-                                let mut db_guard = self.current_database.write().unwrap();
-                                *db_guard = Some(db_name.clone());
-                            }
-
-                            let elapsed_ms = start.elapsed().as_millis();
-                            results.push(SqlResult::Exec(ExecResult {
-                                sql: sql.to_string(),
-                                rows_affected: 0,
-                                elapsed_ms,
-                                message: Some(format!("Database changed to '{}'", db_name)),
-                            }));
-                        }
-                        Err(e) => {
-                            results.push(SqlResult::Error(SqlErrorInfo {
-                                sql: sql.to_string(),
-                                message: e.to_string(),
-                            }));
-
-                            if options.stop_on_error {
-                                break;
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                // Apply max_rows limit
-                let modified_sql = if let Some(max_rows) = options.max_rows {
-                    if SqlStatementClassifier::is_query_statement(sql)
-                        && !sql.to_uppercase().contains(" LIMIT ")
-                    {
-                        format!("{} LIMIT {}", sql, max_rows)
-                    } else {
-                        sql.to_string()
-                    }
-                } else {
-                    sql.to_string()
-                };
-
+                let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
                 let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
-                let result = Self::execute_single(&mut conn, current_db.as_ref(), &modified_sql, is_query).await?;
+                let result = Self::execute_single(&mut conn, &modified_sql, is_query).await?;
 
                 let is_error = result.is_error();
                 results.push(result);
@@ -493,7 +364,7 @@ impl DbConnection for MysqlDbConnection {
         &self,
         query: &str,
         params: Option<Vec<SqlValue>>,
-        options: ExecOptions,
+        _options: ExecOptions,
     ) -> Result<SqlResult, DbError> {
         let pool = self.ensure_connected()?;
         let mut conn = pool
@@ -501,70 +372,25 @@ impl DbConnection for MysqlDbConnection {
             .await
             .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
 
-        // Get current database for metadata queries
-        let current_db = self.current_database.read().unwrap().clone();
-
         let start = Instant::now();
         let is_query = SqlStatementClassifier::is_query_statement(query);
         let query_string = query.to_string();
 
         if let Some(params) = params {
-            // Use prepared statement with parameters
             let mysql_params: Vec<Value> = params.iter().map(Self::convert_param).collect();
 
             if is_query {
-                // Analyze if query might be editable
                 let table_name = SqlStatementClassifier::analyze_select_editability(query);
 
                 match conn.exec::<Row, _, _>(query, mysql_params).await {
                     Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
-
-                        if rows.is_empty() {
-                            Ok(SqlResult::Query(QueryResult {
-                                sql: query_string,
-                                columns: Vec::new(),
-                                rows: Vec::new(),
-                                elapsed_ms,
-                                table_name: None,
-                                primary_keys: Vec::new(),
-                                editable: false,
-                            }))
+                        let primary_keys = if let Some(ref table) = table_name {
+                            Self::get_primary_keys(&mut conn, table).await
                         } else {
-                            let columns: Vec<String> = rows[0]
-                                .columns_ref()
-                                .iter()
-                                .map(|col| col.name_str().to_string())
-                                .collect();
-
-                            let all_rows: Vec<Vec<Option<String>>> = rows
-                                .iter()
-                                .map(|row| {
-                                    (0..row.len())
-                                        .map(|i| Self::extract_value(&row[i]))
-                                        .collect()
-                                })
-                                .collect();
-
-                            // Get primary keys if table name was identified
-                            let (final_table_name, primary_keys, editable) = if let Some(ref table) = table_name {
-                                let pks = Self::get_primary_keys(&mut conn, current_db.as_ref(), table).await;
-                                let is_editable = !pks.is_empty();
-                                (table_name, pks, is_editable)
-                            } else {
-                                (None, Vec::new(), false)
-                            };
-
-                            Ok(SqlResult::Query(QueryResult {
-                                sql: query_string,
-                                columns,
-                                rows: all_rows,
-                                elapsed_ms,
-                                table_name: final_table_name,
-                                primary_keys,
-                                editable,
-                            }))
-                        }
+                            Vec::new()
+                        };
+                        Ok(Self::rows_to_query_result(rows, query_string, elapsed_ms, table_name, primary_keys))
                     }
                     Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                         sql: query_string,
@@ -575,15 +401,7 @@ impl DbConnection for MysqlDbConnection {
                 match conn.exec_drop(query, mysql_params).await {
                     Ok(_) => {
                         let elapsed_ms = start.elapsed().as_millis();
-                        let rows_affected = conn.affected_rows();
-                        let message = SqlStatementClassifier::format_message(&query_string, rows_affected);
-
-                        Ok(SqlResult::Exec(ExecResult {
-                            sql: query_string,
-                            rows_affected,
-                            elapsed_ms,
-                            message: Some(message),
-                        }))
+                        Ok(Self::build_exec_result(query_string, conn.affected_rows(), elapsed_ms))
                     }
                     Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                         sql: query_string,
@@ -592,8 +410,129 @@ impl DbConnection for MysqlDbConnection {
                 }
             }
         } else {
-            // Execute without parameters
-            Self::execute_single(&mut conn, current_db.as_ref(), query, is_query).await
+            Self::execute_single(&mut conn, query, is_query).await
         }
+    }
+
+    async fn execute_streaming(
+        &self,
+        script: &str,
+        options: ExecOptions,
+        sender: mpsc::Sender<StreamingProgress>,
+    ) -> Result<(), DbError> {
+        let pool = self.ensure_connected()?;
+        let mut conn = pool
+            .get_conn()
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
+
+        let statements: Vec<String> = SqlScriptSplitter::split(script)
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let total = statements.len();
+
+        if options.transactional {
+            let mut tx = conn
+                .start_transaction(Default::default())
+                .await
+                .map_err(|e| DbError::QueryError(format!("Failed to begin transaction: {}", e)))?;
+
+            let mut has_error = false;
+
+            for (index, sql) in statements.into_iter().enumerate() {
+                let current = index + 1;
+                let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
+                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let start = Instant::now();
+
+                let result = if is_query {
+                    let table_name = SqlStatementClassifier::analyze_select_editability(&modified_sql);
+                    match tx.query::<Row, _>(&modified_sql).await {
+                        Ok(rows) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            Self::rows_to_query_result(rows, sql.clone(), elapsed_ms, table_name, Vec::new())
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.clone(),
+                            message: e.to_string(),
+                        }),
+                    }
+                } else {
+                    match tx.query_drop(&modified_sql).await {
+                        Ok(_) => {
+                            let elapsed_ms = start.elapsed().as_millis();
+                            Self::build_exec_result(sql.clone(), tx.affected_rows(), elapsed_ms)
+                        }
+                        Err(e) => SqlResult::Error(SqlErrorInfo {
+                            sql: sql.clone(),
+                            message: e.to_string(),
+                        }),
+                    }
+                };
+
+                let is_error = result.is_error();
+                if is_error {
+                    has_error = true;
+                }
+
+                let progress = StreamingProgress {
+                    current,
+                    total,
+                    result,
+                };
+
+                if sender.send(progress).await.is_err() {
+                    break;
+                }
+
+                if is_error {
+                    break;
+                }
+            }
+
+            if has_error {
+                tx.rollback()
+                    .await
+                    .map_err(|e| DbError::QueryError(format!("Failed to rollback: {}", e)))?;
+            } else {
+                tx.commit()
+                    .await
+                    .map_err(|e| DbError::QueryError(format!("Failed to commit: {}", e)))?;
+            }
+        } else {
+            for (index, sql) in statements.into_iter().enumerate() {
+                let current = index + 1;
+                let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
+                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+
+                let result = match Self::execute_single(&mut conn, &modified_sql, is_query).await {
+                    Ok(r) => r,
+                    Err(e) => SqlResult::Error(SqlErrorInfo {
+                        sql: sql.clone(),
+                        message: e.to_string(),
+                    }),
+                };
+
+                let is_error = result.is_error();
+                let progress = StreamingProgress {
+                    current,
+                    total,
+                    result,
+                };
+
+                if sender.send(progress).await.is_err() {
+                    break;
+                }
+
+                if is_error && options.stop_on_error {
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 }

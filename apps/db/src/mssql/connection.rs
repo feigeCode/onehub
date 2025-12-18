@@ -13,7 +13,6 @@ use crate::{
 pub struct MssqlConnection {
     config: Option<MssqlConfig>,
     client: RwLock<Option<Client<Compat<TcpStream>>>>,
-    current_database: RwLock<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,7 +31,6 @@ impl MssqlConnection {
         Self {
             config: Some(config),
             client: RwLock::new(None),
-            current_database: RwLock::new(None),
         }
     }
 
@@ -68,10 +66,7 @@ impl MssqlConnection {
             let mut guard = self.client.write().unwrap();
             *guard = Some(client);
         }
-        {
-            let mut db_guard = self.current_database.write().unwrap();
-            *db_guard = config.database.clone();
-        }
+
 
         Ok(())
     }
@@ -118,9 +113,6 @@ impl MssqlConnection {
 
                 match client.execute(stmt, &[]).await {
                     Ok(_) => {
-                        let mut db_guard = self.current_database.write().unwrap();
-                        *db_guard = Some(db_name.clone());
-                        
                         let elapsed_ms = start.elapsed().as_millis();
                         results.push(SqlResult::Exec(ExecResult {
                             sql: stmt.to_string(),

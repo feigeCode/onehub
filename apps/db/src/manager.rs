@@ -1,8 +1,9 @@
-use crate::connection::{DbConnection, DbError};
+use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::plugin::DatabasePlugin;
 use crate::mysql::MySqlPlugin;
 use crate::postgresql::PostgresPlugin;
 use crate::{DbNode, ExecOptions, SqlResult};
+use tokio::sync::mpsc;
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
 use gpui::{AppContext, AsyncApp, Global};
@@ -49,8 +50,6 @@ struct ConnectionSession {
     last_active: Instant,
     created_at: Instant,
     session_id: String,
-    /// Whether this session is currently in a transaction
-    in_transaction: bool,
     /// Whether this session is currently checked out for use
     in_use: bool,
 }
@@ -64,7 +63,6 @@ impl ConnectionSession {
             last_active: now,
             created_at: now,
             session_id,
-            in_transaction: false,
             in_use: false,
         }
     }
@@ -85,10 +83,6 @@ impl ConnectionSession {
 
     /// Check if session is expired (idle timeout)
     fn is_expired(&self, timeout: Duration) -> bool {
-        // Don't expire sessions that are in a transaction
-        if self.in_transaction {
-            return false;
-        }
         if self.in_use {
             return false;
         }
@@ -208,7 +202,7 @@ impl ConnectionManager {
         let mut sessions = self.sessions.write().await;
 
         if let Some(session_list) = sessions.get_mut(&config.id) {
-            if let Some(session) = session_list.iter_mut().find(|s| !s.in_use && !s.in_transaction) {
+            if let Some(session) = session_list.iter_mut().find(|s| !s.in_use) {
                 session.config = config.clone();
                 session.mark_in_use();
                 info!("Reusing session: {}", session.session_id);
@@ -239,19 +233,6 @@ impl<'a> SessionConnectionGuard<'a> {
     }
 }
 
-impl<'a> Drop for SessionConnectionGuard<'a> {
-    fn drop(&mut self) {
-        for session_list in self.sessions.values_mut() {
-            if let Some(session) = session_list.iter_mut().find(|s| s.session_id == self.session_id) {
-                if !session.in_transaction {
-                    session.release();
-                }
-                break;
-            }
-        }
-    }
-}
-
 impl ConnectionManager {
     /// Get session config
     pub async fn get_session_config(&self, session_id: &str) -> Option<DbConnectionConfig> {
@@ -264,22 +245,6 @@ impl ConnectionManager {
         }
 
         None
-    }
-
-    /// Mark session as in/out of transaction
-    pub async fn set_transaction_state(&self, session_id: &str, in_transaction: bool) {
-        let mut sessions = self.sessions.write().await;
-
-        for session_list in sessions.values_mut() {
-            if let Some(session) = session_list.iter_mut().find(|s| s.session_id == session_id) {
-                session.in_transaction = in_transaction;
-                info!("Session {} transaction state: {}", session_id, in_transaction);
-                if !in_transaction {
-                    session.release();
-                }
-                break;
-            }
-        }
     }
 
     pub async fn release_session(&self, session_id: &str) -> Result<(), DbError> {
@@ -356,10 +321,10 @@ impl ConnectionManager {
                 if should_remove {
                     let mut session = session_list.remove(i);
                     warn!(
-                        "Closing expired session {} for config {} (in_transaction: {}, idle: {}s, lifetime: {}s)",
+                        "Closing expired session {} for config {} (in_use: {}, idle: {}s, lifetime: {}s)",
                         session.session_id,
                         config_id,
-                        session.in_transaction,
+                        session.in_use,
                         session.last_active.elapsed().as_secs(),
                         session.created_at.elapsed().as_secs()
                     );
@@ -378,16 +343,16 @@ impl ConnectionManager {
     pub async fn stats(&self) -> ConnectionStats {
         let sessions = self.sessions.read().await;
         let mut total = 0;
-        let mut in_transaction = 0;
+        let mut in_use_count = 0;
 
         for session_list in sessions.values() {
             total += session_list.len();
-            in_transaction += session_list.iter().filter(|s| s.in_transaction).count();
+            in_use_count += session_list.iter().filter(|s| s.in_use).count();
         }
 
         ConnectionStats {
             total_sessions: total,
-            active_transactions: in_transaction,
+            active_sessions: in_use_count,
             configs_with_sessions: sessions.len(),
         }
     }
@@ -401,7 +366,6 @@ impl ConnectionManager {
                 list.iter().map(|s| SessionInfo {
                     session_id: s.session_id.clone(),
                     database: s.config.database.clone(),
-                    in_transaction: s.in_transaction,
                     in_use: s.in_use,
                     idle_time: s.last_active.elapsed(),
                     lifetime: s.created_at.elapsed(),
@@ -432,7 +396,7 @@ impl Clone for ConnectionManager {
 #[derive(Debug, Clone)]
 pub struct ConnectionStats {
     pub total_sessions: usize,
-    pub active_transactions: usize,
+    pub active_sessions: usize,
     pub configs_with_sessions: usize,
 }
 
@@ -441,7 +405,6 @@ pub struct ConnectionStats {
 pub struct SessionInfo {
     pub session_id: String,
     pub database: Option<String>,
-    pub in_transaction: bool,
     pub in_use: bool,
     pub idle_time: Duration,
     pub lifetime: Duration,
@@ -735,6 +698,7 @@ impl GlobalDbState {
             // Execute query on session
             let opts = opts.unwrap_or_default();
             let is_transactional = opts.transactional;
+
             let result = {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
                 let conn = guard.connection()
@@ -742,20 +706,84 @@ impl GlobalDbState {
                 conn.execute(&script, opts).await?
             };
 
-            // Update transaction state
-            let trimmed = script.trim().to_uppercase();
-            let starts_transaction = trimmed.starts_with("BEGIN") || trimmed.starts_with("START TRANSACTION");
-            let ends_transaction = trimmed.starts_with("COMMIT") || trimmed.starts_with("ROLLBACK");
+            // Determine if session should stay open based on script content
+            let upper_script = script.to_uppercase();
+            let has_begin = upper_script.contains("BEGIN") || upper_script.contains("START TRANSACTION");
+            let has_commit = upper_script.contains("COMMIT");
+            let has_rollback = upper_script.contains("ROLLBACK");
 
-            if starts_transaction || is_transactional {
-                clone_self.connection_manager.set_transaction_state(&session_id, true).await;
-            } else if ends_transaction {
-                clone_self.connection_manager.set_transaction_state(&session_id, false).await;
+            // Keep session open if: in transactional mode, or has BEGIN without COMMIT/ROLLBACK
+            let keep_session = is_transactional || (has_begin && !has_commit && !has_rollback);
+
+            if keep_session {
+                // Release but don't close - session can be reused later
+                clone_self.connection_manager.release_session(&session_id).await?;
+            } else {
+                // Close session completely
+                clone_self.connection_manager.close_session(&session_id).await?;
             }
-            clone_self.connection_manager.close_session(&session_id).await?;
 
             Ok(result)
         })?.await
+    }
+
+    /// Execute SQL script with streaming progress
+    /// Returns a receiver that will receive progress updates for each statement
+    pub fn execute_script_streaming(
+        &self,
+        cx: &mut AsyncApp,
+        connection_id: String,
+        script: String,
+        database: Option<String>,
+        opts: Option<ExecOptions>,
+    ) -> anyhow::Result<mpsc::Receiver<StreamingProgress>> {
+        let (tx, rx) = mpsc::channel::<StreamingProgress>(100);
+
+        let clone_self = self.clone();
+        Tokio::spawn(cx, async move {
+            let config_result = async {
+                let mut config = clone_self.get_config_async(&connection_id).await
+                    .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
+                if let Some(db) = database {
+                    config.database = Some(db);
+                }
+                Ok::<_, anyhow::Error>(config)
+            }.await;
+
+            let config = match config_result {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+
+            let session_result = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await;
+
+            let session_id = match session_result {
+                Ok(id) => id,
+                Err(_) => return,
+            };
+
+            let opts = opts.unwrap_or_default();
+
+            let exec_result = async {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                conn.execute_streaming(&script, opts, tx).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                Ok::<_, anyhow::Error>(())
+            }.await;
+
+            let _ = clone_self.connection_manager.close_session(&session_id).await;
+
+            if let Err(e) = exec_result {
+                error!("Streaming execution error: {}", e);
+            }
+        })?.detach();
+
+        Ok(rx)
     }
 
     pub async fn with_session_connection<R, F>(

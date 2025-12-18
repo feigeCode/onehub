@@ -15,7 +15,7 @@ use gpui_component::{
 };
 
 // 3. 当前 crate 导入（按模块分组）
-use db::{ExecOptions, GlobalDbState, SqlResult};
+use db::{ExecOptions, GlobalDbState, SqlResult, StreamingProgress};
 
 pub struct SqlRunView {
     connection_id: String,
@@ -124,14 +124,13 @@ impl SqlRunView {
             let mut error_messages = Vec::new();
 
             for file_path in files {
-                // 读取文件内容
                 let sql_content = match std::fs::read_to_string(file_path) {
                     Ok(content) => content,
                     Err(e) => {
                         let error_msg = format!("文件读取错误 [{}]: {}", file_path, e);
                         error_messages.push(error_msg.clone());
                         total_errors += 1;
-                        
+
                         if stop_on_error {
                             Self::update_status(&cx, &status, &error_msg);
                             return;
@@ -140,7 +139,6 @@ impl SqlRunView {
                     }
                 };
 
-                // 执行SQL脚本
                 let conn_id = connection_id.clone();
                 let opts = ExecOptions {
                     stop_on_error,
@@ -148,28 +146,16 @@ impl SqlRunView {
                     max_rows: None,
                 };
 
-                let result = global_state.execute_script(cx, conn_id, sql_content, database.clone() , Some(opts)).await;
-                match result {
-                    Ok(results) => {
-                        let success_count = results.iter().filter(|r| !r.is_error()).count();
-                        let error_count = results.iter().filter(|r| r.is_error()).count();
+                let rx_result = global_state.execute_script_streaming(
+                    cx,
+                    conn_id,
+                    sql_content,
+                    database.clone(),
+                    Some(opts),
+                );
 
-                        total_success += success_count;
-                        total_errors += error_count;
-
-                        // 收集错误信息
-                        for result in results.iter() {
-                            if let SqlResult::Error(e) = result {
-                                error_messages.push(format!("[{}]: {}", file_path, e.message));
-                            }
-                        }
-
-                        if error_count > 0 && stop_on_error {
-                            let error_msg = format!("执行错误: {}", error_messages.last().unwrap_or(&"未知错误".to_string()));
-                            Self::update_status(&cx, &status, &error_msg);
-                            return;
-                        }
-                    }
+                let mut rx = match rx_result {
+                    Ok(rx) => rx,
                     Err(e) => {
                         let error_msg = format!("执行失败 [{}]: {}", file_path, e);
                         error_messages.push(error_msg.clone());
@@ -179,29 +165,81 @@ impl SqlRunView {
                             Self::update_status(&cx, &status, &error_msg);
                             return;
                         }
+                        continue;
+                    }
+                };
+
+                while let Some(progress) = rx.recv().await {
+                    let is_error = progress.result.is_error();
+
+                    if is_error {
+                        if let SqlResult::Error(e) = &progress.result {
+                            error_messages.push(format!("[{}]: {}", file_path, e.message));
+                        }
+                        total_errors += 1;
+                    } else {
+                        total_success += 1;
+                    }
+
+                    let status_msg = Self::format_progress_status(
+                        file_path,
+                        &progress,
+                        total_success,
+                        total_errors,
+                    );
+                    Self::update_status(&cx, &status, &status_msg);
+
+                    if is_error && stop_on_error {
+                        let error_msg = format!(
+                            "执行错误 [{}/{}]: {}",
+                            progress.current,
+                            progress.total,
+                            error_messages.last().unwrap_or(&"未知错误".to_string())
+                        );
+                        Self::update_status(&cx, &status, &error_msg);
+                        return;
                     }
                 }
-
-
             }
 
-            // 生成最终状态消息
             let final_message = if total_errors == 0 {
                 format!("执行完成: {} 条语句全部成功", total_success)
             } else {
                 let error_summary = if error_messages.len() <= 3 {
                     error_messages.join("\n")
                 } else {
-                    format!("{}...\n(共{}个错误)", 
-                        error_messages[..3].join("\n"), 
-                        error_messages.len())
+                    format!(
+                        "{}...\n(共{}个错误)",
+                        error_messages[..3].join("\n"),
+                        error_messages.len()
+                    )
                 };
-                format!("执行完成: {} 条成功, {} 条失败\n错误详情:\n{}", 
-                    total_success, total_errors, error_summary)
+                format!(
+                    "执行完成: {} 条成功, {} 条失败\n错误详情:\n{}",
+                    total_success, total_errors, error_summary
+                )
             };
 
             Self::update_status(&cx, &status, &final_message);
         }).detach();
+    }
+
+    fn format_progress_status(
+        file_path: &str,
+        progress: &StreamingProgress,
+        total_success: usize,
+        total_errors: usize,
+    ) -> String {
+        let result_indicator = if progress.result.is_error() { "✗" } else { "✓" };
+        format!(
+            "[{}] 执行进度: {}/{} {} | 成功: {} 失败: {}",
+            file_path,
+            progress.current,
+            progress.total,
+            result_indicator,
+            total_success,
+            total_errors
+        )
     }
 }
 

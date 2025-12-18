@@ -11,8 +11,6 @@ use crate::{
 pub struct OracleConnection {
     config: Option<OracleConfig>,
     conn: RwLock<Option<Connection>>,
-    #[allow(dead_code)]
-    current_schema: RwLock<Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -31,7 +29,6 @@ impl OracleConnection {
         Self {
             config: Some(config),
             conn: RwLock::new(None),
-            current_schema: RwLock::new(None),
         }
     }
 
