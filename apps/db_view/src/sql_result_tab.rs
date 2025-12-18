@@ -151,6 +151,9 @@ impl SqlResultTabContainer {
             }
         }
 
+        // 保存是否有结果页签
+        let has_query_tabs = !query_tabs.is_empty();
+
         // 更新实体数据
         self.result_tabs.update(cx, |tabs, cx| {
             *tabs = query_tabs;
@@ -162,9 +165,9 @@ impl SqlResultTabContainer {
             cx.notify();
         });
 
-        // 重置活动标签页为摘要页
+        // 如果有结果页签，默认打开第一个结果页签；否则打开摘要页
         self.active_result_tab.update(cx, |active, cx| {
-            *active = Arc::new(0);
+            *active = Arc::new(if has_query_tabs { 1 } else { 0 });
             cx.notify();
         });
 
