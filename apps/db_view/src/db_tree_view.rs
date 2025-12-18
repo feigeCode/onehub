@@ -38,6 +38,8 @@ pub enum DbTreeViewEvent {
     OpenViewData { node_id: String },
     /// 打开表结构标签页
     OpenTableStructure { node_id: String },
+    /// 设计表（新建或编辑）
+    DesignTable { node_id: String },
     /// 为指定数据库创建新查询
     CreateNewQuery { node_id: String },
     /// 打开命名查询
@@ -885,6 +887,7 @@ impl Render for DbTreeView {
                                                                     menu = menu
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "查看表数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableData { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "编辑表结构".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableStructure { node_id: n.clone() }))
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "设计表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DesignTable { node_id: n.clone() }))
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "重命名表".to_string(), &view_clone, window, |n| DbTreeViewEvent::RenameTable { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "清空表".to_string(), &view_clone, window, |n| DbTreeViewEvent::TruncateTable { node_id: n.clone() }))
@@ -924,6 +927,13 @@ impl Render for DbTreeView {
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "重命名查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::RenameQuery { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "删除查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteQuery { node_id: n }))
+                                                                        .separator();
+                                                                }
+                                                                DbNodeType::TablesFolder => {
+                                                                    let node_id_for_menu = node_id_clone.clone();
+
+                                                                    menu = menu
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "新建表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DesignTable { node_id: n.clone() }))
                                                                         .separator();
                                                                 }
                                                                 _ => {}

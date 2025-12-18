@@ -22,6 +22,7 @@ use crate::{
     database_view_plugin::DatabaseViewPluginRegistry,
     db_tree_view::{DbTreeView, DbTreeViewEvent},
     sql_editor_view::SqlEditorTabContent,
+    table_designer::{TableDesignerConfig, TableDesignerTabContent},
 };
 
 // Event handler for database tree view events
@@ -157,6 +158,11 @@ impl DatabaseEventHandler {
                 DbTreeViewEvent::OpenTableStructure { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_table_structure(node, global_state, tab_container, window, cx);
+                    }
+                }
+                DbTreeViewEvent::DesignTable { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_design_table(node, tab_container, window, cx);
                     }
                 }
                 DbTreeViewEvent::ImportData { node_id } => {
@@ -492,6 +498,57 @@ impl DatabaseEventHandler {
                 });
             }
         }).detach();
+    }
+
+    /// 处理设计表事件（新建或编辑表结构）
+    fn handle_design_table(
+        node: DbNode,
+        tab_container: Entity<TabContainer>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let connection_id = node.connection_id.clone();
+        let database_type = node.database_type.clone();
+
+        let (database_name, table_name) = match node.node_type {
+            DbNodeType::TablesFolder => {
+                let database = Self::get_database_from_node(&node);
+                (database, None)
+            }
+            DbNodeType::Table => {
+                let database = node.metadata
+                    .as_ref()
+                    .and_then(|m| m.get("database"))
+                    .cloned()
+                    .unwrap_or_else(|| Self::get_database_from_node(&node));
+                (database, Some(node.name.clone()))
+            }
+            _ => return,
+        };
+
+        let tab_id = if let Some(ref table) = table_name {
+            format!("table-designer-{}-{}", database_name, table)
+        } else {
+            format!("table-designer-{}-new-{}", database_name, Uuid::new_v4())
+        };
+
+        let tab_title = if let Some(ref table) = table_name {
+            format!("设计表: {}", table)
+        } else {
+            "新建表".to_string()
+        };
+
+        let mut config = TableDesignerConfig::new(connection_id, database_name, database_type);
+        if let Some(table) = table_name {
+            config = config.with_table_name(table);
+        }
+
+        let tab_content = TableDesignerTabContent::new(tab_title, config, window, cx);
+
+        tab_container.update(cx, |container, cx| {
+            let tab = TabItem::new(tab_id, tab_content);
+            container.add_and_activate_tab(tab, cx);
+        });
     }
 
     /// 处理导入数据事件

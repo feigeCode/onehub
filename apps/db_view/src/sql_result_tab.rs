@@ -103,7 +103,8 @@ impl SqlResultTabContainer {
                     )
                     .editable(query_result.editable)
                     .show_toolbar(true)
-                    .usage(DataGridUsage::SqlResult);
+                    .usage(DataGridUsage::SqlResult)
+                    .sql(query_result.sql.clone());
 
                     let data_grid = cx.new(|cx| DataGrid::new(config, window, cx));
 
@@ -119,20 +120,10 @@ impl SqlResultTabContainer {
                         })
                         .collect();
 
-                    // 如果可编辑，将主键列名转换为列索引；否则传入空列表
-                    let primary_key_indices = if query_result.editable {
-                        query_result.primary_keys.iter()
-                            .filter_map(|pk_name| {
-                                query_result.columns.iter().position(|col| col == pk_name)
-                            })
-                            .collect()
-                    } else {
-                        vec![]
-                    };
-
                     // 更新DataGrid数据
-                    data_grid.update(cx, |this,cx|{
-                        this.update_data(columns, rows, primary_key_indices, vec![], cx);
+                    data_grid.update(cx, |this, cx|{
+                        this.update_data(columns, rows, cx);
+                        this.set_filter_schema(query_result.columns.clone(), cx);
                     });
 
                     let tab = SqlResultTab {
@@ -215,7 +206,7 @@ impl SqlResultTabContainer {
 }
 
 impl Render for SqlResultTabContainer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let clone_self = self.clone();
         let query_tabs = self.result_tabs.read(cx);
         let all_results = self.all_results.read(cx);
@@ -303,29 +294,13 @@ impl Render for SqlResultTabContainer {
                             .rounded_md()
                             .overflow_hidden()
                             .child(render_summary_view(all_results, cx))
+                            .into_any_element()
                     } else {
                         // Show individual result table with toolbar - 给DataGrid完整的空间
                         query_tabs.get(active_idx - 1)
                             .and_then(|tab| tab.data_grid.as_ref())
                             .map(|data_grid| {
-                                v_flex()
-                                    .flex_1()
-                                    .w_full()
-                                    .bg(cx.theme().background)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .rounded_md()
-                                    .gap_0()
-                                    // 工具栏（只读模式，提供基本功能）
-                                    .child(
-                                        data_grid.read(cx).render_toolbar(
-                                            |_cx| {}, // 刷新功能（只读模式下无操作）
-                                            window,
-                                            cx,
-                                        )
-                                    )
-                                    // 表格区域 - 移除额外的容器包装，给编辑器更多空间
-                                    .child(data_grid.read(cx).render_table_area(window, cx))
+                                data_grid.clone().into_any_element()
                             })
                             .unwrap_or_else(|| {
                                 div()
@@ -334,6 +309,7 @@ impl Render for SqlResultTabContainer {
                                     .border_1()
                                     .border_color(cx.theme().border)
                                     .rounded_md()
+                                    .into_any_element()
                             })
                     }
                 )

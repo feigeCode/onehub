@@ -123,7 +123,6 @@ impl OracleConnection {
                             rows: data_rows,
                             elapsed_ms,
                             table_name: None,
-                            primary_keys: Vec::new(),
                             editable: false,
                         }));
                     }
@@ -201,7 +200,6 @@ impl OracleConnection {
                         rows: data_rows,
                         elapsed_ms,
                         table_name: None,
-                        primary_keys: Vec::new(),
                         editable: false,
                     }))
                 }

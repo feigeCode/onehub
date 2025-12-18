@@ -178,7 +178,6 @@ impl DbConnection for SqliteDbConnection {
                                 rows: Vec::new(),
                                 elapsed_ms,
                                 table_name: None,
-                                primary_keys: Vec::new(),
                                 editable: false,
                             })
                         } else {
@@ -203,7 +202,6 @@ impl DbConnection for SqliteDbConnection {
                                 rows: data_rows,
                                 elapsed_ms,
                                 table_name: None,
-                                primary_keys: Vec::new(),
                                 editable: false,
                             })
                         }
@@ -274,7 +272,6 @@ impl DbConnection for SqliteDbConnection {
                             rows: Vec::new(),
                             elapsed_ms,
                             table_name: None,
-                            primary_keys: Vec::new(),
                             editable: false,
                         })
                     } else {
@@ -299,7 +296,6 @@ impl DbConnection for SqliteDbConnection {
                             rows: data_rows,
                             elapsed_ms,
                             table_name: None,
-                            primary_keys: Vec::new(),
                             editable: false,
                         })
                     }
@@ -396,7 +392,6 @@ impl DbConnection for SqliteDbConnection {
                                     rows: Vec::new(),
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             } else {
@@ -421,7 +416,6 @@ impl DbConnection for SqliteDbConnection {
                                     rows: data_rows,
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             }
@@ -524,7 +518,6 @@ impl DbConnection for SqliteDbConnection {
                                     rows: Vec::new(),
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             } else {
@@ -549,7 +542,6 @@ impl DbConnection for SqliteDbConnection {
                                     rows: data_rows,
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             }

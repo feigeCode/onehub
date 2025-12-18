@@ -982,5 +982,112 @@ pub trait DatabasePlugin: Send + Sync {
     fn drop_view(&self, database: &str, view: &str) -> String {
         format!("DROP VIEW IF EXISTS {}", self.quote_identifier(view))
     }
-    
+
+    /// Build column definition from ColumnDefinition (for table designer)
+    fn build_column_def(&self, col: &ColumnDefinition) -> String {
+        let mut def = String::new();
+        def.push_str(&self.quote_identifier(&col.name));
+        def.push(' ');
+
+        let mut type_str = col.data_type.clone();
+        if let Some(len) = col.length {
+            if let Some(scale) = col.scale {
+                type_str = format!("{}({},{})", col.data_type, len, scale);
+            } else {
+                type_str = format!("{}({})", col.data_type, len);
+            }
+        }
+        def.push_str(&type_str);
+
+        if col.is_unsigned && self.name() == DatabaseType::MySQL {
+            def.push_str(" UNSIGNED");
+        }
+
+        if !col.is_nullable {
+            def.push_str(" NOT NULL");
+        }
+
+        if col.is_auto_increment {
+            match self.name() {
+                DatabaseType::MySQL => def.push_str(" AUTO_INCREMENT"),
+                DatabaseType::PostgreSQL => {},
+                _ => {}
+            }
+        }
+
+        if let Some(default) = &col.default_value {
+            if !default.is_empty() {
+                def.push_str(&format!(" DEFAULT {}", default));
+            }
+        }
+
+        if !col.comment.is_empty() && self.name() == DatabaseType::MySQL {
+            def.push_str(&format!(" COMMENT '{}'", col.comment.replace("'", "''")));
+        }
+
+        def
+    }
+
+    /// Build CREATE TABLE SQL from TableDesign
+    fn build_create_table_sql(&self, design: &TableDesign) -> String {
+        let mut sql = String::new();
+        sql.push_str("CREATE TABLE ");
+        sql.push_str(&self.quote_identifier(&design.table_name));
+        sql.push_str(" (\n");
+
+        let mut definitions: Vec<String> = Vec::new();
+
+        for col in &design.columns {
+            definitions.push(format!("  {}", self.build_column_def(col)));
+        }
+
+        let pk_columns: Vec<&str> = design.columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect();
+        if !pk_columns.is_empty() {
+            let pk_cols: Vec<String> = pk_columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            definitions.push(format!("  PRIMARY KEY ({})", pk_cols.join(", ")));
+        }
+
+        for idx in &design.indexes {
+            if idx.is_primary {
+                continue;
+            }
+            let idx_cols: Vec<String> = idx.columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            let idx_type = if idx.is_unique { "UNIQUE INDEX" } else { "INDEX" };
+            definitions.push(format!("  {} {} ({})",
+                idx_type,
+                self.quote_identifier(&idx.name),
+                idx_cols.join(", ")
+            ));
+        }
+
+        sql.push_str(&definitions.join(",\n"));
+        sql.push_str("\n)");
+
+        if self.name() == DatabaseType::MySQL {
+            if let Some(engine) = &design.options.engine {
+                sql.push_str(&format!(" ENGINE={}", engine));
+            }
+            if let Some(charset) = &design.options.charset {
+                sql.push_str(&format!(" DEFAULT CHARSET={}", charset));
+            }
+            if let Some(collation) = &design.options.collation {
+                sql.push_str(&format!(" COLLATE={}", collation));
+            }
+            if !design.options.comment.is_empty() {
+                sql.push_str(&format!(" COMMENT='{}'", design.options.comment.replace("'", "''")));
+            }
+        }
+
+        sql.push(';');
+        sql
+    }
+
 }

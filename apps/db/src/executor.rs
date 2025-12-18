@@ -54,8 +54,6 @@ pub struct QueryResult {
     pub elapsed_ms: u128,
     /// Table name if this is a single-table query
     pub table_name: Option<String>,
-    /// Primary key column names
-    pub primary_keys: Vec<String>,
     /// Whether this result set is editable
     pub editable: bool,
 }

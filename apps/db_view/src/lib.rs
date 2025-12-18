@@ -19,6 +19,7 @@ pub mod sql_editor_view;
 pub mod sql_result_tab;
 pub mod sql_run_view;
 pub mod table_data_tab;
+pub mod table_designer;
 pub mod table_import_view;
 mod db_tree_event;
 pub mod database_view_plugin;

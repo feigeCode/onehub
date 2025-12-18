@@ -168,7 +168,6 @@ impl MssqlConnection {
                             rows: data_rows,
                             elapsed_ms,
                             table_name: None,
-                            primary_keys: Vec::new(),
                             editable: false,
                         }));
                     }
@@ -247,7 +246,6 @@ impl MssqlConnection {
                         rows: data_rows,
                         elapsed_ms,
                         table_name: None,
-                        primary_keys: Vec::new(),
                         editable: false,
                     }))
                 }

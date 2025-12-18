@@ -80,27 +80,6 @@ impl MysqlDbConnection {
         }
     }
 
-    /// Get primary key columns for a table
-    async fn get_primary_keys(
-        conn: &mut Conn,
-        table_name: &str,
-    ) -> Vec<String> {
-        let query = format!(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}' AND CONSTRAINT_NAME = 'PRIMARY' \
-             ORDER BY ORDINAL_POSITION",
-            table_name
-        );
-
-        match conn.query::<Row, _>(query).await {
-            Ok(rows) => rows
-                .iter()
-                .filter_map(|row| Self::extract_value(&row[0]))
-                .collect(),
-            Err(_) => Vec::new(),
-        }
-    }
-
     fn apply_max_rows_limit(sql: &str, max_rows: Option<usize>) -> String {
         if let Some(max) = max_rows {
             if SqlStatementClassifier::is_query_statement(sql)
@@ -117,7 +96,6 @@ impl MysqlDbConnection {
         sql: String,
         elapsed_ms: u128,
         table_name: Option<String>,
-        primary_keys: Vec<String>,
     ) -> SqlResult {
         if rows.is_empty() {
             return SqlResult::Query(QueryResult {
@@ -126,7 +104,6 @@ impl MysqlDbConnection {
                 rows: Vec::new(),
                 elapsed_ms,
                 table_name: None,
-                primary_keys: Vec::new(),
                 editable: false,
             });
         }
@@ -146,14 +123,13 @@ impl MysqlDbConnection {
             })
             .collect();
 
-        let editable = table_name.is_some() && !primary_keys.is_empty();
+        let editable = table_name.is_some();
         SqlResult::Query(QueryResult {
             sql,
             columns,
             rows: all_rows,
             elapsed_ms,
             table_name,
-            primary_keys,
             editable,
         })
     }
@@ -183,12 +159,7 @@ impl MysqlDbConnection {
             match conn.query::<Row, _>(sql).await {
                 Ok(rows) => {
                     let elapsed_ms = start.elapsed().as_millis();
-                    let primary_keys = if let Some(ref table) = table_name {
-                        Self::get_primary_keys(conn, table).await
-                    } else {
-                        Vec::new()
-                    };
-                    Ok(Self::rows_to_query_result(rows, sql_string, elapsed_ms, table_name, primary_keys))
+                    Ok(Self::rows_to_query_result(rows, sql_string, elapsed_ms, table_name))
                 }
                 Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                     sql: sql_string,
@@ -299,7 +270,7 @@ impl DbConnection for MysqlDbConnection {
                     match tx.query::<Row, _>(&modified_sql).await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
-                            Self::rows_to_query_result(rows, sql.to_string(), elapsed_ms, table_name, Vec::new())
+                            Self::rows_to_query_result(rows, sql.to_string(), elapsed_ms, table_name)
                         }
                         Err(e) => SqlResult::Error(SqlErrorInfo {
                             sql: sql.to_string(),
@@ -385,12 +356,7 @@ impl DbConnection for MysqlDbConnection {
                 match conn.exec::<Row, _, _>(query, mysql_params).await {
                     Ok(rows) => {
                         let elapsed_ms = start.elapsed().as_millis();
-                        let primary_keys = if let Some(ref table) = table_name {
-                            Self::get_primary_keys(&mut conn, table).await
-                        } else {
-                            Vec::new()
-                        };
-                        Ok(Self::rows_to_query_result(rows, query_string, elapsed_ms, table_name, primary_keys))
+                        Ok(Self::rows_to_query_result(rows, query_string, elapsed_ms, table_name))
                     }
                     Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                         sql: query_string,
@@ -453,7 +419,7 @@ impl DbConnection for MysqlDbConnection {
                     match tx.query::<Row, _>(&modified_sql).await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
-                            Self::rows_to_query_result(rows, sql.clone(), elapsed_ms, table_name, Vec::new())
+                            Self::rows_to_query_result(rows, sql.clone(), elapsed_ms, table_name)
                         }
                         Err(e) => SqlResult::Error(SqlErrorInfo {
                             sql: sql.clone(),

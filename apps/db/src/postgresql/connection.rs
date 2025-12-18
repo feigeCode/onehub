@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use one_core::storage::DbConnectionConfig;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex};
 use tokio_postgres::{Client, Config, NoTls, Row, types::Type};
 
 use crate::connection::{DbConnection, DbError, StreamingProgress};
@@ -278,7 +278,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: Vec::new(),
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             } else {
@@ -303,7 +302,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: all_rows,
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             }
@@ -416,7 +414,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: Vec::new(),
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             } else {
@@ -441,7 +438,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: all_rows,
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             }
@@ -530,7 +526,6 @@ impl DbConnection for PostgresDbConnection {
                                 rows: Vec::new(),
                                 elapsed_ms,
                                 table_name: None,
-                                primary_keys: Vec::new(),
                                 editable: false,
                             }))
                         } else {
@@ -555,7 +550,6 @@ impl DbConnection for PostgresDbConnection {
                                 rows: all_rows,
                                 elapsed_ms,
                                 table_name: None,
-                                primary_keys: Vec::new(),
                                 editable: false,
                             }))
                         }
@@ -598,7 +592,6 @@ impl DbConnection for PostgresDbConnection {
                                 rows: Vec::new(),
                                 elapsed_ms,
                                 table_name: None,
-                                primary_keys: Vec::new(),
                                 editable: false,
                             }))
                         } else {
@@ -623,7 +616,6 @@ impl DbConnection for PostgresDbConnection {
                                 rows: all_rows,
                                 elapsed_ms,
                                 table_name: None,
-                                primary_keys: Vec::new(),
                                 editable: false,
                             }))
                         }
@@ -710,7 +702,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: Vec::new(),
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             } else {
@@ -735,7 +726,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: all_rows,
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             }
@@ -825,7 +815,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: Vec::new(),
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             } else {
@@ -850,7 +839,6 @@ impl DbConnection for PostgresDbConnection {
                                     rows: all_rows,
                                     elapsed_ms,
                                     table_name: None,
-                                    primary_keys: Vec::new(),
                                     editable: false,
                                 })
                             }

@@ -744,3 +744,160 @@ pub struct CollationInfo {
     pub is_default: bool,
 }
 
+// === Table Designer Types ===
+
+/// Detailed column definition for table designer
+#[derive(Debug, Clone, Default)]
+pub struct ColumnDefinition {
+    pub name: String,
+    pub data_type: String,
+    pub length: Option<u32>,
+    pub precision: Option<u32>,
+    pub scale: Option<u32>,
+    pub is_nullable: bool,
+    pub is_primary_key: bool,
+    pub is_auto_increment: bool,
+    pub is_unsigned: bool,
+    pub default_value: Option<String>,
+    pub comment: String,
+}
+
+impl ColumnDefinition {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            is_nullable: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn data_type(mut self, data_type: impl Into<String>) -> Self {
+        self.data_type = data_type.into();
+        self
+    }
+
+    pub fn length(mut self, length: u32) -> Self {
+        self.length = Some(length);
+        self
+    }
+
+    pub fn nullable(mut self, nullable: bool) -> Self {
+        self.is_nullable = nullable;
+        self
+    }
+
+    pub fn primary_key(mut self, pk: bool) -> Self {
+        self.is_primary_key = pk;
+        self
+    }
+
+    pub fn auto_increment(mut self, ai: bool) -> Self {
+        self.is_auto_increment = ai;
+        self
+    }
+
+    pub fn default_value(mut self, value: impl Into<String>) -> Self {
+        self.default_value = Some(value.into());
+        self
+    }
+
+    pub fn comment(mut self, comment: impl Into<String>) -> Self {
+        self.comment = comment.into();
+        self
+    }
+}
+
+/// Index definition for table designer
+#[derive(Debug, Clone, Default)]
+pub struct IndexDefinition {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub is_unique: bool,
+    pub is_primary: bool,
+    pub index_type: Option<String>,
+    pub comment: String,
+}
+
+impl IndexDefinition {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn columns(mut self, columns: Vec<String>) -> Self {
+        self.columns = columns;
+        self
+    }
+
+    pub fn unique(mut self, unique: bool) -> Self {
+        self.is_unique = unique;
+        self
+    }
+
+    pub fn primary(mut self, primary: bool) -> Self {
+        self.is_primary = primary;
+        self
+    }
+}
+
+/// Foreign key definition
+#[derive(Debug, Clone, Default)]
+pub struct ForeignKeyDefinition {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+    pub on_delete: String,
+    pub on_update: String,
+}
+
+/// Table options (engine, charset, etc.)
+#[derive(Debug, Clone, Default)]
+pub struct TableOptions {
+    pub engine: Option<String>,
+    pub charset: Option<String>,
+    pub collation: Option<String>,
+    pub comment: String,
+    pub auto_increment: Option<u64>,
+}
+
+/// Complete table design
+#[derive(Debug, Clone, Default)]
+pub struct TableDesign {
+    pub database_name: String,
+    pub table_name: String,
+    pub columns: Vec<ColumnDefinition>,
+    pub indexes: Vec<IndexDefinition>,
+    pub foreign_keys: Vec<ForeignKeyDefinition>,
+    pub options: TableOptions,
+}
+
+impl TableDesign {
+    pub fn new(database_name: impl Into<String>, table_name: impl Into<String>) -> Self {
+        Self {
+            database_name: database_name.into(),
+            table_name: table_name.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn add_column(&mut self, column: ColumnDefinition) {
+        self.columns.push(column);
+    }
+
+    pub fn add_index(&mut self, index: IndexDefinition) {
+        self.indexes.push(index);
+    }
+
+    pub fn primary_key_columns(&self) -> Vec<&str> {
+        self.columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect()
+    }
+}
+
+
