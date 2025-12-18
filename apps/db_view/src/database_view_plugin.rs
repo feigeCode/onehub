@@ -1,22 +1,36 @@
 use std::{collections::HashMap, sync::Arc};
 
-use gpui::{ App, Entity, Window};
+use gpui::{App, Entity, Global, Window};
 use one_core::storage::DatabaseType;
 
-use crate::db_connection_form::{DbConnectionForm};
-use crate::mysql::database_form::DatabaseForm;
+use crate::common::DatabaseEditorView;
+use crate::db_connection_form::DbConnectionForm;
 use crate::mysql::mysql_view_plugin::MySqlDatabaseViewPlugin;
 
-/// 简化的数据库视图插件接口
-/// 直接返回视图，不搞配置抽象层
+/// 数据库视图插件接口
+/// 每种数据库类型实现此 trait 来提供特定的 UI 组件
 pub trait DatabaseViewPlugin: Send + Sync {
     fn database_type(&self) -> DatabaseType;
-    
-    /// 创建数据库表单视图
-    fn create_database_form(&self, window: &mut Window, cx: &mut App) -> Entity<DatabaseForm>;
-    
-    /// 创建连接表单视图  
+
+    /// 创建连接表单视图
     fn create_connection_form(&self, window: &mut Window, cx: &mut App) -> Entity<DbConnectionForm>;
+
+    /// 创建数据库编辑器视图（用于新建数据库）
+    fn create_database_editor_view(
+        &self,
+        connection_id: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<DatabaseEditorView>;
+
+    /// 创建数据库编辑器视图（用于编辑现有数据库）
+    fn create_database_editor_view_for_edit(
+        &self,
+        connection_id: String,
+        database_name: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<DatabaseEditorView>;
 }
 
 pub type DatabaseViewPluginRef = Arc<dyn DatabaseViewPlugin>;
@@ -28,11 +42,10 @@ pub struct DatabaseViewPluginRegistry {
 
 impl DatabaseViewPluginRegistry {
     pub fn new() -> Self {
-        let mut registry = Self { 
-            plugins: HashMap::new() 
+        let mut registry = Self {
+            plugins: HashMap::new()
         };
 
-        // 只注册 MySQL 插件，先保证走通
         registry.register(MySqlDatabaseViewPlugin::new());
 
         registry
@@ -61,3 +74,5 @@ impl Default for DatabaseViewPluginRegistry {
         Self::new()
     }
 }
+
+impl Global for DatabaseViewPluginRegistry {}

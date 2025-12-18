@@ -23,6 +23,7 @@ use gpui_component::label::Label;
 use one_core::{
     storage::{GlobalStorageState, StoredConnection},
 };
+use one_core::storage::DatabaseType;
 use one_core::utils::debouncer::Debouncer;
 // ============================================================================
 // DbTreeView Events
@@ -134,7 +135,7 @@ impl DbTreeView {
         let mut init_nodes = vec![];
         let mut workspace_id = None;
         if connections.is_empty() {
-            let node =  DbNode::new("root", "No Database Connected", DbNodeType::Connection, "".to_string());
+            let node =  DbNode::new("root", "No Database Connected", DbNodeType::Connection, "".to_string(), DatabaseType::MySQL);
             db_nodes.insert(
                 "root".to_string(),
                 node.clone()
@@ -144,7 +145,8 @@ impl DbTreeView {
             for conn in connections {
                 workspace_id = conn.workspace_id.clone();
                 let id = conn.id.unwrap_or(0).to_string();
-                let node = DbNode::new(id.clone(), conn.name.to_string(), DbNodeType::Connection, id.clone());
+                let conn = conn.to_db_connection().unwrap();
+                let node = DbNode::new(id.clone(), conn.name.to_string(), DbNodeType::Connection, id.clone(), conn.database_type);
                 db_nodes.insert(id, node.clone());
                 init_nodes.push(node);
             }

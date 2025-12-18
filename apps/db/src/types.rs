@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use gpui_component::table::Column;
+use one_core::storage::DatabaseType;
 
 /// SQL value type for parameter binding
 #[derive(Debug, Clone)]
@@ -74,6 +75,7 @@ pub struct DbNode {
     pub id: String,
     pub name: String,
     pub node_type: DbNodeType,
+    pub database_type: DatabaseType,
     pub has_children: bool,
     pub children_loaded: bool,
     pub children: Vec<DbNode>,
@@ -111,7 +113,7 @@ impl Ord for DbNode {
 }
 
 impl DbNode {
-    pub fn new(id: impl Into<String>, name: impl Into<String>, node_type: DbNodeType, connection_id: String) -> Self {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, node_type: DbNodeType, connection_id: String, database_type: DatabaseType) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -122,6 +124,7 @@ impl DbNode {
             metadata: None,
             connection_id,
             parent_context: None,
+            database_type,
         }
     }
 
@@ -723,5 +726,21 @@ pub struct TableDataResponse {
     pub executed_sql: String,
     /// Duration of the query
     pub duration: u128
+}
+
+/// Character set information
+#[derive(Debug, Clone)]
+pub struct CharsetInfo {
+    pub name: String,
+    pub description: String,
+    pub default_collation: String,
+}
+
+/// Collation information
+#[derive(Debug, Clone)]
+pub struct CollationInfo {
+    pub name: String,
+    pub charset: String,
+    pub is_default: bool,
 }
 

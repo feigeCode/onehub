@@ -197,6 +197,16 @@ pub trait DatabasePlugin: Send + Sync {
         def
     }
 
+    // === Database Management Operations ===
+    /// Build SQL for creating a new database
+    fn build_create_database_sql(&self, request: &DatabaseOperationRequest) -> String;
+
+    /// Build SQL for modifying an existing database
+    fn build_modify_database_sql(&self, request: &DatabaseOperationRequest) -> String;
+
+    /// Build SQL for dropping a database
+    fn build_drop_database_sql(&self, database_name: &str) -> String;
+
     // === Tree Building ===
     async fn build_database_tree(&self, connection: &dyn DbConnection, node: &DbNode, global_storage_state: &GlobalStorageState) -> Result<Vec<DbNode>> {
         let mut nodes = Vec::new();
@@ -211,9 +221,9 @@ pub trait DatabasePlugin: Send + Sync {
             format!("{}:table_folder", id),
             format!("Tables ({})", table_count),
             DbNodeType::TablesFolder,
-            node.connection_id.clone()
+            node.connection_id.clone(),
+            node.database_type.clone()
         ).with_parent_context(id).with_metadata(metadata.clone());
-
         if table_count > 0 {
             let children: Vec<DbNode> = tables
                 .into_iter()
@@ -230,7 +240,8 @@ pub trait DatabasePlugin: Send + Sync {
                         format!("{}:table_folder:{}", id, table_info.name),
                         table_info.name.clone(),
                         DbNodeType::Table,
-                        node.connection_id.clone()
+                        node.connection_id.clone(),
+                        node.database_type.clone()
                     )
                     .with_children_flag(true)
                     .with_parent_context(format!("{}:table_folder", id))
@@ -251,7 +262,8 @@ pub trait DatabasePlugin: Send + Sync {
                 format!("{}:views_folder", id),
                 format!("Views ({})", view_count),
                 DbNodeType::ViewsFolder,
-                node.connection_id.clone()
+                node.connection_id.clone(),
+                node.database_type.clone()
             ).with_parent_context(id).with_metadata(metadata.clone());
 
             let children: Vec<DbNode> = views
@@ -266,7 +278,8 @@ pub trait DatabasePlugin: Send + Sync {
                         format!("{}:views_folder:{}", id, view.name),
                         view.name.clone(),
                         DbNodeType::View,
-                        node.connection_id.clone()
+                        node.connection_id.clone(),
+                        node.database_type.clone()
                     ).with_parent_context(format!("{}:views_folder", id));
                     
                     if !metadata.is_empty() {
@@ -313,7 +326,8 @@ pub trait DatabasePlugin: Send + Sync {
                         format!("{}:queries_folder", &node_id_for_queries),
                         format!("Queries ({})", query_count),
                         DbNodeType::QueriesFolder,
-                        connection_id_for_queries.clone()
+                        connection_id_for_queries.clone(),
+                        node.database_type.clone()
                     )
                         .with_parent_context(node_id_for_queries.clone())
                         .with_metadata(metadata.clone());
@@ -335,7 +349,8 @@ pub trait DatabasePlugin: Send + Sync {
                                 format!("{}:queries_folder:{}", &node_id_for_queries, query.id.unwrap_or(0)),
                                 query.name.clone(),
                                 DbNodeType::NamedQuery,
-                                connection_id_for_queries.clone()
+                                connection_id_for_queries.clone(),
+                                node.database_type.clone()
                             )
                                 .with_parent_context(format!("{}:queries_folder", &node_id_for_queries))
                                 .with_metadata(query_metadata);
@@ -370,7 +385,8 @@ pub trait DatabasePlugin: Send + Sync {
             format!("{}:queries_folder", &node_id_for_queries),
             format!("Queries ({})", 0),
             DbNodeType::QueriesFolder,
-            connection_id_for_queries.clone()
+            connection_id_for_queries.clone(),
+            node.database_type.clone()
         )
             .with_parent_context(node_id_for_queries.clone())
             .with_metadata(metadata);
@@ -385,7 +401,7 @@ pub trait DatabasePlugin: Send + Sync {
                 Ok(databases
                     .into_iter()
                     .map(|db| {
-                        DbNode::new(format!("{}:{}", &node.id, db), db.clone(), DbNodeType::Database, node.id.clone())
+                        DbNode::new(format!("{}:{}", &node.id, db), db.clone(), DbNodeType::Database, node.id.clone(), node.database_type.clone())
                             .with_children_flag(false)
                             .with_parent_context(id)
                     })
@@ -422,7 +438,8 @@ pub trait DatabasePlugin: Send + Sync {
                     format!("{}:columns_folder", id),
                     format!("Columns ({})", column_count),
                     DbNodeType::ColumnsFolder,
-                    node.connection_id.clone()
+                    node.connection_id.clone(),
+                    node.database_type.clone()
                 ).with_parent_context(id)
                     .with_metadata(folder_metadata.clone());
 
@@ -441,7 +458,8 @@ pub trait DatabasePlugin: Send + Sync {
                                 format!("{}:columns_folder:{}", id, col.name),
                                 col.name,
                                 DbNodeType::Column,
-                                node.connection_id.clone()
+                                node.connection_id.clone(),
+                                node.database_type.clone()
                             )
                             .with_metadata(column_metadata)
                             .with_parent_context(format!("{}:columns_folder", id))
@@ -461,7 +479,8 @@ pub trait DatabasePlugin: Send + Sync {
                     format!("{}:indexes_folder", id),
                     format!("Indexes ({})", index_count),
                     DbNodeType::IndexesFolder,
-                    node.connection_id.clone()
+                    node.connection_id.clone(),
+                    node.database_type.clone()
                 ).with_parent_context(id)
                 .with_metadata(folder_metadata.clone());
 
@@ -479,7 +498,8 @@ pub trait DatabasePlugin: Send + Sync {
                                 format!("{}:indexes_folder:{}", id, idx.name),
                                 idx.name,
                                 DbNodeType::Index,
-                                node.connection_id.clone()
+                                node.connection_id.clone(),
+                                node.database_type.clone()
                             )
                             .with_metadata(metadata)
                             .with_parent_context(format!("{}:indexes_folder", id))
@@ -899,6 +919,17 @@ pub trait DatabasePlugin: Send + Sync {
         parts.join(" AND ")
     }
 
+    // === Charset and Collation ===
+    /// Get list of available character sets for this database
+    fn get_charsets(&self) -> Vec<CharsetInfo> {
+        vec![]
+    }
+
+    /// Get collations for a specific charset
+    fn get_collations(&self, charset: &str) -> Vec<CollationInfo> {
+        vec![]
+    }
+
     // === Data Types ===
     /// Get list of available data types for this database
     fn get_data_types(&self) -> Vec<DataTypeInfo> {
@@ -951,9 +982,5 @@ pub trait DatabasePlugin: Send + Sync {
     fn drop_view(&self, database: &str, view: &str) -> String {
         format!("DROP VIEW IF EXISTS {}", self.quote_identifier(view))
     }
-
-    /// Create database
-    fn create_database(&self, database: &str, database_name: &str) -> String {
-        format!("CREATE DATABASE {}", self.quote_identifier(database_name))
-    }
+    
 }

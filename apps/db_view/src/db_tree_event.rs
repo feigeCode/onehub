@@ -2,7 +2,7 @@
 // (无需标准库导入)
 
 // 2. 外部 crate 导入（按字母顺序）
-use db::{DbNode, DbNodeType, GlobalDbState};
+use db::{DbNode, DbNodeType, GlobalDbState, SqlResult};
 use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::{error, warn};
 use gpui_component::{
@@ -14,10 +14,12 @@ use one_core::{
     tab_container::{TabContainer, TabItem},
 };
 use uuid::Uuid;
+use gpui_component::dialog::DialogButtonProps;
 use one_core::storage::query_model::Query;
 // 3. 当前 crate 导入（按模块分组）
 use crate::{
     database_objects_tab::DatabaseObjectsPanel,
+    database_view_plugin::DatabaseViewPluginRegistry,
     db_tree_view::{DbTreeView, DbTreeViewEvent},
     sql_editor_view::SqlEditorTabContent,
 };
@@ -101,29 +103,6 @@ impl DatabaseEventHandler {
             }
         });
     }
-
-    /// 异步获取配置并执行操作，处理错误情况
-    async fn with_config<F>(
-        global_state: GlobalDbState,
-        connection_id: String,
-        cx: &mut AsyncApp,
-        error_msg: impl Into<String>,
-        f: F,
-    )
-    where
-        F: FnOnce(&mut Window, &mut App) + Send + 'static,
-    {
-        let config = global_state.get_config_async(&connection_id).await;
-        let error_message = error_msg.into();
-
-        if config.is_some() {
-            Self::with_window(cx, f).await;
-        } else {
-            let _ = cx.update(|cx| {
-                Self::show_error_async(cx, format!("{}: 无法获取连接配置 {}", error_message, connection_id));
-            });
-        }
-    }
 }
 
 impl DatabaseEventHandler {
@@ -202,12 +181,12 @@ impl DatabaseEventHandler {
                 }
                 DbTreeViewEvent::CreateDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_create_database(node, global_state, window, cx);
+                        Self::handle_create_database(node, global_state, tree_view.clone(), window, cx);
                     }
                 }
                 DbTreeViewEvent::EditDatabase { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_edit_database(node, global_state, window, cx);
+                        Self::handle_edit_database(node, global_state, tree_view.clone(), window, cx);
                     }
                 }
                 DbTreeViewEvent::CloseDatabase { node_id } => {
@@ -837,121 +816,114 @@ impl DatabaseEventHandler {
     fn handle_create_database(
         node: DbNode,
         global_state: GlobalDbState,
-        _window: &mut Window,
+        tree_view: Entity<DbTreeView>,
+        window: &mut Window,
         cx: &mut App,
     ) {
-        use crate::database_view_plugin::DatabaseViewPluginRegistry;
         use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();
+        let database_type = node.database_type;
 
-        let connection_id_for_error = connection_id.clone();
+        let plugin_registry = cx.global::<DatabaseViewPluginRegistry>();
+        let editor_view = if let Some(plugin) = plugin_registry.get(&database_type) {
+            plugin.create_database_editor_view(connection_id.clone(), window, cx)
+        } else {
+            Self::show_error(window, format!("不支持的数据库类型: {:?}", database_type), cx);
+            return;
+        };
 
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            let config = global_state.get_config_async(&connection_id).await;
+        let global_state_clone = global_state.clone();
+        let connection_id_clone = connection_id.clone();
+        let tree_view_clone = tree_view.clone();
 
-            if let Some(config) = config {
-                let db_type = config.database_type;
+        let editor_view_for_ok = editor_view.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let editor_view_ok = editor_view_for_ok.clone();
+            let connection_id_for_ok = connection_id_clone.clone();
+            let global_state_for_ok = global_state_clone.clone();
+            let tree_view_for_ok = tree_view_clone.clone();
 
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            let registry = DatabaseViewPluginRegistry::new();
+            dialog
+                .title("创建数据库")
+                .child(editor_view.clone())
+                .width(px(700.0))
+                .button_props(DialogButtonProps::default().ok_text("创建"))
+                .footer(|ok, cancel, window, cx| {
+                    vec![cancel(window, cx), ok(window, cx)]
+                })
+                .on_ok(move |_, _window, cx| {
+                    let connection_id = connection_id_for_ok.clone();
+                    let global_state = global_state_for_ok.clone();
+                    let tree_view = tree_view_for_ok.clone();
 
-                            if let Some(plugin) = registry.get(&db_type) {
-                                let form = plugin.create_database_form(window, cx);
-
-                                window.open_dialog(cx, move |dialog, _window, _cx| {
-                                    dialog
-                                        .title("创建数据库")
-                                        .child(form.clone())
-                                        .width(px(600.0))
-                                        .on_ok(move |_, _window, _cx| {
-                                            true
-                                        })
-                                        .on_cancel(|_, _window, _cx| {
-                                            true
-                                        })
-                                });
-                            } else {
-                                Self::show_error(window, format!("创建数据库失败：不支持的数据库类型 {:?}", db_type), cx);
-                            }
-                        });
-                    }
-                });
-            } else {
-                let connection_id_for_error = connection_id_for_error.clone();
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            Self::show_error(window, format!("创建数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
-                        });
-                    }
-                });
-            }
-        }).detach();
+                    editor_view_ok.update(cx, |view, cx| {
+                        view.trigger_save(connection_id, global_state, tree_view, cx);
+                    });
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
     }
 
     /// 处理编辑数据库事件
     fn handle_edit_database(
         node: DbNode,
         global_state: GlobalDbState,
-        _window: &mut Window,
+        tree_view: Entity<DbTreeView>,
+        window: &mut Window,
         cx: &mut App,
     ) {
-        use crate::database_view_plugin::DatabaseViewPluginRegistry;
         use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();
         let database_name = node.name.clone();
+        let database_type = node.database_type;
 
-        let connection_id_for_error = connection_id.clone();
-        let database_name_string = database_name.clone();
+        let plugin_registry = cx.global::<DatabaseViewPluginRegistry>();
+        let editor_view = if let Some(plugin) = plugin_registry.get(&database_type) {
+            plugin.create_database_editor_view_for_edit(
+                connection_id.clone(),
+                database_name.clone(),
+                window,
+                cx,
+            )
+        } else {
+            Self::show_error(window, format!("不支持的数据库类型: {:?}", database_type), cx);
+            return;
+        };
 
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            let config = global_state.get_config_async(&connection_id).await;
+        let global_state_clone = global_state.clone();
+        let connection_id_clone = connection_id.clone();
+        let tree_view_clone = tree_view.clone();
 
-            if let Some(config) = config {
-                let db_type = config.database_type;
+        let editor_view_for_ok = editor_view.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let editor_view_ok = editor_view_for_ok.clone();
+            let connection_id_for_ok = connection_id_clone.clone();
+            let global_state_for_ok = global_state_clone.clone();
+            let tree_view_for_ok = tree_view_clone.clone();
 
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let database_name = database_name_string.clone();
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            let registry = DatabaseViewPluginRegistry::new();
+            dialog
+                .title(format!("编辑数据库: {}", database_name))
+                .child(editor_view.clone())
+                .width(px(700.0))
+                .button_props(DialogButtonProps::default().ok_text("保存"))
+                .footer(|ok, cancel, window, cx| {
+                    vec![cancel(window, cx), ok(window, cx)]
+                })
+                .on_ok(move |_, _window, cx| {
+                    let connection_id = connection_id_for_ok.clone();
+                    let global_state = global_state_for_ok.clone();
+                    let tree_view = tree_view_for_ok.clone();
 
-                            if let Some(plugin) = registry.get(&db_type) {
-                                let form = plugin.create_database_form(window, cx);
-
-                                window.open_dialog(cx, move |dialog, _window, _cx| {
-                                    dialog
-                                        .title(format!("编辑数据库: {}", database_name))
-                                        .child(form.clone())
-                                        .width(px(600.0))
-                                        .on_ok(move |_, _window, _cx| {
-                                            true
-                                        })
-                                        .on_cancel(|_, _window, _cx| {
-                                            true
-                                        })
-                                });
-                            } else {
-                                Self::show_error(window, format!("编辑数据库失败：不支持的数据库类型 {:?}", db_type), cx);
-                            }
-                        });
-                    }
-                });
-            } else {
-                let connection_id_for_error = connection_id_for_error.clone();
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            Self::show_error(window, format!("编辑数据库失败：无法获取连接配置 {}", connection_id_for_error), cx);
-                        });
-                    }
-                });
-            }
-        }).detach();
+                    editor_view_ok.update(cx, |view, cx| {
+                        view.trigger_save(connection_id, global_state, tree_view, cx);
+                    });
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
     }
 
 

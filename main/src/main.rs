@@ -6,6 +6,7 @@ mod settings;
 use gpui::*;
 use gpui_component::Root;
 use db::GlobalDbState;
+use db_view::database_view_plugin::DatabaseViewPluginRegistry;
 use gpui_component_assets::Assets;
 use one_core::gpui_tokio::Tokio;
 use crate::onehup_app::OneHupApp;
@@ -22,6 +23,10 @@ fn main() {
         // Start cleanup task
         db_state.start_cleanup_task(cx);
         cx.set_global(db_state);
+
+        // Initialize database view plugin registry
+        let view_registry = DatabaseViewPluginRegistry::new();
+        cx.set_global(view_registry);
         let mut window_size = size(px(1600.0), px(1200.0));
         if let Some(display) = cx.primary_display() {
             let display_size = display.bounds().size;

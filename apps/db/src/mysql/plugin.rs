@@ -729,6 +729,108 @@ impl DatabasePlugin for MySqlPlugin {
         }
     }
 
+    fn get_charsets(&self) -> Vec<CharsetInfo> {
+        vec![
+            CharsetInfo { name: "utf8mb4".into(), description: "UTF-8 Unicode (4 bytes)".into(), default_collation: "utf8mb4_general_ci".into() },
+            CharsetInfo { name: "utf8mb3".into(), description: "UTF-8 Unicode (3 bytes)".into(), default_collation: "utf8mb3_general_ci".into() },
+            CharsetInfo { name: "utf8".into(), description: "UTF-8 Unicode (alias for utf8mb3)".into(), default_collation: "utf8_general_ci".into() },
+            CharsetInfo { name: "latin1".into(), description: "West European (ISO 8859-1)".into(), default_collation: "latin1_swedish_ci".into() },
+            CharsetInfo { name: "latin2".into(), description: "Central European (ISO 8859-2)".into(), default_collation: "latin2_general_ci".into() },
+            CharsetInfo { name: "ascii".into(), description: "US ASCII".into(), default_collation: "ascii_general_ci".into() },
+            CharsetInfo { name: "gbk".into(), description: "GBK Simplified Chinese".into(), default_collation: "gbk_chinese_ci".into() },
+            CharsetInfo { name: "gb2312".into(), description: "GB2312 Simplified Chinese".into(), default_collation: "gb2312_chinese_ci".into() },
+            CharsetInfo { name: "gb18030".into(), description: "GB18030 Chinese".into(), default_collation: "gb18030_chinese_ci".into() },
+            CharsetInfo { name: "big5".into(), description: "Big5 Traditional Chinese".into(), default_collation: "big5_chinese_ci".into() },
+            CharsetInfo { name: "sjis".into(), description: "Shift-JIS Japanese".into(), default_collation: "sjis_japanese_ci".into() },
+            CharsetInfo { name: "euckr".into(), description: "EUC-KR Korean".into(), default_collation: "euckr_korean_ci".into() },
+            CharsetInfo { name: "greek".into(), description: "ISO 8859-7 Greek".into(), default_collation: "greek_general_ci".into() },
+            CharsetInfo { name: "hebrew".into(), description: "ISO 8859-8 Hebrew".into(), default_collation: "hebrew_general_ci".into() },
+            CharsetInfo { name: "cp1251".into(), description: "Windows Cyrillic".into(), default_collation: "cp1251_general_ci".into() },
+            CharsetInfo { name: "cp1256".into(), description: "Windows Arabic".into(), default_collation: "cp1256_general_ci".into() },
+            CharsetInfo { name: "binary".into(), description: "Binary pseudo charset".into(), default_collation: "binary".into() },
+        ]
+    }
+
+    fn get_collations(&self, charset: &str) -> Vec<CollationInfo> {
+        match charset {
+            "utf8mb4" => vec![
+                CollationInfo { name: "utf8mb4_general_ci".into(), charset: "utf8mb4".into(), is_default: true },
+                CollationInfo { name: "utf8mb4_unicode_ci".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_unicode_520_ci".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_bin".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_0900_ai_ci".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_0900_as_ci".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_0900_as_cs".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_zh_0900_as_cs".into(), charset: "utf8mb4".into(), is_default: false },
+                CollationInfo { name: "utf8mb4_ja_0900_as_cs".into(), charset: "utf8mb4".into(), is_default: false },
+            ],
+            "utf8mb3" | "utf8" => vec![
+                CollationInfo { name: "utf8_general_ci".into(), charset: "utf8".into(), is_default: true },
+                CollationInfo { name: "utf8_unicode_ci".into(), charset: "utf8".into(), is_default: false },
+                CollationInfo { name: "utf8_bin".into(), charset: "utf8".into(), is_default: false },
+            ],
+            "latin1" => vec![
+                CollationInfo { name: "latin1_swedish_ci".into(), charset: "latin1".into(), is_default: true },
+                CollationInfo { name: "latin1_general_ci".into(), charset: "latin1".into(), is_default: false },
+                CollationInfo { name: "latin1_general_cs".into(), charset: "latin1".into(), is_default: false },
+                CollationInfo { name: "latin1_bin".into(), charset: "latin1".into(), is_default: false },
+            ],
+            "latin2" => vec![
+                CollationInfo { name: "latin2_general_ci".into(), charset: "latin2".into(), is_default: true },
+                CollationInfo { name: "latin2_bin".into(), charset: "latin2".into(), is_default: false },
+            ],
+            "ascii" => vec![
+                CollationInfo { name: "ascii_general_ci".into(), charset: "ascii".into(), is_default: true },
+                CollationInfo { name: "ascii_bin".into(), charset: "ascii".into(), is_default: false },
+            ],
+            "gbk" => vec![
+                CollationInfo { name: "gbk_chinese_ci".into(), charset: "gbk".into(), is_default: true },
+                CollationInfo { name: "gbk_bin".into(), charset: "gbk".into(), is_default: false },
+            ],
+            "gb2312" => vec![
+                CollationInfo { name: "gb2312_chinese_ci".into(), charset: "gb2312".into(), is_default: true },
+                CollationInfo { name: "gb2312_bin".into(), charset: "gb2312".into(), is_default: false },
+            ],
+            "gb18030" => vec![
+                CollationInfo { name: "gb18030_chinese_ci".into(), charset: "gb18030".into(), is_default: true },
+                CollationInfo { name: "gb18030_bin".into(), charset: "gb18030".into(), is_default: false },
+                CollationInfo { name: "gb18030_unicode_520_ci".into(), charset: "gb18030".into(), is_default: false },
+            ],
+            "big5" => vec![
+                CollationInfo { name: "big5_chinese_ci".into(), charset: "big5".into(), is_default: true },
+                CollationInfo { name: "big5_bin".into(), charset: "big5".into(), is_default: false },
+            ],
+            "sjis" => vec![
+                CollationInfo { name: "sjis_japanese_ci".into(), charset: "sjis".into(), is_default: true },
+                CollationInfo { name: "sjis_bin".into(), charset: "sjis".into(), is_default: false },
+            ],
+            "euckr" => vec![
+                CollationInfo { name: "euckr_korean_ci".into(), charset: "euckr".into(), is_default: true },
+                CollationInfo { name: "euckr_bin".into(), charset: "euckr".into(), is_default: false },
+            ],
+            "greek" => vec![
+                CollationInfo { name: "greek_general_ci".into(), charset: "greek".into(), is_default: true },
+                CollationInfo { name: "greek_bin".into(), charset: "greek".into(), is_default: false },
+            ],
+            "hebrew" => vec![
+                CollationInfo { name: "hebrew_general_ci".into(), charset: "hebrew".into(), is_default: true },
+                CollationInfo { name: "hebrew_bin".into(), charset: "hebrew".into(), is_default: false },
+            ],
+            "cp1251" => vec![
+                CollationInfo { name: "cp1251_general_ci".into(), charset: "cp1251".into(), is_default: true },
+                CollationInfo { name: "cp1251_bin".into(), charset: "cp1251".into(), is_default: false },
+            ],
+            "cp1256" => vec![
+                CollationInfo { name: "cp1256_general_ci".into(), charset: "cp1256".into(), is_default: true },
+                CollationInfo { name: "cp1256_bin".into(), charset: "cp1256".into(), is_default: false },
+            ],
+            "binary" => vec![
+                CollationInfo { name: "binary".into(), charset: "binary".into(), is_default: true },
+            ],
+            _ => vec![],
+        }
+    }
+
     fn get_data_types(&self) -> Vec<DataTypeInfo> {
         vec![
             // 数值类型
@@ -771,7 +873,34 @@ impl DatabasePlugin for MySqlPlugin {
             DataTypeInfo::new("SET('value1','value2')", "Set of values").with_category(DataTypeCategory::Other),
         ]
     }
-    
+
+    // === Database Management Operations ===
+    fn build_create_database_sql(&self, request: &crate::plugin::DatabaseOperationRequest) -> String {
+        let db_name = &request.database_name;
+        let charset = request.field_values.get("charset").map(|s| s.as_str()).unwrap_or("utf8mb4");
+        let collation = request.field_values.get("collation").map(|s| s.as_str()).unwrap_or("utf8mb4_general_ci");
+
+        format!(
+            "CREATE DATABASE `{}` CHARACTER SET {} COLLATE {};",
+            db_name, charset, collation
+        )
+    }
+
+    fn build_modify_database_sql(&self, request: &crate::plugin::DatabaseOperationRequest) -> String {
+        let db_name = &request.database_name;
+        let charset = request.field_values.get("charset").map(|s| s.as_str()).unwrap_or("utf8mb4");
+        let collation = request.field_values.get("collation").map(|s| s.as_str()).unwrap_or("utf8mb4_general_ci");
+
+        format!(
+            "ALTER DATABASE `{}` CHARACTER SET {} COLLATE {};",
+            db_name, charset, collation
+        )
+    }
+
+    fn build_drop_database_sql(&self, database_name: &str) -> String {
+        format!("DROP DATABASE `{}`;", database_name)
+    }
+
 
 
 }

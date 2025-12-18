@@ -1,27 +1,27 @@
 use std::collections::HashMap;
 
-use gpui::{px, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{px, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window};
 use gpui_component::{
-    button::{Button, ButtonVariants},
-    form::{field, v_form},
-    h_flex,
+    form::field,
     input::{Input, InputState},
-    select::{Select, SelectItem, SelectState},
+    select::{Select, SelectEvent, SelectItem, SelectState},
     v_flex, IndexPath, Sizable, Size,
 };
-use db::plugin::DatabaseOperationRequest;
+use db::plugin::{DatabaseOperationRequest, DatabasePlugin};
+use db::mysql::MySqlPlugin;
+use db::types::{CharsetInfo, CollationInfo};
+use gpui_component::form::h_form;
 
-/// MySQL 字符集选项
+use crate::DatabaseFormEvent;
+
 #[derive(Clone, Debug)]
 pub struct CharsetSelectItem {
-    pub value: String,
+    pub info: CharsetInfo,
 }
 
 impl CharsetSelectItem {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self {
-            value: value.into(),
-        }
+    pub fn new(info: CharsetInfo) -> Self {
+        Self { info }
     }
 }
 
@@ -29,25 +29,22 @@ impl SelectItem for CharsetSelectItem {
     type Value = String;
 
     fn title(&self) -> gpui::SharedString {
-        self.value.clone().into()
+        format!("{} - {}", self.info.name, self.info.description).into()
     }
 
     fn value(&self) -> &Self::Value {
-        &self.value
+        &self.info.name
     }
 }
 
-/// MySQL 排序规则选项
 #[derive(Clone, Debug)]
 pub struct CollationSelectItem {
-    pub value: String,
+    pub info: CollationInfo,
 }
 
 impl CollationSelectItem {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self {
-            value: value.into(),
-        }
+    pub fn new(info: CollationInfo) -> Self {
+        Self { info }
     }
 }
 
@@ -55,57 +52,76 @@ impl SelectItem for CollationSelectItem {
     type Value = String;
 
     fn title(&self) -> gpui::SharedString {
-        self.value.clone().into()
+        if self.info.is_default {
+            format!("{} (default)", self.info.name).into()
+        } else {
+            self.info.name.clone().into()
+        }
     }
 
     fn value(&self) -> &Self::Value {
-        &self.value
+        &self.info.name
     }
 }
 
-pub enum DatabaseFormEvent {
-    Save(DatabaseOperationRequest),
-    Cancel,
-}
-
-/// MySQL 数据库创建表单
-pub struct DatabaseForm {
+pub struct MySqlDatabaseForm {
     focus_handle: FocusHandle,
-    // MySQL 专用字段
     name_input: Entity<InputState>,
     charset_select: Entity<SelectState<Vec<CharsetSelectItem>>>,
     collation_select: Entity<SelectState<Vec<CollationSelectItem>>>,
+    is_edit_mode: bool,
+    plugin: MySqlPlugin,
+    _subscriptions: Vec<Subscription>,
 }
 
-impl DatabaseForm {
-    /// 创建 MySQL 数据库表单
-    pub fn new_mysql(window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl MySqlDatabaseForm {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
+        let plugin = MySqlPlugin::new();
 
-        // 数据库名称输入框
         let name_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("输入数据库名称")
         });
 
-        // 字符集选择
-        let charset_items = vec![
-            CharsetSelectItem::new("utf8mb4"),
-            CharsetSelectItem::new("utf8"),
-            CharsetSelectItem::new("latin1"),
-        ];
+        let charset_items: Vec<CharsetSelectItem> = plugin.get_charsets()
+            .into_iter()
+            .map(CharsetSelectItem::new)
+            .collect();
+
         let charset_select = cx.new(|cx| {
             SelectState::new(charset_items, Some(IndexPath::new(0)), window, cx)
         });
 
-        // 排序规则选择
-        let collation_items = vec![
-            CollationSelectItem::new("utf8mb4_general_ci"),
-            CollationSelectItem::new("utf8mb4_unicode_ci"),
-            CollationSelectItem::new("utf8_general_ci"),
-        ];
+        let default_charset = plugin.get_charsets().first()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "utf8mb4".to_string());
+
+        let collation_items: Vec<CollationSelectItem> = plugin.get_collations(&default_charset)
+            .into_iter()
+            .map(CollationSelectItem::new)
+            .collect();
+
+        let default_collation_index = collation_items.iter()
+            .position(|c| c.info.is_default)
+            .unwrap_or(0);
+
         let collation_select = cx.new(|cx| {
-            SelectState::new(collation_items, Some(IndexPath::new(0)), window, cx)
+            SelectState::new(collation_items, Some(IndexPath::new(default_collation_index)), window, cx)
+        });
+
+        let name_sub = cx.observe(&name_input, |this, _, cx| {
+            this.trigger_form_changed(cx);
+        });
+
+        let charset_select_clone = charset_select.clone();
+        let collation_select_clone = collation_select.clone();
+        let charset_sub = cx.subscribe_in(&charset_select, window, move |this, _select, _event: &SelectEvent<Vec<CharsetSelectItem>>, window, cx| {
+            this.on_charset_changed(&charset_select_clone, &collation_select_clone, window, cx);
+        });
+
+        let collation_sub = cx.subscribe_in(&collation_select, window, |this, _select, _event: &SelectEvent<Vec<CollationSelectItem>>, _window, cx| {
+            this.trigger_form_changed(cx);
         });
 
         Self {
@@ -113,22 +129,60 @@ impl DatabaseForm {
             name_input,
             charset_select,
             collation_select,
+            is_edit_mode: false,
+            plugin,
+            _subscriptions: vec![name_sub, charset_sub, collation_sub],
         }
     }
 
-    fn build_mysql_request(&self, cx: &App) -> DatabaseOperationRequest {
+    pub fn new_for_edit(database_name: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut form = Self::new(window, cx);
+        form.is_edit_mode = true;
+        form.name_input.update(cx, |input, cx| {
+            input.set_value(database_name.to_string(), window, cx);
+        });
+        form
+    }
+
+    fn on_charset_changed(
+        &mut self,
+        charset_select: &Entity<SelectState<Vec<CharsetSelectItem>>>,
+        collation_select: &Entity<SelectState<Vec<CollationSelectItem>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_charset = charset_select.read(cx).selected_value().cloned();
+
+        if let Some(charset) = selected_charset {
+            let collations = self.plugin.get_collations(&charset);
+            let collation_items: Vec<CollationSelectItem> = collations
+                .into_iter()
+                .map(CollationSelectItem::new)
+                .collect();
+
+            let default_index = collation_items.iter()
+                .position(|c| c.info.is_default)
+                .unwrap_or(0);
+
+            collation_select.update(cx, |state, cx| {
+                state.set_items(collation_items, window, cx);
+                state.set_selected_index(Some(IndexPath::new(default_index)), window, cx);
+            });
+
+            self.trigger_form_changed(cx);
+        }
+    }
+
+    fn build_request(&self, cx: &App) -> DatabaseOperationRequest {
         let mut field_values = HashMap::new();
 
-        // 获取数据库名称
         let db_name = self.name_input.read(cx).text().to_string();
-        
-        // 获取字符集
+
         let charset = self.charset_select.read(cx)
             .selected_value()
             .cloned()
             .unwrap_or_else(|| "utf8mb4".to_string());
-            
-        // 获取排序规则
+
         let collation = self.collation_select.read(cx)
             .selected_value()
             .cloned()
@@ -143,54 +197,30 @@ impl DatabaseForm {
             field_values,
         }
     }
-
-    fn validate_mysql(&self, cx: &App) -> Result<(), String> {
-        let db_name = self.name_input.read(cx).text().to_string();
-        if db_name.trim().is_empty() {
-            return Err("数据库名称不能为空".to_string());
-        }
-        
-        // 简单的 MySQL 数据库名称验证
-        if !db_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err("数据库名称只能包含字母、数字和下划线".to_string());
-        }
-        
-        Ok(())
-    }
-
-    pub fn trigger_save(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = self.validate_mysql(cx) {
-            // TODO: Show error message in UI
-            eprintln!("Validation error: {}", e);
-            return;
-        }
-
-        let request = self.build_mysql_request(cx);
-        cx.emit(DatabaseFormEvent::Save(request));
-    }
-
-    pub fn trigger_cancel(&mut self, cx: &mut Context<Self>) {
-        cx.emit(DatabaseFormEvent::Cancel);
+    
+    
+    fn trigger_form_changed(&mut self, cx: &mut Context<Self>) {
+        let request = self.build_request(cx);
+        cx.emit(DatabaseFormEvent::FormChanged(request));
     }
 }
 
-impl EventEmitter<DatabaseFormEvent> for DatabaseForm {}
+impl EventEmitter<DatabaseFormEvent> for MySqlDatabaseForm {}
 
-impl Focusable for DatabaseForm {
+impl Focusable for MySqlDatabaseForm {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for DatabaseForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl Render for MySqlDatabaseForm {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_4()
             .p_4()
             .size_full()
             .child(
-                // MySQL 数据库表单
-                v_form()
+                h_form()
                     .with_size(Size::Small)
                     .columns(1)
                     .label_width(px(100.))
@@ -200,7 +230,11 @@ impl Render for DatabaseForm {
                             .required(true)
                             .items_center()
                             .label_justify_end()
-                            .child(Input::new(&self.name_input).w_full())
+                            .child(
+                                Input::new(&self.name_input)
+                                    .w_full()
+                                    .disabled(self.is_edit_mode)
+                            )
                     )
                     .child(
                         field()
@@ -215,28 +249,6 @@ impl Render for DatabaseForm {
                             .items_center()
                             .label_justify_end()
                             .child(Select::new(&self.collation_select).w_full())
-                    )
-            )
-            .child(
-                // 按钮区域
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        Button::new("cancel")
-                            .ghost()
-                            .label("取消")
-                            .on_click(cx.listener(|form, _, _, cx| {
-                                form.trigger_cancel(cx);
-                            }))
-                    )
-                    .child(
-                        Button::new("save")
-                            .primary()
-                            .label("创建")
-                            .on_click(cx.listener(|form, _, _, cx| {
-                                form.trigger_save(cx);
-                            }))
                     )
             )
     }

@@ -857,6 +857,22 @@ impl DatabasePlugin for PostgresPlugin {
             DataTypeInfo::new("MACADDR", "MAC address").with_category(DataTypeCategory::Other),
         ]
     }
+
+    fn build_create_database_sql(&self, request: &crate::plugin::DatabaseOperationRequest) -> String {
+        let db_name = &request.database_name;
+        let encoding = request.field_values.get("encoding").map(|s| s.as_str()).unwrap_or("UTF8");
+
+        format!("CREATE DATABASE \"{}\" ENCODING '{}';", db_name, encoding)
+    }
+
+    fn build_modify_database_sql(&self, request: &crate::plugin::DatabaseOperationRequest) -> String {
+        let db_name = &request.database_name;
+        format!("ALTER DATABASE \"{}\" SET search_path = public;", db_name)
+    }
+
+    fn build_drop_database_sql(&self, database_name: &str) -> String {
+        format!("DROP DATABASE \"{}\";", database_name)
+    }
 }
 
 impl Default for PostgresPlugin {

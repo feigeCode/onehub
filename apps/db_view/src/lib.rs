@@ -1,5 +1,6 @@
 pub mod ai_chat_panel;
 pub mod ai_input;
+pub mod common;
 pub mod data_export_view;
 pub mod data_grid;
 pub mod data_import_view;
@@ -20,5 +21,7 @@ pub mod sql_run_view;
 pub mod table_data_tab;
 pub mod table_import_view;
 mod db_tree_event;
-mod database_view_plugin;
-mod mysql;
+pub mod database_view_plugin;
+pub mod mysql;
+
+pub use common::DatabaseFormEvent;

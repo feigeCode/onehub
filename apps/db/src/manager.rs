@@ -617,24 +617,6 @@ impl GlobalDbState {
         Self::wrapper_result(result)
     }
 
-    /// Create database
-    pub async fn create_database(
-        &self,
-        cx: &mut AsyncApp,
-        config_id: String,
-        database_name: String,
-    ) -> anyhow::Result<SqlResult>
-    {
-        let config = self.get_config_async(&config_id).await
-            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", config_id))?;
-        let plugin = self.get_plugin(&config.database_type)?;
-        let sql = plugin.create_database(&database_name, &database_name);
-
-        let result = self.execute_with_session(cx, config, sql, None).await?;
-
-        Self::wrapper_result(result)
-    }
-
     /// Register a connection configuration
     pub async fn register_connection(
         &self,
@@ -700,6 +682,20 @@ impl GlobalDbState {
         })?.await
     }
 
+    /// Execute SQL  (simplified - creates session per execution)
+    pub async fn execute_single(
+        &self,
+        cx: &mut AsyncApp,
+        connection_id: String,
+        script: String,
+        database: Option<String>,
+        opts: Option<ExecOptions>,
+    ) -> anyhow::Result<SqlResult>
+    {
+        let result=  self.execute_script(cx, connection_id, script, database, opts).await?;
+        Self::wrapper_result(result)
+    }
+
     /// Execute SQL script (simplified - creates session per execution)
     pub async fn execute_script(
         &self,
@@ -762,7 +758,7 @@ impl GlobalDbState {
         })?.await
     }
 
-    async fn with_session_connection<R, F>(
+    pub async fn with_session_connection<R, F>(
         &self,
         cx: &mut AsyncApp,
         config: DbConnectionConfig,
