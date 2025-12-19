@@ -145,7 +145,7 @@ impl DbTreeView {
             init_nodes.push( node)
         }else {
             for conn in connections {
-                workspace_id = conn.workspace_id.clone();
+                workspace_id = conn.workspace_id;
                 let id = conn.id.unwrap_or(0).to_string();
                 let conn = conn.to_db_connection().unwrap();
                 let node = DbNode::new(id.clone(), conn.name.to_string(), DbNodeType::Connection, id.clone(), conn.database_type);
@@ -458,7 +458,7 @@ impl DbTreeView {
     fn get_icon_for_node(&self, node_id: &str, is_expanded: bool, cx: &mut Context<Self>) -> Icon {
         let node = self.db_nodes.get(node_id);
         match node.map(|n| &n.node_type) {
-            Some(DbNodeType::Connection) => Icon::from(IconName::MySQLLineColor.color().with_size(Size::Large)),
+            Some(DbNodeType::Connection) => IconName::MySQLLineColor.color().with_size(Size::Large),
             Some(DbNodeType::Database) => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
             Some(DbNodeType::TablesFolder) | Some(DbNodeType::ViewsFolder) |
             Some(DbNodeType::FunctionsFolder) | Some(DbNodeType::ProceduresFolder) |

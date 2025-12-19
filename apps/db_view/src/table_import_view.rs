@@ -6,7 +6,7 @@ use gpui_component::{
     radio::Radio,
     select::{Select, SelectItem, SelectState},
     switch::Switch,
-    v_flex, ActiveTheme, IndexPath, Sizable, StyledExt,
+    v_flex, ActiveTheme, IndexPath, Sizable,
 };
 
 use db::{DataFormat, DataImporter, GlobalDbState, ImportConfig};
@@ -373,7 +373,7 @@ impl Render for TableImportView {
         }
 
         let status_text = self.status.read(cx).clone();
-        let current_format = *self.format.read(cx);
+        let _current_format = *self.format.read(cx);
         let current_format_display = self.format_display.read(cx).clone();
         let record_sep_mode = self.record_separator_mode.read(cx).clone();
 

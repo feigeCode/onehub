@@ -349,7 +349,7 @@ impl DbConnectionForm {
         
         DbConnectionConfig {
             id: String::new(),
-            database_type: self.current_db_type.read(cx).clone(),
+            database_type: *self.current_db_type.read(cx),
             name: self.get_field_value("name", cx),
             host: self.get_field_value("host", cx),
             port: self

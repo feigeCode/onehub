@@ -402,8 +402,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: column.clone(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 filter_text: Some(matched_prefix(column)),
@@ -455,8 +455,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                             text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                 InsertReplaceEdit {
                                     new_text: table.clone(),
-                                    insert: replace_range.clone(),
-                                    replace: replace_range.clone(),
+                                    insert: replace_range,
+                                    replace: replace_range,
                                 },
                             )),
                             filter_text: Some(matched_prefix(table)),
@@ -515,8 +515,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                             text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                                 InsertReplaceEdit {
                                                     new_text: column.clone(),
-                                                    insert: replace_range.clone(),
-                                                    replace: replace_range.clone(),
+                                                    insert: replace_range,
+                                                    replace: replace_range,
                                                 },
                                             )),
                                             filter_text: Some(matched_prefix(column)),
@@ -547,8 +547,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: column.clone(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 filter_text: Some(matched_prefix(column)),
@@ -579,8 +579,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                             text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                 InsertReplaceEdit {
                                     new_text: keyword.to_string(),
-                                    insert: replace_range.clone(),
-                                    replace: replace_range.clone(),
+                                    insert: replace_range,
+                                    replace: replace_range,
                                 },
                             )),
                             filter_text: Some(matched_prefix(keyword)),
@@ -607,8 +607,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: keyword.to_string(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 filter_text: Some(matched_prefix(keyword)),
@@ -634,8 +634,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: op.to_string(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 filter_text: Some(matched_prefix(op)),
@@ -667,8 +667,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                             text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                 InsertReplaceEdit {
                                     new_text: func.to_string(),
-                                    insert: replace_range.clone(),
-                                    replace: replace_range.clone(),
+                                    insert: replace_range,
+                                    replace: replace_range,
                                 },
                             )),
                             filter_text: Some(matched_prefix(func_name)),
@@ -696,8 +696,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: func.to_string(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 filter_text: Some(matched_prefix(func_name)),
@@ -728,8 +728,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: dtype.to_string(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 filter_text: Some(matched_prefix(dtype)),
@@ -767,8 +767,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                             text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                 InsertReplaceEdit {
                                     new_text: insert_text.to_string(),
-                                    insert: replace_range.clone(),
-                                    replace: replace_range.clone(),
+                                    insert: replace_range,
+                                    replace: replace_range,
                                 },
                             )),
                             insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
@@ -796,8 +796,8 @@ impl CompletionProvider for DefaultSqlCompletionProvider {
                                 text_edit: Some(CompletionTextEdit::InsertAndReplace(
                                     InsertReplaceEdit {
                                         new_text: insert_text.to_string(),
-                                        insert: replace_range.clone(),
-                                        replace: replace_range.clone(),
+                                        insert: replace_range,
+                                        replace: replace_range,
                                     },
                                 )),
                                 insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
@@ -1084,7 +1084,7 @@ impl CodeActionProvider for SqlActionsProvider {
                     changes: Some(
                         std::iter::once((
                             document_uri.clone(),
-                            vec![TextEdit { range: lsp_range.clone(), new_text }],
+                            vec![TextEdit { range: lsp_range, new_text }],
                         ))
                         .collect(),
                     ),
@@ -1103,7 +1103,7 @@ impl CodeActionProvider for SqlActionsProvider {
                     changes: Some(
                         std::iter::once((
                             document_uri.clone(),
-                            vec![TextEdit { range: lsp_range.clone(), new_text }],
+                            vec![TextEdit { range: lsp_range, new_text }],
                         ))
                         .collect(),
                     ),

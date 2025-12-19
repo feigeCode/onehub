@@ -13,7 +13,7 @@ use one_core::tab_container::{TabContent, TabContentType};
 use one_core::utils::debouncer::Debouncer;
 
 fn format_timestamp(ts: i64) -> String {
-    let secs = ts / 1000;
+    let _secs = ts / 1000;
     format!("{}", ts)
 }
 
@@ -64,7 +64,7 @@ impl DatabaseObjects {
 
                 cx.spawn(async move |view, cx| {
                     if debouncer.debounce().await {
-                        _ = view.update(cx, |this, cx| {
+                        _ = view.update(cx, |this, _cx| {
                             if this.search_seq == current_seq {
                                 this.search_query = query_for_task.clone();
                                 // TODO 待实现搜索
@@ -262,7 +262,7 @@ impl DatabaseObjects {
 }
 
 impl Render for DatabaseObjects {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded_data = self.loaded_data.read(cx);
         let title = loaded_data.title.clone();
 
@@ -341,7 +341,7 @@ impl Clone for DatabaseObjects {
             focus_handle: self.focus_handle.clone(),
             workspace: self.workspace.clone(),
             search_input: self.search_input.clone(),
-            search_seq: self.search_seq.clone(),
+            search_seq: self.search_seq,
             search_query: self.search_query.clone(),
             search_debouncer: self.search_debouncer.clone(),
 
@@ -388,7 +388,7 @@ impl TabContent for DatabaseObjectsPanel {
     fn closeable(&self) -> bool {
         false
     }
-    fn render_content(&self, _window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render_content(&self, _window: &mut Window, _cx: &mut App) -> AnyElement {
             self.database_objects.clone().into_any_element()
     }
 

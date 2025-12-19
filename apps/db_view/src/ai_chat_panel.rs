@@ -723,7 +723,7 @@ impl AiChatPanel {
         };
 
         let sessions = self.history_sessions.clone();
-        let current_session_id = self.session_id.clone();
+        let current_session_id = self.session_id;
         let panel_entity = cx.entity();
 
         h_flex()
@@ -761,7 +761,7 @@ impl AiChatPanel {
                                 });
 
                                 let sessions = sessions.clone();
-                                let current_session_id = current_session_id.clone();
+                                let current_session_id = current_session_id;
 
                                 v_flex()
                                     .w(px(300.0))

@@ -2,7 +2,7 @@
 // (无需标准库导入)
 
 // 2. 外部 crate 导入（按字母顺序）
-use db::{DbNode, DbNodeType, GlobalDbState, SqlResult};
+use db::{DbNode, DbNodeType, GlobalDbState};
 use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::{error, warn};
 use gpui_component::{
@@ -508,7 +508,7 @@ impl DatabaseEventHandler {
         cx: &mut App,
     ) {
         let connection_id = node.connection_id.clone();
-        let database_type = node.database_type.clone();
+        let database_type = node.database_type;
 
         let (database_name, table_name) = match node.node_type {
             DbNodeType::TablesFolder => {

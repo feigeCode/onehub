@@ -90,7 +90,7 @@ impl DatabaseTabContent {
     }
 
     pub fn new(workspace: Option<Workspace>, connection: StoredConnection, window: &mut Window, cx: &mut App) -> Self {
-        let active_conn_id = connection.id.clone();
+        let active_conn_id = connection.id;
         Self::new_with_active_conn(workspace, vec![connection], active_conn_id, window, cx)
     }
 
@@ -235,7 +235,7 @@ impl TabContent for DatabaseTabContent {
         true
     }
 
-    fn render_content(&self, window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render_content(&self, _window: &mut Window, cx: &mut App) -> AnyElement {
         let is_connected_flag = *self.is_connected.read(cx);
 
         if !is_connected_flag {

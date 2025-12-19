@@ -221,7 +221,7 @@ impl Focusable for AIInput {
 }
 
 impl Render for AIInput {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .w_full()
             .bg(cx.theme().background)

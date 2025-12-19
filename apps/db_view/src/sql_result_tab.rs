@@ -63,7 +63,7 @@ impl SqlResultTabContainer {
                     let _ = cx.update(|cx| {
                         if let Some(window_id) = cx.active_window() {
                             let _ = cx.update_window(window_id, |_entity, window, cx| {
-                                clone_self.set_result(results, connection_id_clone.clone(), database_clone.clone(), database_type.clone(), window, cx);
+                                clone_self.set_result(results, connection_id_clone.clone(), database_clone.clone(), database_type, window, cx);
                             });
                         }
                     });
@@ -99,7 +99,7 @@ impl SqlResultTabContainer {
                         db_name,
                         table_name,
                         &connection_id,
-                        database_type.clone(),
+                        database_type,
                     )
                     .editable(query_result.editable)
                     .show_toolbar(true)

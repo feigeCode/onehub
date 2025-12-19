@@ -134,7 +134,7 @@ impl TableDesigner {
             SelectState::new(collation_items, Some(IndexPath::new(default_coll_idx)), window, cx)
         });
 
-        let columns_editor = cx.new(|cx| ColumnsEditor::new(config.database_type.clone(), charsets.clone(), window, cx));
+        let columns_editor = cx.new(|cx| ColumnsEditor::new(config.database_type, charsets.clone(), window, cx));
         let indexes_editor = cx.new(|cx| IndexesEditor::new(window, cx));
 
         let name_sub = cx.subscribe_in(&table_name_input, window, |this, _, event: &InputEvent, _window, cx| {
@@ -430,7 +430,7 @@ impl TableDesigner {
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
-        let database_type = self.config.database_type.clone();
+        let database_type = self.config.database_type;
 
         cx.spawn(async move |_this, cx: &mut AsyncApp| {
             let sql = {

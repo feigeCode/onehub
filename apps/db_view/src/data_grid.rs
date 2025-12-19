@@ -470,7 +470,7 @@ impl DataGrid {
         if page_size == 0 {
             return;
         }
-        let total_pages = (total + page_size - 1) / page_size;
+        let total_pages = total.div_ceil(page_size);
         if page < total_pages {
             self.load_data_with_clauses(page + 1, cx);
         }
@@ -740,7 +740,7 @@ impl DataGrid {
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
         let table_name = self.config.table_name.clone();
-        let database_type = self.config.database_type.clone();
+        let database_type = self.config.database_type;
         let this = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {

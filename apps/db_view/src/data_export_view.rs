@@ -77,7 +77,7 @@ impl DataExportView {
                             cx.notify();
                         });
                         status.update(cx, |s, cx| {
-                            *s = format!("Selected: {}", path.to_string_lossy().to_string());
+                            *s = format!("Selected: {}", path.to_string_lossy());
                             cx.notify();
                         });
                     });

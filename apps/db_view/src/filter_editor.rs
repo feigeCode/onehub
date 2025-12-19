@@ -123,20 +123,20 @@ fn suggest_items(
 
     // 1️⃣ 如果在操作符后面，优先提示值的模板
     if after_operator {
-        suggest_value_templates(current_word, replace_range.clone(), &mut items);
+        suggest_value_templates(current_word, replace_range, &mut items);
     }
 
     // 2️⃣ 如果上一个 token 是列名 → 推操作符
     if let Some(col) = after_column {
-        suggest_operators(col, current_word, replace_range.clone(), &mut items);
+        suggest_operators(col, current_word, replace_range, &mut items);
     } else {
         // 3️⃣ 否则提示列名
-        suggest_columns(schema, current_word, replace_range.clone(), &mut items);
+        suggest_columns(schema, current_word, replace_range, &mut items);
     }
 
     // 4️⃣ 如果已有条件 → AND / OR 优先
     if has_complete_condition(full_text) {
-        add_logic_keywords(current_word, replace_range.clone(), &mut items);
+        add_logic_keywords(current_word, replace_range, &mut items);
     }
 
     // 5️⃣ SQL 函数智能提示
@@ -163,7 +163,7 @@ fn suggest_value_templates(current_word: &str, range: Range, items: &mut Vec<Com
                 label: label.to_string(),
                 kind: Some(CompletionItemKind::VALUE),
                 documentation: Some(Documentation::String(doc.to_string())),
-                text_edit: Some(insert_replace(text, range.clone())),
+                text_edit: Some(insert_replace(text, range)),
                 sort_text: Some("0_VALUE".into()),
                 ..Default::default()
             });
@@ -201,7 +201,7 @@ fn suggest_columns(
                     col.name, col.data_type, col.is_nullable
                 ))),
                 sort_text: Some("2_COLUMN".into()),
-                text_edit: Some(insert_replace(&col.name, replace_range.clone())),
+                text_edit: Some(insert_replace(&col.name, replace_range)),
                 ..Default::default()
             });
         }
@@ -286,7 +286,7 @@ fn suggest_operators(
                 "{}\n\nColumn: {} ({})",
                 doc, col.name, col.data_type
             ))),
-            text_edit: Some(insert_replace(text, range.clone())),
+            text_edit: Some(insert_replace(text, range)),
             sort_text: Some("1_OPERATOR".into()),
             ..Default::default()
         });
@@ -311,7 +311,7 @@ fn add_logic_keywords(
                 label: label.to_string(),
                 kind: Some(CompletionItemKind::KEYWORD),
                 documentation: Some(Documentation::String(doc.to_string())),
-                text_edit: Some(insert_replace(snippet, range.clone())),
+                text_edit: Some(insert_replace(snippet, range)),
                 sort_text: Some("3_LOGIC".into()),
                 ..Default::default()
             });
@@ -351,7 +351,7 @@ fn suggest_functions(current_word: &str, range: Range, items: &mut Vec<Completio
                 kind: Some(CompletionItemKind::FUNCTION),
                 detail: Some(category.to_string()),
                 documentation: Some(Documentation::String(doc.to_string())),
-                text_edit: Some(insert_replace(text, range.clone())),
+                text_edit: Some(insert_replace(text, range)),
                 sort_text: Some("4_FUNCTION".into()),
                 ..Default::default()
             });
@@ -364,7 +364,7 @@ fn suggest_functions(current_word: &str, range: Range, items: &mut Vec<Completio
 fn insert_replace(text: &str, range: Range) -> CompletionTextEdit {
     CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
         new_text: text.into(),
-        insert: range.clone(),
+        insert: range,
         replace: range,
     })
 }
@@ -402,7 +402,7 @@ impl CompletionProvider for WhereCompletionProvider {
                 &schema,
                 current_word.as_str(),
                 last_token.as_deref(),
-                replace_range.clone(),
+                replace_range,
                 &full_text,
             );
 
@@ -477,7 +477,7 @@ impl CompletionProvider for OrderByCompletionProvider {
             let mut items = Vec::new();
             let last_token = get_last_token_before(&rope, start_offset);
             let after_column = last_token.clone().and_then(|t|
-                schema.columns.iter().find(|c| c.name.eq_ignore_ascii_case(&*t))
+                schema.columns.iter().find(|c| c.name.eq_ignore_ascii_case(&t))
             );
 
             // 如果 ORDER BY 后面已有字段，就优先提示 ASC / DESC
@@ -489,8 +489,8 @@ impl CompletionProvider for OrderByCompletionProvider {
                         kind: Some(CompletionItemKind::KEYWORD),
                         text_edit: Some(CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
                             new_text: kw.to_string(),
-                            insert: replace_range.clone(),
-                            replace: replace_range.clone(),
+                            insert: replace_range,
+                            replace: replace_range,
                         })),
                         documentation: Some(Documentation::String(doc.to_string())),
                         sort_text: Some("0_ORDER_DIR".into()),
@@ -514,7 +514,7 @@ impl CompletionProvider for OrderByCompletionProvider {
                     items.push(CompletionItem {
                         label: text.clone(),
                         kind: Some(CompletionItemKind::FIELD),
-                        text_edit: Some(insert_replace(&text, replace_range.clone())),
+                        text_edit: Some(insert_replace(&text, replace_range)),
                         sort_text: Some("1_ORDER_NEXT".into()),
                         detail: Some("Next ordering field".into()),
                         ..Default::default()
