@@ -58,7 +58,7 @@ impl OneHupApp {
                 )
                 .with_inactive_tab_bg_color(Some(gpui::rgb(0x3a3a3a).into()))
                 .with_tab_content_colors(
-                    Some(gpui::white().into()),
+                    Some(gpui::white()),
                     Some(gpui::rgb(0xaaaaaa).into()),
                 )
                 .with_tab_icon_color(Some(gpui::rgb(0xaaaaaa).into()));

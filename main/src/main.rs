@@ -8,7 +8,6 @@ use gpui_component::Root;
 use db::GlobalDbState;
 use db_view::database_view_plugin::DatabaseViewPluginRegistry;
 use gpui_component_assets::Assets;
-use one_core::gpui_tokio::Tokio;
 use crate::onehup_app::OneHupApp;
 
 fn main() {

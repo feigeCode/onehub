@@ -490,9 +490,7 @@ impl HomePage {
                     let workspace_id = workspace.clone().and_then(|w| w.id);
                     let mut connections = vec![conn.clone()];
                     if workspace_id.is_some() {
-                        connections = self.connections.iter()
-                            .cloned()
-                            .filter(|conn| conn.workspace_id == workspace_id)
+                        connections = self.connections.iter().filter(|&conn| conn.workspace_id == workspace_id).cloned()
                             .collect();
 
                     }
@@ -587,7 +585,7 @@ impl HomePage {
                     .children(
                         filter_types.into_iter().map(|filter_type| {
                             let is_selected = self.selected_filter == filter_type;
-                            let filter_type_clone = filter_type.clone();
+                            let filter_type_clone = filter_type;
 
                             div()
                                 .id(filter_type.label())
@@ -608,7 +606,7 @@ impl HomePage {
                                         .hover(|style| style.bg(cx.theme().accent).rounded_lg())
                                 })
                                 .on_click(cx.listener(move |this: &mut HomePage, _, _, cx| {
-                                    this.selected_filter = filter_type_clone.clone();
+                                    this.selected_filter = filter_type_clone;
                                     cx.notify();
                                 }))
                                 .child(
@@ -758,9 +756,7 @@ impl HomePage {
     }
 
     fn open_workspace_tab(&mut self, workspace_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
-        let connections: Vec<StoredConnection> = self.connections.iter()
-            .cloned()
-            .filter(|conn| conn.workspace_id == workspace_id)
+        let connections: Vec<StoredConnection> = self.connections.iter().filter(|&conn| conn.workspace_id == workspace_id).cloned()
             .collect();
         let workspace = workspace_id.and_then(|id| {
             self.workspaces.iter().find(|w| w.id == Some(id)).cloned()

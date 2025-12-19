@@ -1,6 +1,6 @@
 //! Provider Form Dialog - 添加/编辑 LLM Provider 的表单对话框
 
-use gpui::{div, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Window};
+use gpui::{div, App, AppContext, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Window};
 use gpui_component::{
     v_flex,
     input::{Input, InputState},
@@ -177,7 +177,7 @@ impl Focusable for ProviderForm {
 }
 
 impl Render for ProviderForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
             .child(

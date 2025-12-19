@@ -297,8 +297,8 @@ impl LlmProvidersView {
         provider: ProviderConfig,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let provider_id = provider.id.clone();
-        let provider_id_edit = provider.id.clone();
+        let provider_id = provider.id;
+        let provider_id_edit = provider.id;
         let provider_clone = provider.clone();
 
         div()
@@ -387,7 +387,7 @@ impl LlmProvidersView {
                             .with_variant(ButtonVariant::Secondary)
                             .label("Edit")
                             .on_click(cx.listener(move |view,_, window, cx| {
-                                view.edit_provider(provider_id_edit.clone(), window, cx);
+                                view.edit_provider(provider_id_edit, window, cx);
                             })),
                     )
                     .child(
@@ -395,7 +395,7 @@ impl LlmProvidersView {
                             .with_variant(ButtonVariant::Secondary)
                             .label("Delete")
                             .on_click(cx.listener(move |view,_, _, cx| {
-                                view.delete_provider(provider_id.clone(), cx);
+                                view.delete_provider(provider_id, cx);
                             })),
                     ),
             )
