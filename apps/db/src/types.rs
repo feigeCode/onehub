@@ -134,7 +134,7 @@ impl DbNode {
     }
 
     pub fn with_metadata(mut self, metadata: HashMap<String, String>) -> Self {
-        self.metadata = Some(metadata.into());
+        self.metadata = Some(metadata);
         self
     }
 

@@ -222,13 +222,13 @@ pub trait DatabasePlugin: Send + Sync {
             format!("Tables ({})", table_count),
             DbNodeType::TablesFolder,
             node.connection_id.clone(),
-            node.database_type.clone()
+            node.database_type
         ).with_parent_context(id).with_metadata(metadata.clone());
         if table_count > 0 {
             let children: Vec<DbNode> = tables
                 .into_iter()
                 .map(|table_info| {
-                    let mut metadata: HashMap<String, String> = HashMap::from(metadata.clone());
+                    let mut metadata: HashMap<String, String> = metadata.clone();
                     // Add comment as additional metadata if available
                     if let Some(comment) = &table_info.comment {
                         if !comment.is_empty() {
@@ -241,7 +241,7 @@ pub trait DatabasePlugin: Send + Sync {
                         table_info.name.clone(),
                         DbNodeType::Table,
                         node.connection_id.clone(),
-                        node.database_type.clone()
+                        node.database_type
                     )
                     .with_children_flag(true)
                     .with_parent_context(format!("{}:table_folder", id))
@@ -263,13 +263,13 @@ pub trait DatabasePlugin: Send + Sync {
                 format!("Views ({})", view_count),
                 DbNodeType::ViewsFolder,
                 node.connection_id.clone(),
-                node.database_type.clone()
+                node.database_type
             ).with_parent_context(id).with_metadata(metadata.clone());
 
             let children: Vec<DbNode> = views
                 .into_iter()
                 .map(|view| {
-                    let mut metadata: HashMap<String, String> = HashMap::from(metadata.clone());
+                    let mut metadata: HashMap<String, String> = metadata.clone();
                     if let Some(comment) = view.comment {
                         metadata.insert("comment".to_string(), comment);
                     }
@@ -279,7 +279,7 @@ pub trait DatabasePlugin: Send + Sync {
                         view.name.clone(),
                         DbNodeType::View,
                         node.connection_id.clone(),
-                        node.database_type.clone()
+                        node.database_type
                     ).with_parent_context(format!("{}:views_folder", id));
                     
                     if !metadata.is_empty() {
@@ -296,7 +296,7 @@ pub trait DatabasePlugin: Send + Sync {
         }
 
         // Load queries folder
-        let queries_folder = self.load_queries(&node, global_storage_state).await?;
+        let queries_folder = self.load_queries(node, global_storage_state).await?;
         nodes.push(queries_folder);
 
         Ok(nodes)
@@ -327,7 +327,7 @@ pub trait DatabasePlugin: Send + Sync {
                         format!("Queries ({})", query_count),
                         DbNodeType::QueriesFolder,
                         connection_id_for_queries.clone(),
-                        node.database_type.clone()
+                        node.database_type
                     )
                         .with_parent_context(node_id_for_queries.clone())
                         .with_metadata(metadata.clone());
@@ -350,7 +350,7 @@ pub trait DatabasePlugin: Send + Sync {
                                 query.name.clone(),
                                 DbNodeType::NamedQuery,
                                 connection_id_for_queries.clone(),
-                                node.database_type.clone()
+                                node.database_type
                             )
                                 .with_parent_context(format!("{}:queries_folder", &node_id_for_queries))
                                 .with_metadata(query_metadata);
@@ -386,7 +386,7 @@ pub trait DatabasePlugin: Send + Sync {
             format!("Queries ({})", 0),
             DbNodeType::QueriesFolder,
             connection_id_for_queries.clone(),
-            node.database_type.clone()
+            node.database_type
         )
             .with_parent_context(node_id_for_queries.clone())
             .with_metadata(metadata);
@@ -401,7 +401,7 @@ pub trait DatabasePlugin: Send + Sync {
                 Ok(databases
                     .into_iter()
                     .map(|db| {
-                        DbNode::new(format!("{}:{}", &node.id, db), db.clone(), DbNodeType::Database, node.id.clone(), node.database_type.clone())
+                        DbNode::new(format!("{}:{}", &node.id, db), db.clone(), DbNodeType::Database, node.id.clone(), node.database_type)
                             .with_children_flag(false)
                             .with_parent_context(id)
                     })
@@ -439,7 +439,7 @@ pub trait DatabasePlugin: Send + Sync {
                     format!("Columns ({})", column_count),
                     DbNodeType::ColumnsFolder,
                     node.connection_id.clone(),
-                    node.database_type.clone()
+                    node.database_type
                 ).with_parent_context(id)
                     .with_metadata(folder_metadata.clone());
 
@@ -459,7 +459,7 @@ pub trait DatabasePlugin: Send + Sync {
                                 col.name,
                                 DbNodeType::Column,
                                 node.connection_id.clone(),
-                                node.database_type.clone()
+                                node.database_type
                             )
                             .with_metadata(column_metadata)
                             .with_parent_context(format!("{}:columns_folder", id))
@@ -480,7 +480,7 @@ pub trait DatabasePlugin: Send + Sync {
                     format!("Indexes ({})", index_count),
                     DbNodeType::IndexesFolder,
                     node.connection_id.clone(),
-                    node.database_type.clone()
+                    node.database_type
                 ).with_parent_context(id)
                 .with_metadata(folder_metadata.clone());
 
@@ -499,7 +499,7 @@ pub trait DatabasePlugin: Send + Sync {
                                 idx.name,
                                 DbNodeType::Index,
                                 node.connection_id.clone(),
-                                node.database_type.clone()
+                                node.database_type
                             )
                             .with_metadata(metadata)
                             .with_parent_context(format!("{}:indexes_folder", id))
@@ -926,7 +926,7 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     /// Get collations for a specific charset
-    fn get_collations(&self, charset: &str) -> Vec<CollationInfo> {
+    fn get_collations(&self, _charset: &str) -> Vec<CollationInfo> {
         vec![]
     }
 
@@ -957,12 +957,12 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     /// Truncate table
-    fn truncate_table(&self, database: &str, table: &str) -> String {
+    fn truncate_table(&self, _database: &str, table: &str) -> String {
         format!("TRUNCATE TABLE {}", self.quote_identifier(table))
     }
 
     /// Rename table
-    fn rename_table(&self, database: &str, old_name: &str, new_name: &str) -> String {
+    fn rename_table(&self, _database: &str, old_name: &str, new_name: &str) -> String {
         match self.name() {
             DatabaseType::MySQL => format!(
                 "RENAME TABLE {} TO {}",
@@ -979,7 +979,7 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     /// Drop view
-    fn drop_view(&self, database: &str, view: &str) -> String {
+    fn drop_view(&self, _database: &str, view: &str) -> String {
         format!("DROP VIEW IF EXISTS {}", self.quote_identifier(view))
     }
 
@@ -1107,7 +1107,7 @@ pub trait DatabasePlugin: Send + Sync {
             .collect();
 
         // Find dropped columns
-        for (name, _) in &original_cols {
+        for name in original_cols.keys() {
             if !new_cols.contains_key(name) {
                 statements.push(format!(
                     "ALTER TABLE {} DROP COLUMN {};",

@@ -223,7 +223,7 @@ impl SymbolTable {
                 break;
             }
 
-            let table_name = Self::extract_ident_text(&tokens[i]);
+            let table_name = Self::extract_ident_text(tokens[i]);
             i += 1;
 
             // Check for schema.table pattern
@@ -233,7 +233,7 @@ impl SymbolTable {
                     && matches!(tokens[i].kind, SqlTokenKind::Ident | SqlTokenKind::QuotedIdent)
                 {
                     // Use the actual table name (after dot)
-                    let actual_table = Self::extract_ident_text(&tokens[i]);
+                    let actual_table = Self::extract_ident_text(tokens[i]);
                     i += 1;
                     // Continue with actual_table as the table name
                     i = Self::parse_alias(symbol_table, tokens, i, &actual_table);
@@ -300,7 +300,7 @@ impl SymbolTable {
 
         // Check for alias (identifier that's not a keyword)
         if i < tokens.len() && matches!(tokens[i].kind, SqlTokenKind::Ident) {
-            let alias = Self::extract_ident_text(&tokens[i]);
+            let alias = Self::extract_ident_text(tokens[i]);
             symbol_table.register_alias(&alias, table_name);
             i += 1;
         } else if !has_as {

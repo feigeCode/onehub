@@ -229,7 +229,7 @@ impl DatabasePlugin for MySqlPlugin {
         if let SqlResult::Query(query_result) = result {
             let databases: Vec<DatabaseInfo> = query_result.rows.iter()
                 .filter_map(|row| {
-                    let name = row.get(0).and_then(|v| v.clone())?;
+                    let name = row.first().and_then(|v| v.clone())?;
                     let charset = row.get(1).and_then(|v| v.clone());
                     let collation = row.get(2).and_then(|v| v.clone());
                     let table_count = row.get(3).and_then(|v| v.clone()).and_then(|s| s.parse::<i64>().ok());
@@ -285,7 +285,7 @@ impl DatabasePlugin for MySqlPlugin {
                 let row_count = row.get(3).and_then(|v| v.clone()).and_then(|s| s.parse::<i64>().ok());
 
                 TableInfo {
-                    name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
                     comment: row.get(1).and_then(|v| v.clone()).filter(|s| !s.is_empty()),
                     engine: row.get(2).and_then(|v| v.clone()),
                     row_count,
@@ -348,7 +348,7 @@ impl DatabasePlugin for MySqlPlugin {
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
                 ColumnInfo {
-                    name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
                     data_type: row.get(1).and_then(|v| v.clone()).unwrap_or_default(),
                     is_nullable: row.get(2).and_then(|v| v.clone()).map(|v| v == "YES").unwrap_or(true),
                     is_primary_key: row.get(3).and_then(|v| v.clone()).map(|v| v == "PRI").unwrap_or(false),
@@ -411,7 +411,7 @@ impl DatabasePlugin for MySqlPlugin {
             let mut indexes: HashMap<String, IndexInfo> = HashMap::new();
 
             for row in query_result.rows {
-                let index_name = row.get(0).and_then(|v| v.clone()).unwrap_or_default();
+                let index_name = row.first().and_then(|v| v.clone()).unwrap_or_default();
                 let column_name = row.get(1).and_then(|v| v.clone()).unwrap_or_default();
                 let is_unique = row.get(2).and_then(|v| v.clone()).map(|v| v == "0").unwrap_or(false);
                 let index_type = row.get(3).and_then(|v| v.clone());
@@ -478,7 +478,7 @@ impl DatabasePlugin for MySqlPlugin {
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
                 ViewInfo {
-                    name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
                     definition: row.get(1).and_then(|v| v.clone()),
                     comment: None,
                 }
@@ -532,7 +532,7 @@ impl DatabasePlugin for MySqlPlugin {
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
                 FunctionInfo {
-                    name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
                     return_type: row.get(1).and_then(|v| v.clone()),
                     parameters: Vec::new(),
                     definition: None,
@@ -588,7 +588,7 @@ impl DatabasePlugin for MySqlPlugin {
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
                 FunctionInfo {
-                    name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
                     return_type: None,
                     parameters: Vec::new(),
                     definition: None,
@@ -639,7 +639,7 @@ impl DatabasePlugin for MySqlPlugin {
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
                 TriggerInfo {
-                    name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
                     table_name: row.get(1).and_then(|v| v.clone()).unwrap_or_default(),
                     event: row.get(2).and_then(|v| v.clone()).unwrap_or_default(),
                     timing: row.get(3).and_then(|v| v.clone()).unwrap_or_default(),

@@ -95,7 +95,7 @@ impl FormatHandler for SqlFormatHandler {
                         if let Some(Some(create_sql)) = row.get(1) {
                             output.push_str("-- Table structure for ");
                             output.push_str(table);
-                            output.push_str("\n");
+                            output.push('\n');
                             output.push_str(create_sql);
                             output.push_str(";\n\n");
                         }
@@ -121,7 +121,7 @@ impl FormatHandler for SqlFormatHandler {
                     if !query_result.rows.is_empty() {
                         output.push_str("-- Data for table ");
                         output.push_str(table);
-                        output.push_str("\n");
+                        output.push('\n');
 
                         for row in &query_result.rows {
                             output.push_str("INSERT INTO `");

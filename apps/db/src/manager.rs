@@ -189,7 +189,7 @@ impl ConnectionManager {
         });
 
         if !exists {
-            return Err(DbError::new(&format!("Session not found: {}", session_id)));
+            return Err(DbError::new(format!("Session not found: {}", session_id)));
         }
 
         Ok(SessionConnectionGuard {
@@ -258,7 +258,7 @@ impl ConnectionManager {
             }
         }
 
-        Err(DbError::new(&format!("Session not found: {}", session_id)))
+        Err(DbError::new(format!("Session not found: {}", session_id)))
     }
 
     /// Close a specific session
@@ -290,7 +290,7 @@ impl ConnectionManager {
             return Ok(());
         }
 
-        Err(DbError::new(&format!("Session not found: {}", session_id)))
+        Err(DbError::new(format!("Session not found: {}", session_id)))
     }
 
     /// Remove all sessions for a connection config

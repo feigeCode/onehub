@@ -549,7 +549,7 @@ impl SqlTokenizer<'_> {
     /// Edge cases:
     /// - Offset at token boundary (start): returns that token
     /// - Offset at token boundary (end): returns next token or gap
-    pub fn token_at(tokens: &[SqlToken], offset: usize) -> TokenAtResult {
+    pub fn token_at(tokens: &[SqlToken], offset: usize) -> TokenAtResult<'_> {
         if tokens.is_empty() {
             return if offset == 0 {
                 TokenAtResult::AtStart

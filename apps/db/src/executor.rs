@@ -124,8 +124,8 @@ impl SqlScriptSplitter {
             }
 
             // Handle block comments (/* ... */)
-            if !in_single_quote && !in_double_quote && !in_backtick {
-                if ch == '/' {
+            if !in_single_quote && !in_double_quote && !in_backtick
+                && ch == '/' {
                     if let Some(&next_ch) = chars.peek() {
                         if next_ch == '*' {
                             chars.next(); // consume the '*'
@@ -134,7 +134,6 @@ impl SqlScriptSplitter {
                         }
                     }
                 }
-            }
 
             if in_block_comment {
                 if ch == '*' {
