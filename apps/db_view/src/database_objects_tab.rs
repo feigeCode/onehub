@@ -4,13 +4,15 @@ use std::time::Duration;
 use anyhow::anyhow;
 use db::{DbNode, DbNodeType, GlobalDbState, ObjectView};
 use gpui::{div, AnyElement, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window};
-use gpui_component::{h_flex, table::{Column, Table, TableDelegate, TableState}, v_flex, ActiveTheme, Icon, IconName, Sizable, Size};
+use gpui_component::{h_flex, table::{Column, Table, TableDelegate, TableEvent, TableState}, v_flex, ActiveTheme, Icon, IconName, Sizable, Size};
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::label::Label;
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{ConnectionRepository, DbConnectionConfig, GlobalStorageState, Workspace};
 use one_core::tab_container::{TabContent, TabContentType};
 use one_core::utils::debouncer::Debouncer;
+use crate::db_tree_view::{DbTreeViewEvent, get_icon_for_node_type};
 
 fn format_timestamp(ts: i64) -> String {
     let _secs = ts / 1000;
@@ -31,15 +33,12 @@ pub struct DatabaseObjects {
     table_state: Entity<TableState<ResultsDelegate>>,
     focus_handle: FocusHandle,
     workspace: Option<Workspace>,
-    // 搜索输入框状态
     search_input: Entity<InputState>,
-    // 搜索关键字
     search_query: String,
-    // 搜索防抖序列号
     search_seq: u64,
     search_debouncer: Arc<Debouncer>,
-
-    _sub: Option<Subscription>
+    current_node: Option<DbNode>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl DatabaseObjects {
@@ -53,7 +52,7 @@ impl DatabaseObjects {
         });
         let search_debouncer = Arc::new(Debouncer::new(Duration::from_millis(250)));
 
-        let _sub = cx.subscribe_in(&search_input, window, |this: &mut Self, input: &Entity<InputState>, event: &InputEvent, _window, cx: &mut Context<Self>| {
+        let search_sub = cx.subscribe_in(&search_input, window, |this: &mut Self, input: &Entity<InputState>, event: &InputEvent, _window, cx: &mut Context<Self>| {
             if let InputEvent::Change = event {
                 let query = input.read(cx).text().to_string();
 
@@ -61,20 +60,30 @@ impl DatabaseObjects {
                 let current_seq = this.search_seq;
                 let debouncer = Arc::clone(&this.search_debouncer);
                 let query_for_task = query.clone();
+                let table_state = this.table_state.clone();
 
                 cx.spawn(async move |view, cx| {
                     if debouncer.debounce().await {
-                        _ = view.update(cx, |this, _cx| {
+                        _ = view.update(cx, |this, cx| {
                             if this.search_seq == current_seq {
                                 this.search_query = query_for_task.clone();
-                                // TODO 待实现搜索
-                                println!("Searching for {}", query)
+                                table_state.update(cx, |state, cx| {
+                                    state.delegate_mut().set_search_query(query_for_task);
+                                    state.refresh(cx);
+                                });
                             }
                         });
                     }
                 }).detach();
             }
         });
+
+        let table_sub = cx.subscribe_in(&table_state, window, |this: &mut Self, _table: &Entity<TableState<ResultsDelegate>>, event: &TableEvent, _window, cx: &mut Context<Self>| {
+            if let TableEvent::DoubleClickedRow(row) = event {
+                this.handle_row_double_click(*row, cx);
+            }
+        });
+
         Self {
             loaded_data,
             table_state,
@@ -84,11 +93,69 @@ impl DatabaseObjects {
             search_query: "".to_string(),
             search_seq: 0,
             search_debouncer,
-            _sub: Some(_sub)
+            current_node: None,
+            _subscriptions: vec![search_sub, table_sub],
         }
     }
 
-    pub fn handle_node_selected(&self, node: DbNode, config: DbConnectionConfig, cx: &mut App) {
+    fn handle_row_double_click(&self, row: usize, cx: &mut Context<Self>) {
+        let Some(current_node) = &self.current_node else {
+            return;
+        };
+
+        let loaded_data = self.loaded_data.read(cx);
+        let db_node_type = loaded_data.db_node_type.clone();
+
+        let filtered_row = self.table_state.read(cx).delegate().filtered_rows.get(row).copied();
+        let Some(original_row) = filtered_row else {
+            return;
+        };
+
+        let row_data = self.table_state.read(cx).delegate().rows.get(original_row).cloned();
+        let Some(row_values) = row_data else {
+            return;
+        };
+
+        let first_col_value = row_values.first().cloned().unwrap_or_default();
+        let connection_id = &current_node.connection_id;
+        let database = current_node.metadata.as_ref()
+            .and_then(|m| m.get("database"))
+            .cloned()
+            .unwrap_or_default();
+
+        let node_id = match db_node_type {
+            DbNodeType::Database | DbNodeType::TablesFolder => {
+                format!("{}:{}:tables:{}", connection_id, database, first_col_value)
+            }
+            DbNodeType::ViewsFolder => {
+                format!("{}:{}:views:{}", connection_id, database, first_col_value)
+            }
+            DbNodeType::QueriesFolder => {
+                format!("{}:queries:{}", connection_id, first_col_value)
+            }
+            _ => return,
+        };
+
+        let event = match db_node_type {
+            DbNodeType::Database | DbNodeType::TablesFolder => {
+                Some(DbTreeViewEvent::OpenTableData { node_id })
+            }
+            DbNodeType::ViewsFolder => {
+                Some(DbTreeViewEvent::OpenViewData { node_id })
+            }
+            DbNodeType::QueriesFolder => {
+                Some(DbTreeViewEvent::OpenNamedQuery { node_id })
+            }
+            _ => None,
+        };
+
+        if let Some(evt) = event {
+            cx.emit(evt);
+        }
+    }
+
+    pub fn handle_node_selected(&mut self, node: DbNode, config: DbConnectionConfig, cx: &mut App) {
+        self.current_node = Some(node.clone());
         let loaded_data = self.loaded_data.clone();
         let table_state = self.table_state.clone();
         let node_clone = node.clone();
@@ -239,6 +306,7 @@ impl DatabaseObjects {
             if let Some(view) = result {
                 let columns = view.columns.clone();
                 let rows = view.rows.clone();
+                let db_node_type = view.db_node_type.clone();
 
                 cx.update(|cx| {
                     loaded_data.update(cx, |data, _cx| {
@@ -249,7 +317,7 @@ impl DatabaseObjects {
 
                 cx.update(|cx| {
                     table_state.update(cx, |state, _cx| {
-                        state.delegate_mut().update_data(columns, rows);
+                        state.delegate_mut().update_data(columns, rows, db_node_type);
                         state.refresh(_cx);
                     });
                 })
@@ -259,12 +327,270 @@ impl DatabaseObjects {
         })
             .detach();
     }
+
+    fn render_toolbar_buttons(&self, node_type: DbNodeType, _cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut buttons: Vec<AnyElement> = vec![];
+
+        buttons.push(
+            Button::new("refresh-data")
+                .with_size(Size::Medium)
+                .icon(IconName::Refresh)
+                .tooltip("刷新")
+                .into_any_element()
+        );
+
+        match node_type {
+            DbNodeType::Connection => {
+                buttons.push(
+                    Button::new("add-connection")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建连接")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("delete-connection")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除连接")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-connection")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑连接")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::Database => {
+                buttons.push(
+                    Button::new("create-database")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建数据库")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-database")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除数据库")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::TablesFolder | DbNodeType::Table => {
+                buttons.push(
+                    Button::new("create-table")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建表")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-table")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除表")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("design-table")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("设计表")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::ColumnsFolder | DbNodeType::Column => {
+                buttons.push(
+                    Button::new("add-column")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新增列")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-column")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除列")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-column")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑列")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::ViewsFolder | DbNodeType::View => {
+                buttons.push(
+                    Button::new("create-view")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建视图")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-view")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除视图")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-view")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑视图")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::FunctionsFolder | DbNodeType::Function => {
+                buttons.push(
+                    Button::new("create-function")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建函数")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-function")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除函数")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-function")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑函数")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::ProceduresFolder | DbNodeType::Procedure => {
+                buttons.push(
+                    Button::new("create-procedure")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建存储过程")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-procedure")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除存储过程")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-procedure")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑存储过程")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::TriggersFolder | DbNodeType::Trigger => {
+                buttons.push(
+                    Button::new("create-trigger")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建触发器")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-trigger")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除触发器")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-trigger")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑触发器")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::SequencesFolder | DbNodeType::Sequence => {
+                buttons.push(
+                    Button::new("create-sequence")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建序列")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-sequence")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除序列")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-sequence")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑序列")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::IndexesFolder | DbNodeType::Index => {
+                buttons.push(
+                    Button::new("create-index")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建索引")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("drop-index")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除索引")
+                        .into_any_element()
+                );
+            }
+            DbNodeType::QueriesFolder | DbNodeType::NamedQuery => {
+                buttons.push(
+                    Button::new("create-query")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Plus)
+                        .tooltip("新建查询")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("delete-query")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Minus)
+                        .tooltip("删除查询")
+                        .into_any_element()
+                );
+                buttons.push(
+                    Button::new("edit-query")
+                        .with_size(Size::Medium)
+                        .icon(IconName::Edit)
+                        .tooltip("编辑查询")
+                        .into_any_element()
+                );
+            }
+        }
+
+        buttons
+    }
 }
 
 impl Render for DatabaseObjects {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded_data = self.loaded_data.read(cx);
         let title = loaded_data.title.clone();
+        let node_type = loaded_data.db_node_type.clone();
+        let toolbar_buttons = self.render_toolbar_buttons(node_type, cx);
 
         v_flex()
             .size_full()
@@ -277,30 +603,7 @@ impl Render for DatabaseObjects {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().background)
-                    .child(
-                        Button::new("refresh-data")
-                            .with_size(Size::Medium)
-                            .icon(IconName::Refresh)
-                            .tooltip("刷新")
-                    )
-                    .child(
-                        Button::new("add-row")
-                            .with_size(Size::Medium)
-                            .icon(IconName::Plus)
-                            .tooltip("新增")
-                    )
-                    .child(
-                        Button::new("delete-row")
-                            .with_size(Size::Medium)
-                            .icon(IconName::Minus)
-                            .tooltip("删除")
-                    )
-                    .child(
-                        Button::new("edit")
-                            .with_size(Size::Medium)
-                            .icon(IconName::Edit)
-                            .tooltip("撤销")
-                    )
+                    .children(toolbar_buttons)
                     .child(div().flex_1())
                     .child({
                         div()
@@ -344,11 +647,13 @@ impl Clone for DatabaseObjects {
             search_seq: self.search_seq,
             search_query: self.search_query.clone(),
             search_debouncer: self.search_debouncer.clone(),
-
-            _sub: None
+            current_node: self.current_node.clone(),
+            _subscriptions: vec![],
         }
     }
 }
+
+impl EventEmitter<DbTreeViewEvent> for DatabaseObjects {}
 
 impl Focusable for DatabaseObjects {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -358,19 +663,20 @@ impl Focusable for DatabaseObjects {
 
 
 pub struct DatabaseObjectsPanel {
-    database_objects: Entity<DatabaseObjects>
+    database_objects: Entity<DatabaseObjects>,
 }
 
 impl DatabaseObjectsPanel {
-
-
     pub fn new(workspace: Option<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-
         let database_objects = cx.new(|cx| DatabaseObjects::new(workspace, window, cx));
 
         Self {
-            database_objects
+            database_objects,
         }
+    }
+
+    pub fn database_objects(&self) -> &Entity<DatabaseObjects> {
+        &self.database_objects
     }
 
     pub fn handle_node_selected(&self, node: DbNode, config: DbConnectionConfig, cx: &mut App) {
@@ -406,7 +712,6 @@ impl TabContent for DatabaseObjectsPanel {
 
 impl Clone for DatabaseObjectsPanel {
     fn clone(&self) -> Self {
-
         Self {
             database_objects: self.database_objects.clone(),
         }
@@ -420,6 +725,9 @@ impl EventEmitter<DatabaseObjectsEvent> for DatabaseObjectsPanel {}
 pub struct ResultsDelegate {
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<String>>,
+    pub filtered_rows: Vec<usize>,
+    pub search_query: String,
+    pub db_node_type: DbNodeType,
 }
 
 impl Clone for ResultsDelegate {
@@ -427,21 +735,53 @@ impl Clone for ResultsDelegate {
         Self {
             columns: self.columns.clone(),
             rows: self.rows.clone(),
+            filtered_rows: self.filtered_rows.clone(),
+            search_query: self.search_query.clone(),
+            db_node_type: self.db_node_type.clone(),
         }
     }
 }
 
 impl ResultsDelegate {
     pub(crate) fn new(columns: Vec<Column>, rows: Vec<Vec<String>>) -> Self {
+        let filtered_rows = (0..rows.len()).collect();
         Self {
             columns,
             rows,
+            filtered_rows,
+            search_query: String::new(),
+            db_node_type: DbNodeType::default(),
         }
     }
 
-    pub(crate) fn update_data(&mut self, columns: Vec<Column>, rows: Vec<Vec<String>>) {
+    pub(crate) fn update_data(&mut self, columns: Vec<Column>, rows: Vec<Vec<String>>, db_node_type: DbNodeType) {
         self.columns = columns;
+        self.filtered_rows = (0..rows.len()).collect();
         self.rows = rows;
+        self.search_query.clear();
+        self.db_node_type = db_node_type;
+    }
+
+    pub(crate) fn set_search_query(&mut self, query: String) {
+        self.search_query = query.to_lowercase();
+        self.apply_filter();
+    }
+
+    fn apply_filter(&mut self) {
+        if self.search_query.is_empty() {
+            self.filtered_rows = (0..self.rows.len()).collect();
+        } else {
+            self.filtered_rows = self
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    row.iter()
+                        .any(|cell| cell.to_lowercase().contains(&self.search_query))
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+        }
     }
 }
 
@@ -450,22 +790,40 @@ impl TableDelegate for ResultsDelegate {
         self.columns.len()
     }
     fn rows_count(&self, _cx: &App) -> usize {
-        self.rows.len()
+        self.filtered_rows.len()
     }
     fn column(&self, col_ix: usize, _cx: &App) -> Column {
-        self.columns[col_ix].clone()
+        self.columns.get(col_ix).cloned().unwrap_or_else(|| Column::new("", ""))
     }
     fn render_td(
         &mut self,
         row: usize,
         col: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        self.rows
+        let cell_value = self.filtered_rows
             .get(row)
+            .and_then(|&original_row| self.rows.get(original_row))
             .and_then(|r| r.get(col))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        if col == 0 {
+            let icon = get_icon_for_node_type(&self.db_node_type, cx.theme());
+            let label = if self.search_query.is_empty() {
+                Label::new(cell_value)
+            } else {
+                Label::new(cell_value).highlights(self.search_query.clone())
+            };
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(icon)
+                .child(label)
+                .into_any_element()
+        } else {
+            div().child(cell_value).into_any_element()
+        }
     }
 }

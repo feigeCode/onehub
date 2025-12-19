@@ -28,6 +28,7 @@ use crate::{
 // Event handler for database tree view events
 pub struct DatabaseEventHandler {
     _tree_subscription: Subscription,
+    _objects_subscription: Subscription,
 }
 
 impl DatabaseEventHandler {
@@ -253,8 +254,47 @@ impl DatabaseEventHandler {
             }
         });
 
+        let tab_container_for_objects = tab_container.clone();
+        let global_state_for_objects = cx.global::<GlobalDbState>().clone();
+        let tree_view_for_objects = db_tree_view.clone();
+
+        let database_objects = objects_panel.read(cx).database_objects().clone();
+        let objects_subscription = cx.subscribe_in(&database_objects, window, move |_handler, _db_objects, event, window, cx| {
+            let global_state = global_state_for_objects.clone();
+            let tab_container = tab_container_for_objects.clone();
+            let tree_view = tree_view_for_objects.clone();
+
+            let get_node = |node_id: &str, cx: &mut Context<Self>| -> Option<DbNode> {
+                let node = tree_view.read(cx).get_node(node_id).cloned();
+                if node.is_none() {
+                    warn!("not found node {} from objects panel", node_id);
+                }
+                node
+            };
+
+            match event {
+                DbTreeViewEvent::OpenTableData { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_table_data(node, global_state, tab_container, window, cx);
+                    }
+                }
+                DbTreeViewEvent::OpenViewData { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_view_data(node, global_state, tab_container, window, cx);
+                    }
+                }
+                DbTreeViewEvent::OpenNamedQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_open_named_query(node, tab_container, window, cx);
+                    }
+                }
+                _ => {}
+            }
+        });
+
         Self {
             _tree_subscription: tree_subscription,
+            _objects_subscription: objects_subscription,
         }
     }
 

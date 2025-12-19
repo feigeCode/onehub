@@ -80,6 +80,31 @@ pub enum DbTreeViewEvent {
     DumpSqlFile { node_id: String },
 }
 
+/// 根据节点类型获取图标（公共函数，可被其他模块复用）
+pub fn get_icon_for_node_type(node_type: &DbNodeType, theme: &gpui_component::Theme) -> Icon {
+    match node_type {
+        DbNodeType::Connection => IconName::MySQLLineColor.color().with_size(Size::Large),
+        DbNodeType::Database => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
+        DbNodeType::TablesFolder | DbNodeType::ViewsFolder |
+        DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
+        DbNodeType::TriggersFolder | DbNodeType::SequencesFolder |
+        DbNodeType::QueriesFolder => {
+            Icon::from(IconName::Folder).text_color(theme.primary).with_size(Size::Size(px(18.)))
+        }
+        DbNodeType::Table => Icon::from(IconName::Table).text_color(gpui::rgb(0x10B981)),
+        DbNodeType::View => Icon::from(IconName::Table),
+        DbNodeType::Function | DbNodeType::Procedure => Icon::from(IconName::Settings),
+        DbNodeType::Column => Icon::from(IconName::Column).text_color(gpui::rgb(0x6B7280)),
+        DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder => {
+            Icon::from(IconName::Folder).text_color(theme.primary)
+        }
+        DbNodeType::Index => Icon::from(IconName::Settings),
+        DbNodeType::Trigger => Icon::from(IconName::Settings),
+        DbNodeType::Sequence => Icon::from(IconName::ArrowRight),
+        DbNodeType::NamedQuery => Icon::from(IconName::File).text_color(theme.primary),
+    }
+}
+
 // ============================================================================
 // DbTreeView - 数据库连接树视图（支持懒加载）
 // ============================================================================
@@ -432,13 +457,21 @@ impl DbTreeView {
                     Self::db_node_to_tree_item_filtered(child, db_nodes, expanded_nodes, query)
                 })
                 .collect();
-            
+
             if !children.is_empty() {
                 has_matching_children = true;
                 item = item.children(children);
                 // 如果有搜索关键字且有匹配的子节点，自动展开
                 should_expand = !query.is_empty();
             }
+        } else if node.has_children && !node.children_loaded && query.is_empty() {
+            // 未加载子节点但有子节点的节点：添加空占位符以显示展开箭头
+            // loading 状态会在节点本身上显示
+            let placeholder = TreeItem::new(
+                format!("{}:placeholder", node.id),
+                ""
+            );
+            item = item.children(vec![placeholder]);
         }
 
         // 设置展开状态
