@@ -760,6 +760,8 @@ pub struct ColumnDefinition {
     pub is_unsigned: bool,
     pub default_value: Option<String>,
     pub comment: String,
+    pub charset: Option<String>,
+    pub collation: Option<String>,
 }
 
 impl ColumnDefinition {

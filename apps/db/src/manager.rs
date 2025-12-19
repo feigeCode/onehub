@@ -1265,6 +1265,49 @@ impl GlobalDbState {
         })?.await
     }
 
+    /// List indexes
+    pub async fn list_indexes(
+        &self,
+        cx: &mut AsyncApp,
+        connection_id: String,
+        database: String,
+        table: String,
+    ) -> anyhow::Result<Vec<crate::types::IndexInfo>>
+    {
+        let config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
+        let clone_self = self.clone();
+        Tokio::spawn_result(cx, async move {
+            let plugin = clone_self.get_plugin(&config.database_type)?;
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.list_indexes(&*conn, &database, &table).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            match result {
+                Ok(value) => {
+                    clone_self.connection_manager.release_session(&session_id).await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(value)
+                }
+                Err(err) => {
+                    if let Err(release_err) = clone_self.connection_manager.release_session(&session_id).await {
+                        warn!("Failed to release session {}: {}", session_id, release_err);
+                    }
+                    Err(err)
+                }
+            }
+        })?.await
+    }
+
     /// List views
     pub async fn list_views_view(
         &self,

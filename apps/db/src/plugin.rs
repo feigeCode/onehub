@@ -1090,4 +1090,263 @@ pub trait DatabasePlugin: Send + Sync {
         sql
     }
 
+    /// Build ALTER TABLE SQL from original and new TableDesign
+    /// Returns a series of ALTER TABLE statements for the differences
+    fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let mut statements: Vec<String> = Vec::new();
+        let table_name = self.quote_identifier(&new.table_name);
+
+        // Compare columns
+        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let new_cols: std::collections::HashMap<&str, &ColumnDefinition> = new.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+
+        // Find dropped columns
+        for (name, _) in &original_cols {
+            if !new_cols.contains_key(name) {
+                statements.push(format!(
+                    "ALTER TABLE {} DROP COLUMN {};",
+                    table_name,
+                    self.quote_identifier(name)
+                ));
+            }
+        }
+
+        // Find added or modified columns
+        for (idx, col) in new.columns.iter().enumerate() {
+            if let Some(orig_col) = original_cols.get(col.name.as_str()) {
+                // Check if column was modified
+                if self.column_changed(orig_col, col) {
+                    let col_def = self.build_column_def(col);
+                    match self.name() {
+                        DatabaseType::MySQL => {
+                            statements.push(format!(
+                                "ALTER TABLE {} MODIFY COLUMN {};",
+                                table_name, col_def
+                            ));
+                        }
+                        DatabaseType::PostgreSQL => {
+                            // PostgreSQL requires separate ALTER statements for each change
+                            let col_name = self.quote_identifier(&col.name);
+
+                            // Change data type
+                            if orig_col.data_type != col.data_type || orig_col.length != col.length {
+                                let type_str = self.build_type_string(col);
+                                statements.push(format!(
+                                    "ALTER TABLE {} ALTER COLUMN {} TYPE {};",
+                                    table_name, col_name, type_str
+                                ));
+                            }
+
+                            // Change nullability
+                            if orig_col.is_nullable != col.is_nullable {
+                                if col.is_nullable {
+                                    statements.push(format!(
+                                        "ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL;",
+                                        table_name, col_name
+                                    ));
+                                } else {
+                                    statements.push(format!(
+                                        "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
+                                        table_name, col_name
+                                    ));
+                                }
+                            }
+
+                            // Change default
+                            if orig_col.default_value != col.default_value {
+                                if let Some(default) = &col.default_value {
+                                    statements.push(format!(
+                                        "ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {};",
+                                        table_name, col_name, default
+                                    ));
+                                } else {
+                                    statements.push(format!(
+                                        "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT;",
+                                        table_name, col_name
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                // New column
+                let col_def = self.build_column_def(col);
+                let position = if idx == 0 {
+                    " FIRST".to_string()
+                } else if self.name() == DatabaseType::MySQL {
+                    format!(" AFTER {}", self.quote_identifier(&new.columns[idx - 1].name))
+                } else {
+                    String::new()
+                };
+
+                statements.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {}{};",
+                    table_name, col_def, position
+                ));
+            }
+        }
+
+        // Compare indexes
+        let original_indexes: std::collections::HashMap<&str, &IndexDefinition> = original.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+        let new_indexes: std::collections::HashMap<&str, &IndexDefinition> = new.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+
+        // Find dropped indexes
+        for (name, idx) in &original_indexes {
+            if !new_indexes.contains_key(name) {
+                if idx.is_primary {
+                    statements.push(format!(
+                        "ALTER TABLE {} DROP PRIMARY KEY;",
+                        table_name
+                    ));
+                } else {
+                    match self.name() {
+                        DatabaseType::MySQL => {
+                            statements.push(format!(
+                                "ALTER TABLE {} DROP INDEX {};",
+                                table_name,
+                                self.quote_identifier(name)
+                            ));
+                        }
+                        DatabaseType::PostgreSQL => {
+                            statements.push(format!(
+                                "DROP INDEX {};",
+                                self.quote_identifier(name)
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Find added indexes
+        for (name, idx) in &new_indexes {
+            if !original_indexes.contains_key(name) {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| self.quote_identifier(c))
+                    .collect();
+
+                if idx.is_primary {
+                    statements.push(format!(
+                        "ALTER TABLE {} ADD PRIMARY KEY ({});",
+                        table_name,
+                        idx_cols.join(", ")
+                    ));
+                } else {
+                    let idx_type = if idx.is_unique { "UNIQUE INDEX" } else { "INDEX" };
+                    match self.name() {
+                        DatabaseType::MySQL => {
+                            statements.push(format!(
+                                "ALTER TABLE {} ADD {} {} ({});",
+                                table_name,
+                                idx_type,
+                                self.quote_identifier(name),
+                                idx_cols.join(", ")
+                            ));
+                        }
+                        DatabaseType::PostgreSQL => {
+                            let unique_str = if idx.is_unique { "UNIQUE " } else { "" };
+                            statements.push(format!(
+                                "CREATE {}INDEX {} ON {} ({});",
+                                unique_str,
+                                self.quote_identifier(name),
+                                table_name,
+                                idx_cols.join(", ")
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Compare table options (MySQL specific)
+        if self.name() == DatabaseType::MySQL {
+            let mut options_changed = false;
+            let mut option_parts: Vec<String> = Vec::new();
+
+            if original.options.engine != new.options.engine {
+                if let Some(engine) = &new.options.engine {
+                    option_parts.push(format!("ENGINE={}", engine));
+                    options_changed = true;
+                }
+            }
+
+            if original.options.charset != new.options.charset {
+                if let Some(charset) = &new.options.charset {
+                    option_parts.push(format!("DEFAULT CHARSET={}", charset));
+                    options_changed = true;
+                }
+            }
+
+            if original.options.collation != new.options.collation {
+                if let Some(collation) = &new.options.collation {
+                    option_parts.push(format!("COLLATE={}", collation));
+                    options_changed = true;
+                }
+            }
+
+            if original.options.comment != new.options.comment && !new.options.comment.is_empty() {
+                option_parts.push(format!("COMMENT='{}'", new.options.comment.replace("'", "''")));
+                options_changed = true;
+            }
+
+            if options_changed && !option_parts.is_empty() {
+                statements.push(format!(
+                    "ALTER TABLE {} {};",
+                    table_name,
+                    option_parts.join(" ")
+                ));
+            }
+        }
+
+        if statements.is_empty() {
+            "-- No changes detected".to_string()
+        } else {
+            statements.join("\n")
+        }
+    }
+
+    /// Check if a column definition has changed
+    fn column_changed(&self, original: &ColumnDefinition, new: &ColumnDefinition) -> bool {
+        original.data_type != new.data_type
+            || original.length != new.length
+            || original.precision != new.precision
+            || original.scale != new.scale
+            || original.is_nullable != new.is_nullable
+            || original.is_auto_increment != new.is_auto_increment
+            || original.is_unsigned != new.is_unsigned
+            || original.default_value != new.default_value
+            || original.comment != new.comment
+            || original.charset != new.charset
+            || original.collation != new.collation
+    }
+
+    /// Build type string for a column (used in ALTER statements)
+    fn build_type_string(&self, col: &ColumnDefinition) -> String {
+        let mut type_str = col.data_type.clone();
+        if let Some(len) = col.length {
+            if let Some(scale) = col.scale {
+                type_str = format!("{}({},{})", type_str, len, scale);
+            } else {
+                type_str = format!("{}({})", type_str, len);
+            }
+        }
+        type_str
+    }
+
 }
