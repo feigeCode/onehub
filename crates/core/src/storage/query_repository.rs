@@ -10,6 +10,12 @@ use crate::storage::query_model::Query;
 #[derive(Clone)]
 pub struct QueryRepository;
 
+impl Default for QueryRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryRepository {
     pub fn new() -> Self {
         Self
@@ -95,11 +101,10 @@ impl Repository for QueryRepository {
         Self::validate_query_name(&item.name)?;
 
         // Check for duplicate name within the same connection (excluding current item)
-        if let Some(existing) = self.find_by_name(pool, &item.connection_id, &item.name).await? {
-            if existing.id != item.id {
+        if let Some(existing) = self.find_by_name(pool, &item.connection_id, &item.name).await?
+            && existing.id != item.id {
                 return Err(anyhow::anyhow!("A query with this name already exists in the connection"));
             }
-        }
 
         let now = crate::storage::manager::now();
         sqlx::query(
@@ -156,7 +161,7 @@ impl Repository for QueryRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_entity(r)).collect())
+        Ok(rows.iter().map(Self::row_to_entity).collect())
     }
 
     async fn count(&self, pool: &SqlitePool) -> Result<i64> {
@@ -223,7 +228,7 @@ impl QueryRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_entity(r)).collect())
+        Ok(rows.iter().map(Self::row_to_entity).collect())
     }
 
     pub async fn list_by_database(&self, pool: &SqlitePool, connection_id: &str, database_name: &str) -> Result<Vec<Query>> {
@@ -240,7 +245,7 @@ impl QueryRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_entity(r)).collect())
+        Ok(rows.iter().map(Self::row_to_entity).collect())
     }
 
     pub async fn find_by_name(&self, pool: &SqlitePool, connection_id: &str, name: &str) -> Result<Option<Query>> {

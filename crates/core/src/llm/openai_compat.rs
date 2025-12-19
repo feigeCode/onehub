@@ -124,14 +124,13 @@ pub fn parse_sse_events(text: &str) -> Vec<ChatStreamEvent> {
             match serde_json::from_str::<StreamResponse>(data) {
                 Ok(response) => {
                     if let Some(choice) = response.choices.first() {
-                        if let Some(content) = &choice.delta.content {
-                            if !content.is_empty() {
+                        if let Some(content) = &choice.delta.content
+                            && !content.is_empty() {
                                 events.push(ChatStreamEvent::Chunk(ChatStreamChunk {
                                     delta: content.clone(),
                                     finish_reason: choice.finish_reason.clone(),
                                 }));
                             }
-                        }
                         if choice.finish_reason.is_some() {
                             let usage = response.usage.map(Into::into);
                             events.push(ChatStreamEvent::Done(usage));

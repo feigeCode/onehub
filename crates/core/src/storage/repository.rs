@@ -1,4 +1,4 @@
-use anyhow::{Error, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use gpui::{App, SharedString};
 use sqlx::{Row, SqlitePool};
@@ -9,6 +9,12 @@ use crate::storage::query_repository::QueryRepository;
 /// Repository for StoredConnection
 #[derive(Clone)]
 pub struct ConnectionRepository;
+
+impl Default for ConnectionRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ConnectionRepository {
     pub fn new() -> Self {
@@ -134,7 +140,7 @@ impl Repository for ConnectionRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_entity(r)).collect())
+        Ok(rows.iter().map(Self::row_to_entity).collect())
     }
 
     async fn count(&self, pool: &SqlitePool) -> Result<i64> {
@@ -184,7 +190,7 @@ impl ConnectionRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_entity(r)).collect())
+        Ok(rows.iter().map(Self::row_to_entity).collect())
     }
 }
 
@@ -205,6 +211,12 @@ fn parse_connection_type(s: &str) -> ConnectionType {
 /// Repository for Workspace
 #[derive(Clone)]
 pub struct WorkspaceRepository;
+
+impl Default for WorkspaceRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl WorkspaceRepository {
     pub fn new() -> Self {
@@ -329,7 +341,7 @@ impl Repository for WorkspaceRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_entity(r)).collect())
+        Ok(rows.iter().map(Self::row_to_entity).collect())
     }
 
     async fn count(&self, pool: &SqlitePool) -> Result<i64> {

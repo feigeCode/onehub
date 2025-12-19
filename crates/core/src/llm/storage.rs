@@ -11,6 +11,12 @@ use crate::storage::traits::{Entity, Repository};
 /// Provider storage implementation using SQLite
 #[derive(Clone)]
 pub struct ProviderRepository;
+impl Default for ProviderRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProviderRepository {
     pub fn new() -> Self {
         Self
@@ -96,7 +102,7 @@ impl Repository for ProviderRepository {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(&item.id)
+        .bind(item.id)
         .bind(&item.name)
         .bind(item.provider_type.as_str())
         .bind(&item.api_key)
@@ -140,7 +146,7 @@ impl Repository for ProviderRepository {
         .bind(item.temperature)
         .bind(item.enabled)
         .bind(updated_at)
-        .bind(&item.id)
+        .bind(item.id)
         .execute(pool)
         .await?;
 

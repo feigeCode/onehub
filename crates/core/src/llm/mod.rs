@@ -9,12 +9,10 @@ pub mod chat_history;
 
 pub use manager::register_provider;
 
-use std::sync::Arc;
 
-use gpui::{App, Global};
+use gpui::App;
 
 use self::manager::GlobalProviderState;
-use self::storage::ProviderRepository;
 
 
 /// Initialize global LLM state (call this from one_core::init)

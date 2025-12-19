@@ -1,4 +1,3 @@
-use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -99,6 +98,12 @@ impl ChatMessage {
 #[derive(Clone)]
 pub struct SessionRepository;
 
+impl Default for SessionRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionRepository {
     pub fn new() -> Self {
         Self
@@ -168,7 +173,7 @@ impl Repository for SessionRepository {
         .bind(&item.name)
         .bind(&item.provider_id)
         .bind(updated_at)
-        .bind(&item.id)
+        .bind(item.id)
         .execute(pool)
         .await?;
 
@@ -198,7 +203,7 @@ impl Repository for SessionRepository {
             .fetch_all(pool)
             .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_session(r)).collect())
+        Ok(rows.iter().map(Self::row_to_session).collect())
     }
 
     async fn count(&self, pool: &SqlitePool) -> Result<i64> {
@@ -236,13 +241,19 @@ impl SessionRepository {
             .fetch_all(pool)
             .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_session(r)).collect())
+        Ok(rows.iter().map(Self::row_to_session).collect())
     }
 }
 
 // Message Repository
 #[derive(Clone)]
 pub struct MessageRepository;
+
+impl Default for MessageRepository {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl MessageRepository {
     pub fn new() -> Self {
@@ -311,11 +322,11 @@ impl Repository for MessageRepository {
             WHERE id = ?
             "#,
         )
-        .bind(&item.session_id)
+        .bind(item.session_id)
         .bind(&item.role)
         .bind(&item.content)
         .bind(updated_at)
-        .bind(&item.id)
+        .bind(item.id)
         .execute(pool)
         .await?;
 
@@ -345,7 +356,7 @@ impl Repository for MessageRepository {
             .fetch_all(pool)
             .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_message(r)).collect())
+        Ok(rows.iter().map(Self::row_to_message).collect())
     }
 
     async fn count(&self, pool: &SqlitePool) -> Result<i64> {
@@ -373,7 +384,7 @@ impl MessageRepository {
             .fetch_all(pool)
             .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_message(r)).collect())
+        Ok(rows.iter().map(Self::row_to_message).collect())
     }
 
     pub async fn list_recent(&self, pool: &SqlitePool, limit: i32) -> Result<Vec<ChatMessage>> {
@@ -382,7 +393,7 @@ impl MessageRepository {
             .fetch_all(pool)
             .await?;
 
-        Ok(rows.iter().map(|r| Self::row_to_message(r)).collect())
+        Ok(rows.iter().map(Self::row_to_message).collect())
     }
 
     pub async fn delete_by_session(&self, pool: &SqlitePool, session_id: i64) -> Result<()> {

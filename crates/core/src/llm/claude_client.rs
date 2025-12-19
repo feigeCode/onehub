@@ -279,16 +279,14 @@ fn parse_claude_sse_events(text: &str) -> Vec<ChatStreamEvent> {
                 Ok(event) => {
                     match event.event_type.as_str() {
                         "content_block_delta" => {
-                            if let Some(delta) = event.delta {
-                                if let Some(text) = delta.text {
-                                    if !text.is_empty() {
+                            if let Some(delta) = event.delta
+                                && let Some(text) = delta.text
+                                    && !text.is_empty() {
                                         events.push(ChatStreamEvent::Chunk(ChatStreamChunk {
                                             delta: text,
                                             finish_reason: None,
                                         }));
                                     }
-                                }
-                            }
                         }
                         "message_delta" => {
                             let usage = event.usage.map(|u| Usage {
