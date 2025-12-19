@@ -862,44 +862,35 @@ impl DatabaseEventHandler {
                     let storage = storage.clone();
                     let tree = tree.clone();
                     cx.spawn(async move |cx| {
-                        match storage.get_pool().await {
-                            Ok(pool) => {
-                                match conn_id.parse::<i64>() {
-                                    Ok(id) => {
-                                        if let Some(conn_repo_arc) = storage.get::<ConnectionRepository>().await {
-                                            let conn_repo = (*conn_repo_arc).clone();
-                                            match conn_repo.delete(&pool, id).await {
-                                                Ok(_) => {
-                                                    // 刷新树
-                                                    let _ = cx.update(|cx| {
-                                                        tree.update(cx, |tree, cx| {
-                                                            tree.refresh_tree(conn_id.clone(), cx);
-                                                        });
-                                                        Self::show_success_async(cx, "连接已成功删除");
-                                                    });
-                                                }
-                                                Err(e) => {
-                                                    let _ = cx.update(|cx| {
-                                                        Self::show_error_async(cx, format!("删除连接失败: {}", e));
-                                                    });
-                                                }
-                                            }
-                                        } else {
+                        match conn_id.parse::<i64>() {
+                            Ok(id) => {
+                                if let Some(conn_repo_arc) = storage.get::<ConnectionRepository>().await {
+                                    let conn_repo = (*conn_repo_arc).clone();
+                                    match conn_repo.delete(id).await {
+                                        Ok(_) => {
+                                            // 刷新树
                                             let _ = cx.update(|cx| {
-                                                Self::show_error_async(cx, "删除连接失败：无法获取存储库");
+                                                tree.update(cx, |tree, cx| {
+                                                    tree.refresh_tree(conn_id.clone(), cx);
+                                                });
+                                                Self::show_success_async(cx, "连接已成功删除");
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = cx.update(|cx| {
+                                                Self::show_error_async(cx, format!("删除连接失败: {}", e));
                                             });
                                         }
                                     }
-                                    Err(e) => {
-                                        let _ = cx.update(|cx| {
-                                            Self::show_error_async(cx, format!("删除连接失败：无效的连接ID {}", e));
-                                        });
-                                    }
+                                } else {
+                                    let _ = cx.update(|cx| {
+                                        Self::show_error_async(cx, "删除连接失败：无法获取存储库");
+                                    });
                                 }
                             }
                             Err(e) => {
                                 let _ = cx.update(|cx| {
-                                    Self::show_error_async(cx, format!("删除连接失败：数据库连接错误 {}", e));
+                                    Self::show_error_async(cx, format!("删除连接失败：无效的连接ID {}", e));
                                 });
                             }
                         }
@@ -1570,12 +1561,11 @@ impl DatabaseEventHandler {
                             let result = async  {
                                 Tokio::spawn_result(cx, async move {
                                     let repo = storage.get::<QueryRepository>().await
-                                        .ok_or_else(|| anyhow::anyhow!("WorkspaceRepository not found"))?;
-                                    let pool = storage.get_pool().await?;
-                                    let result: Option<Query> = repo.get(&pool, qid).await?;
+                                        .ok_or_else(|| anyhow::anyhow!("QueryRepository not found"))?;
+                                    let result: Option<Query> = repo.get(qid).await?;
                                     if let Some(mut query) = result {
                                         query.name = new_name_log.clone();
-                                        repo.update(&pool, &query).await?;
+                                        repo.update(&query).await?;
                                     }
                                     Ok(())
                                 })?.await
@@ -1638,30 +1628,28 @@ impl DatabaseEventHandler {
                         let conn_id = conn_id.clone();
 
                         cx.spawn(async move |cx| {
-                            if let Ok(pool) = storage.get_pool().await {
-                                if let Some(query_repo_arc) = storage.get::<QueryRepository>().await {
-                                    let query_repo = (*query_repo_arc).clone();
-                                    match query_repo.delete(&pool, qid).await {
-                                        Ok(_) => {
-                                            // 刷新树
-                                            let _ = cx.update(|cx| {
-                                                tree.update(cx, |tree, cx| {
-                                                    tree.refresh_tree(conn_id.clone(), cx);
-                                                });
-                                                Self::show_success_async(cx, "查询已删除");
+                            if let Some(query_repo_arc) = storage.get::<QueryRepository>().await {
+                                let query_repo = (*query_repo_arc).clone();
+                                match query_repo.delete(qid).await {
+                                    Ok(_) => {
+                                        // 刷新树
+                                        let _ = cx.update(|cx| {
+                                            tree.update(cx, |tree, cx| {
+                                                tree.refresh_tree(conn_id.clone(), cx);
                                             });
-                                        }
-                                        Err(e) => {
-                                            let _ = cx.update(|cx| {
-                                                Self::show_error_async(cx, format!("删除查询失败: {}", e));
-                                            });
-                                        }
+                                            Self::show_success_async(cx, "查询已删除");
+                                        });
                                     }
-                                } else {
-                                    let _ = cx.update(|cx| {
-                                        Self::show_error_async(cx, "删除查询失败：无法获取存储库");
-                                    });
+                                    Err(e) => {
+                                        let _ = cx.update(|cx| {
+                                            Self::show_error_async(cx, format!("删除查询失败: {}", e));
+                                        });
+                                    }
                                 }
+                            } else {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, "删除查询失败：无法获取存储库");
+                                });
                             }
                         }).detach();
                         true

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use crate::storage::traits::Entity;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Query {
     pub id: Option<i64>,
     pub name: String,

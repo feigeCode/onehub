@@ -1,24 +1,19 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use gpui::SharedString;
-use sqlx::{Row, SqlitePool};
+use sqlx::SqlitePool;
 
 use crate::storage::traits::Repository;
 use crate::storage::query_model::Query;
 
-/// Repository for Query
 #[derive(Clone)]
-pub struct QueryRepository;
-
-impl Default for QueryRepository {
-    fn default() -> Self {
-        Self::new()
-    }
+pub struct QueryRepository {
+    pool: SqlitePool,
 }
 
 impl QueryRepository {
-    pub fn new() -> Self {
-        Self
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 }
 
@@ -30,43 +25,10 @@ impl Repository for QueryRepository {
         SharedString::from("Query")
     }
 
-    async fn create_table(&self, pool: &SqlitePool) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS queries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                content TEXT NOT NULL,
-                connection_id TEXT NOT NULL,
-                database_name TEXT,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                UNIQUE(connection_id, name)
-            )
-            "#,
-        )
-        .execute(pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_queries_connection ON queries(connection_id)")
-            .execute(pool)
-            .await?;
-
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_queries_database ON queries(database_name) WHERE database_name IS NOT NULL"
-        )
-        .execute(pool)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn insert(&self, pool: &SqlitePool, item: &mut Self::Entity) -> Result<i64> {
-        // Validate the query name before insertion
+    async fn insert(&self, item: &mut Self::Entity) -> Result<i64> {
         Self::validate_query_name(&item.name)?;
 
-        // Check for duplicate name within the same connection
-        if self.find_by_name(pool, &item.connection_id, &item.name).await?.is_some() {
+        if self.find_by_name(&item.connection_id, &item.name).await?.is_some() {
             return Err(anyhow::anyhow!("A query with this name already exists in the connection"));
         }
 
@@ -83,7 +45,7 @@ impl Repository for QueryRepository {
         .bind(&item.database_name)
         .bind(now)
         .bind(now)
-        .execute(pool)
+        .execute(&self.pool)
         .await?;
 
         let id = result.last_insert_rowid();
@@ -94,14 +56,12 @@ impl Repository for QueryRepository {
         Ok(id)
     }
 
-    async fn update(&self, pool: &SqlitePool, item: &Self::Entity) -> Result<()> {
+    async fn update(&self, item: &Self::Entity) -> Result<()> {
         let id = item.id.ok_or_else(|| anyhow::anyhow!("Cannot update without ID"))?;
 
-        // Validate the query name before update
         Self::validate_query_name(&item.name)?;
 
-        // Check for duplicate name within the same connection (excluding current item)
-        if let Some(existing) = self.find_by_name(pool, &item.connection_id, &item.name).await?
+        if let Some(existing) = self.find_by_name(&item.connection_id, &item.name).await?
             && existing.id != item.id {
                 return Err(anyhow::anyhow!("A query with this name already exists in the connection"));
             }
@@ -120,23 +80,23 @@ impl Repository for QueryRepository {
         .bind(&item.database_name)
         .bind(now)
         .bind(id)
-        .execute(pool)
+        .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    async fn delete(&self, pool: &SqlitePool, id: i64) -> Result<()> {
+    async fn delete(&self, id: i64) -> Result<()> {
         sqlx::query("DELETE FROM queries WHERE id = ?")
             .bind(id)
-            .execute(pool)
+            .execute(&self.pool)
             .await?;
 
         Ok(())
     }
 
-    async fn get(&self, pool: &SqlitePool, id: i64) -> Result<Option<Self::Entity>> {
-        let row = sqlx::query(
+    async fn get(&self, id: i64) -> Result<Option<Self::Entity>> {
+        let row: Option<Query> = sqlx::query_as(
             r#"
             SELECT id, name, content, connection_id, database_name, created_at, updated_at
             FROM queries
@@ -144,38 +104,38 @@ impl Repository for QueryRepository {
             "#,
         )
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| Self::row_to_entity(&r)))
+        Ok(row)
     }
 
-    async fn list(&self, pool: &SqlitePool) -> Result<Vec<Self::Entity>> {
-        let rows = sqlx::query(
+    async fn list(&self) -> Result<Vec<Self::Entity>> {
+        let rows: Vec<Query> = sqlx::query_as(
             r#"
             SELECT id, name, content, connection_id, database_name, created_at, updated_at
             FROM queries
             ORDER BY updated_at DESC
             "#,
         )
-        .fetch_all(pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.iter().map(Self::row_to_entity).collect())
+        Ok(rows)
     }
 
-    async fn count(&self, pool: &SqlitePool) -> Result<i64> {
-        let row = sqlx::query("SELECT COUNT(*) as count FROM queries")
-            .fetch_one(pool)
+    async fn count(&self) -> Result<i64> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM queries")
+            .fetch_one(&self.pool)
             .await?;
 
-        Ok(row.get("count"))
+        Ok(count)
     }
 
-    async fn exists(&self, pool: &SqlitePool, id: i64) -> Result<bool> {
-        let row = sqlx::query("SELECT 1 FROM queries WHERE id = ? LIMIT 1")
+    async fn exists(&self, id: i64) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM queries WHERE id = ? LIMIT 1")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&self.pool)
             .await?;
 
         Ok(row.is_some())
@@ -183,7 +143,6 @@ impl Repository for QueryRepository {
 }
 
 impl QueryRepository {
-    // Validate query name according to requirements
     fn validate_query_name(name: &str) -> Result<()> {
         if name.is_empty() {
             return Err(anyhow::anyhow!("Query name cannot be empty"));
@@ -193,7 +152,6 @@ impl QueryRepository {
             return Err(anyhow::anyhow!("Query name must be 100 characters or less"));
         }
 
-        // Check for allowed characters (alphanumeric, spaces, hyphens, underscores)
         for c in name.chars() {
             if !c.is_alphanumeric() && c != ' ' && c != '-' && c != '_' {
                 return Err(anyhow::anyhow!("Query name contains invalid characters. Only alphanumeric characters, spaces, hyphens, and underscores are allowed"));
@@ -203,20 +161,8 @@ impl QueryRepository {
         Ok(())
     }
 
-    fn row_to_entity(row: &sqlx::sqlite::SqliteRow) -> Query {
-        Query {
-            id: Some(row.get("id")),
-            name: row.get("name"),
-            content: row.get("content"),
-            connection_id: row.get("connection_id"),
-            database_name: row.get("database_name"),
-            created_at: Some(row.get("created_at")),
-            updated_at: Some(row.get("updated_at")),
-        }
-    }
-
-    pub async fn list_by_connection(&self, pool: &SqlitePool, connection_id: &str) -> Result<Vec<Query>> {
-        let rows = sqlx::query(
+    pub async fn list_by_connection(&self, connection_id: &str) -> Result<Vec<Query>> {
+        let rows: Vec<Query> = sqlx::query_as(
             r#"
             SELECT id, name, content, connection_id, database_name, created_at, updated_at
             FROM queries
@@ -225,14 +171,14 @@ impl QueryRepository {
             "#,
         )
         .bind(connection_id)
-        .fetch_all(pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.iter().map(Self::row_to_entity).collect())
+        Ok(rows)
     }
 
-    pub async fn list_by_database(&self, pool: &SqlitePool, connection_id: &str, database_name: &str) -> Result<Vec<Query>> {
-        let rows = sqlx::query(
+    pub async fn list_by_database(&self, connection_id: &str, database_name: &str) -> Result<Vec<Query>> {
+        let rows: Vec<Query> = sqlx::query_as(
             r#"
             SELECT id, name, content, connection_id, database_name, created_at, updated_at
             FROM queries
@@ -242,14 +188,14 @@ impl QueryRepository {
         )
         .bind(connection_id)
         .bind(database_name)
-        .fetch_all(pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.iter().map(Self::row_to_entity).collect())
+        Ok(rows)
     }
 
-    pub async fn find_by_name(&self, pool: &SqlitePool, connection_id: &str, name: &str) -> Result<Option<Query>> {
-        let row = sqlx::query(
+    pub async fn find_by_name(&self, connection_id: &str, name: &str) -> Result<Option<Query>> {
+        let row: Option<Query> = sqlx::query_as(
             r#"
             SELECT id, name, content, connection_id, database_name, created_at, updated_at
             FROM queries
@@ -258,9 +204,9 @@ impl QueryRepository {
         )
         .bind(connection_id)
         .bind(name)
-        .fetch_optional(pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| Self::row_to_entity(&r)))
+        Ok(row)
     }
 }

@@ -119,6 +119,10 @@ pub enum IconName {
     Table,
     Column,
     Key,
+    View,
+    Function,
+    Schema,
+    GoldKey,
     Redis,
     Terminal,
     Apps,
@@ -134,7 +138,9 @@ pub enum IconName {
     Edit,
     Filter,
     Refresh,
-    EditBorder
+    EditBorder,
+    Folder1,
+    FolderOpen1,
 }
 
 impl IconName {
@@ -239,9 +245,15 @@ impl IconNamed for IconName {
             Self::WindowMinimize => "icons/window-minimize.svg",
             Self::WindowRestore => "icons/window-restore.svg",
             Self::Database => "icons/db.svg",
+            Self::Schema => "icons/schema.svg",
             Self::Table => "icons/table.svg",
+            Self::Folder1 => "icons/folder-1.svg",
+            Self::FolderOpen1 => "icons/folder-open-1.svg",
+            Self::View => "icons/view.svg",
+            Self::Function => "icons/function.svg",
             Self::Column => "icons/column.svg",
             Self::Key => "icons/key.svg",
+            Self::GoldKey => "icons/gold_key.svg",
             Self::Redis => "icons/redis.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Apps => "icons/apps.svg",
@@ -334,7 +346,7 @@ impl Icon {
         cx.new(|_| self)
     }
 
-    pub fn transform(mut self, transformation: gpui::Transformation) -> Self {
+    pub fn transform(mut self, transformation: Transformation) -> Self {
         self.base = self.base.with_transformation(transformation);
         self
     }

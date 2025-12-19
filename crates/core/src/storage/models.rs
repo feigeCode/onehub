@@ -2,6 +2,7 @@ use crate::storage::traits::Entity;
 use gpui_component::Size::Large;
 use gpui_component::{Icon, IconName, Sizable};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ConnectionType {
@@ -10,6 +11,31 @@ pub enum ConnectionType {
     SshSftp,
     Redis,
     MongoDB,
+}
+
+impl fmt::Display for ConnectionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            ConnectionType::All => "All",
+            ConnectionType::Database => "Database",
+            ConnectionType::SshSftp => "SshSftp",
+            ConnectionType::Redis => "Redis",
+            ConnectionType::MongoDB => "MongoDB",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl ConnectionType {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Database" => ConnectionType::Database,
+            "SshSftp" => ConnectionType::SshSftp,
+            "Redis" => ConnectionType::Redis,
+            "MongoDB" => ConnectionType::MongoDB,
+            _ => ConnectionType::Database,
+        }
+    }
 }
 
 /// Database type enumeration

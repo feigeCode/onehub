@@ -194,10 +194,9 @@ impl AiChatPanel {
 
             // 在 tokio 运行时中执行持久层操作
             let result = Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let repo = storage_manager.get::<ProviderRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("ProviderRepository not found"))?;
-                let all_providers = repo.list(&pool).await?;
+                let all_providers = repo.list().await?;
                 let enabled_providers: Vec<_> = all_providers.into_iter()
                     .filter(|p| p.enabled)
                     .collect();
@@ -266,10 +265,9 @@ impl AiChatPanel {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let session_repo = storage_manager.get::<SessionRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("SessionRepository not found"))?;
-                session_repo.list(&pool).await
+                session_repo.list().await
             });
 
             if let Ok(task) = result {
@@ -294,15 +292,14 @@ impl AiChatPanel {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let session_repo = storage_manager.get::<SessionRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("SessionRepository not found"))?;
                 let message_repo = storage_manager.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
-                
+
                 // 先删除消息，再删除会话
-                message_repo.delete_by_session(&pool, session_id).await?;
-                session_repo.delete(&pool, session_id).await
+                message_repo.delete_by_session(session_id).await?;
+                session_repo.delete(session_id).await
             });
 
             if let Ok(task) = result {
@@ -334,13 +331,12 @@ impl AiChatPanel {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let session_repo = storage_manager.get::<SessionRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("SessionRepository not found"))?;
-                
-                if let Some(mut session) = session_repo.get(&pool, session_id).await? {
+
+                if let Some(mut session) = session_repo.get(session_id).await? {
                     session.name = new_name;
-                    session_repo.update(&pool, &session).await?;
+                    session_repo.update(&session).await?;
                 }
                 Ok::<(), anyhow::Error>(())
             });
@@ -367,10 +363,9 @@ impl AiChatPanel {
             use one_core::gpui_tokio::Tokio;
 
             let result = Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let message_repo = storage_manager.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
-                message_repo.list_by_session(&pool, session_id).await
+                message_repo.list_by_session(session_id).await
             });
 
             if let Ok(task) = result {
@@ -413,11 +408,10 @@ impl AiChatPanel {
         cx.spawn(async move |_this, cx: &mut AsyncApp| {
             use one_core::gpui_tokio::Tokio;
             if let Ok(task) = Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let message_repo = storage_manager.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
                 let mut message = ChatMessage::new(session_id, message_role, message_content);
-                message_repo.insert(&pool, &mut message).await
+                message_repo.insert(&mut message).await
             }) {
                 let _ = task.await;
             }
@@ -476,12 +470,11 @@ impl AiChatPanel {
                 None => {
                     let storage_manager_clone = storage_manager.clone();
                     let result = Tokio::spawn(cx, async move {
-                        let pool = storage_manager_clone.get_pool().await?;
                         let session_repo = storage_manager_clone.get::<SessionRepository>().await
                             .ok_or_else(|| anyhow::anyhow!("SessionRepository not found"))?;
                         let session_name = format!("Chat with {}", connection_name.as_deref().unwrap_or("Database"));
                         let mut session = ChatSession::new(session_name, provider_id.to_string());
-                        session_repo.insert(&pool, &mut session).await
+                        session_repo.insert(&mut session).await
                     });
 
                     match result {
@@ -523,11 +516,10 @@ impl AiChatPanel {
             let content_clone = content.clone();
             let storage_manager_for_save = storage_manager.clone();
             if let Ok(task) = Tokio::spawn_result(cx, async move {
-                let pool = storage_manager_for_save.get_pool().await?;
                 let message_repo = storage_manager_for_save.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
                 let mut message = ChatMessage::new(session_db_id, "user".to_string(), content_clone);
-                message_repo.insert(&pool, &mut message).await?;
+                message_repo.insert(&mut message).await?;
                 Ok(())
             }) {
                 if let Err(e) = task.await {
@@ -538,10 +530,9 @@ impl AiChatPanel {
             // 获取聊天历史（不包含当前消息）
             let storage_manager_for_history = storage_manager.clone();
             let history_task = Tokio::spawn_result(cx, async move {
-                let pool = storage_manager_for_history.get_pool().await?;
                 let message_repo = storage_manager_for_history.get::<MessageRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
-                let messages = message_repo.list_by_session(&pool, session_db_id).await?;
+                let messages = message_repo.list_by_session(session_db_id).await?;
                 Ok::<Vec<LlmChatMessage>, anyhow::Error>(
                     messages.iter().map(|msg| LlmChatMessage {
                         role: msg.role.clone(),
@@ -576,10 +567,9 @@ impl AiChatPanel {
             // 开始流式聊天
             let storage_manager_for_stream = storage_manager.clone();
             let stream_result = Tokio::spawn(cx, async move {
-                let pool = storage_manager_for_stream.get_pool().await?;
                 let repo = storage_manager_for_stream.get::<ProviderRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("ProviderRepository not found"))?;
-                let config = repo.get(&pool, provider_id).await?
+                let config = repo.get(provider_id).await?
                     .ok_or_else(|| anyhow::anyhow!("Provider not found: {}", provider_id))?;
                 let provider = global_provider_state.manager().get_provider(config).await?;
                 provider.chat_stream(request).await
@@ -688,11 +678,10 @@ impl AiChatPanel {
                         cx.spawn(async move |_this, cx: &mut AsyncApp| {
                             use one_core::gpui_tokio::Tokio;
                             match Tokio::spawn_result(cx, async move {
-                                let pool = storage_manager_final.get_pool().await?;
                                 let message_repo = storage_manager_final.get::<MessageRepository>().await
                                     .ok_or_else(|| anyhow::anyhow!("MessageRepository not found"))?;
                                 let mut assistant_message = ChatMessage::new(session_db_id, "assistant".to_string(), final_content_inner);
-                                message_repo.insert(&pool, &mut assistant_message).await?;
+                                message_repo.insert(&mut assistant_message).await?;
                                 Ok(())
                             }) {
                                 Ok(task) => {

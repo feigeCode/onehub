@@ -3,14 +3,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use gpui::SharedString;
 use serde::{Deserialize, Serialize};
-use sqlx::{query, Row, SqlitePool};
+use sqlx::{FromRow, SqlitePool};
 
 use super::types::ChatMessage as LlmChatMessage;
 use crate::storage::now;
 use crate::storage::traits::Repository;
 
-// Chat session represents a conversation with an LLM provider
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ChatSession {
     pub id: i64,
     pub name: String,
@@ -37,7 +36,7 @@ impl ChatSession {
     pub fn new(name: String, provider_id: String) -> Self {
         let now = now();
         Self {
-            id: 0, // 临时值，insert 后会被数据库 ID 覆盖
+            id: 0,
             name,
             provider_id,
             created_at: now,
@@ -46,12 +45,11 @@ impl ChatSession {
     }
 }
 
-// Chat message represents a single message in a conversation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ChatMessage {
     pub id: i64,
     pub session_id: i64,
-    pub role: String,  // "user", "assistant", "system"
+    pub role: String,
     pub content: String,
     pub created_at: i64,
 }
@@ -66,14 +64,14 @@ impl crate::storage::traits::Entity for ChatMessage {
     }
 
     fn updated_at(&self) -> i64 {
-        self.created_at // ChatMessage doesn't have updated_at, so using created_at
+        self.created_at
     }
 }
 
 impl ChatMessage {
     pub fn new(session_id: i64, role: String, content: String) -> Self {
         Self {
-            id: 0, // 临时值，insert 后会被数据库 ID 覆盖
+            id: 0,
             session_id,
             role,
             content,
@@ -94,19 +92,14 @@ impl ChatMessage {
     }
 }
 
-// Session Repository
 #[derive(Clone)]
-pub struct SessionRepository;
-
-impl Default for SessionRepository {
-    fn default() -> Self {
-        Self::new()
-    }
+pub struct SessionRepository {
+    pool: SqlitePool,
 }
 
 impl SessionRepository {
-    pub fn new() -> Self {
-        Self
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 }
 
@@ -118,30 +111,8 @@ impl Repository for SessionRepository {
         SharedString::from("ChatSession")
     }
 
-    async fn create_table(&self, pool: &SqlitePool) -> Result<()> {
-        query(
-            r#"
-            CREATE TABLE IF NOT EXISTS chat_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                provider_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await?;
-
-        query("CREATE INDEX IF NOT EXISTS idx_chat_sessions_provider_id ON chat_sessions (provider_id)")
-            .execute(pool)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn insert(&self, pool: &SqlitePool, item: &mut Self::Entity) -> Result<i64> {
-        let result = query(
+    async fn insert(&self, item: &mut Self::Entity) -> Result<i64> {
+        let result = sqlx::query(
             r#"
             INSERT INTO chat_sessions (name, provider_id, created_at, updated_at)
             VALUES (?, ?, ?, ?)
@@ -151,7 +122,7 @@ impl Repository for SessionRepository {
         .bind(&item.provider_id)
         .bind(item.created_at)
         .bind(item.updated_at)
-        .execute(pool)
+        .execute(&self.pool)
         .await?;
 
         let id = result.last_insert_rowid();
@@ -159,9 +130,9 @@ impl Repository for SessionRepository {
         Ok(id)
     }
 
-    async fn update(&self, pool: &SqlitePool, item: &Self::Entity) -> Result<()> {
+    async fn update(&self, item: &Self::Entity) -> Result<()> {
         let updated_at = now();
-        query(
+        sqlx::query(
             r#"
             UPDATE chat_sessions SET
                 name = ?,
@@ -174,50 +145,50 @@ impl Repository for SessionRepository {
         .bind(&item.provider_id)
         .bind(updated_at)
         .bind(item.id)
-        .execute(pool)
+        .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    async fn delete(&self, pool: &SqlitePool, id: i64) -> Result<()> {
-        query("DELETE FROM chat_sessions WHERE id = ?")
+    async fn delete(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM chat_sessions WHERE id = ?")
             .bind(id)
-            .execute(pool)
+            .execute(&self.pool)
             .await?;
 
         Ok(())
     }
 
-    async fn get(&self, pool: &SqlitePool, id: i64) -> Result<Option<Self::Entity>> {
-        let row = query("SELECT * FROM chat_sessions WHERE id = ?")
+    async fn get(&self, id: i64) -> Result<Option<Self::Entity>> {
+        let row: Option<ChatSession> = sqlx::query_as("SELECT * FROM chat_sessions WHERE id = ?")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row.map(|r| Self::row_to_session(&r)))
+        Ok(row)
     }
 
-    async fn list(&self, pool: &SqlitePool) -> Result<Vec<Self::Entity>> {
-        let rows = query("SELECT * FROM chat_sessions ORDER BY updated_at DESC")
-            .fetch_all(pool)
+    async fn list(&self) -> Result<Vec<Self::Entity>> {
+        let rows: Vec<ChatSession> = sqlx::query_as("SELECT * FROM chat_sessions ORDER BY updated_at DESC")
+            .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.iter().map(Self::row_to_session).collect())
+        Ok(rows)
     }
 
-    async fn count(&self, pool: &SqlitePool) -> Result<i64> {
-        let row = query("SELECT COUNT(*) as count FROM chat_sessions")
-            .fetch_one(pool)
+    async fn count(&self) -> Result<i64> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chat_sessions")
+            .fetch_one(&self.pool)
             .await?;
 
-        Ok(row.get("count"))
+        Ok(count)
     }
 
-    async fn exists(&self, pool: &SqlitePool, id: i64) -> Result<bool> {
-        let row = query("SELECT 1 FROM chat_sessions WHERE id = ? LIMIT 1")
+    async fn exists(&self, id: i64) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM chat_sessions WHERE id = ? LIMIT 1")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&self.pool)
             .await?;
 
         Ok(row.is_some())
@@ -225,39 +196,24 @@ impl Repository for SessionRepository {
 }
 
 impl SessionRepository {
-    fn row_to_session(row: &sqlx::sqlite::SqliteRow) -> ChatSession {
-        ChatSession {
-            id: row.get("id"),
-            name: row.get("name"),
-            provider_id: row.get("provider_id"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-        }
-    }
-
-    pub async fn list_by_provider(&self, pool: &SqlitePool, provider_id: &str) -> Result<Vec<ChatSession>> {
-        let rows = query("SELECT * FROM chat_sessions WHERE provider_id = ? ORDER BY updated_at DESC")
+    pub async fn list_by_provider(&self, provider_id: &str) -> Result<Vec<ChatSession>> {
+        let rows: Vec<ChatSession> = sqlx::query_as("SELECT * FROM chat_sessions WHERE provider_id = ? ORDER BY updated_at DESC")
             .bind(provider_id)
-            .fetch_all(pool)
+            .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.iter().map(Self::row_to_session).collect())
+        Ok(rows)
     }
 }
 
-// Message Repository
 #[derive(Clone)]
-pub struct MessageRepository;
-
-impl Default for MessageRepository {
-    fn default() -> Self {
-        Self::new()
-    }
+pub struct MessageRepository {
+    pool: SqlitePool,
 }
 
 impl MessageRepository {
-    pub fn new() -> Self {
-        Self
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 }
 
@@ -269,30 +225,8 @@ impl Repository for MessageRepository {
         SharedString::from("ChatMessage")
     }
 
-    async fn create_table(&self, pool: &SqlitePool) -> Result<()> {
-        query(
-            r#"
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(pool)
-        .await?;
-
-        query("CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages (session_id)")
-            .execute(pool)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn insert(&self, pool: &SqlitePool, item: &mut Self::Entity) -> Result<i64> {
-        let result = query(
+    async fn insert(&self, item: &mut Self::Entity) -> Result<i64> {
+        let result = sqlx::query(
             r#"
             INSERT INTO chat_messages (session_id, role, content, created_at)
             VALUES (?, ?, ?, ?)
@@ -302,7 +236,7 @@ impl Repository for MessageRepository {
         .bind(&item.role)
         .bind(&item.content)
         .bind(item.created_at)
-        .execute(pool)
+        .execute(&self.pool)
         .await?;
 
         let id = result.last_insert_rowid();
@@ -310,67 +244,64 @@ impl Repository for MessageRepository {
         Ok(id)
     }
 
-    async fn update(&self, pool: &SqlitePool, item: &Self::Entity) -> Result<()> {
-        let updated_at = now();
-        query(
+    async fn update(&self, item: &Self::Entity) -> Result<()> {
+        sqlx::query(
             r#"
             UPDATE chat_messages SET
                 session_id = ?,
                 role = ?,
-                content = ?,
-                created_at = ?
+                content = ?
             WHERE id = ?
             "#,
         )
         .bind(item.session_id)
         .bind(&item.role)
         .bind(&item.content)
-        .bind(updated_at)
         .bind(item.id)
-        .execute(pool)
+        .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    async fn delete(&self, pool: &SqlitePool, id: i64) -> Result<()> {
-        query("DELETE FROM chat_messages WHERE id = ?")
+    async fn delete(&self, id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM chat_messages WHERE id = ?")
             .bind(id)
-            .execute(pool)
+            .execute(&self.pool)
             .await?;
 
         Ok(())
     }
 
-    async fn get(&self, pool: &SqlitePool, id: i64) -> Result<Option<Self::Entity>> {
-        let row = query("SELECT * FROM chat_messages WHERE id = ?")
+    async fn get(&self, id: i64) -> Result<Option<Self::Entity>> {
+        let row: Option<ChatMessage> = sqlx::query_as("SELECT * FROM chat_messages WHERE id = ?")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row.map(|r| Self::row_to_message(&r)))
+        Ok(row)
     }
 
-    async fn list(&self, pool: &SqlitePool) -> Result<Vec<Self::Entity>> {
-        let rows = query("SELECT * FROM chat_messages ORDER BY created_at ASC")
-            .fetch_all(pool)
+    async fn list(&self) -> Result<Vec<Self::Entity>> {
+        let rows: Vec<ChatMessage> = sqlx::query_as("SELECT * FROM chat_messages ORDER BY created_at ASC")
+            .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.iter().map(Self::row_to_message).collect())
+        Ok(rows)
     }
 
-    async fn count(&self, pool: &SqlitePool) -> Result<i64> {
-        let row = query("SELECT COUNT(*) as count FROM chat_messages")
-            .fetch_one(pool)
+    async fn count(&self) -> Result<i64> {
+        let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chat_messages")
+            .fetch_one(&self.pool)
             .await?;
 
-        Ok(row.get("count"))
+        Ok(count)
     }
 
-    async fn exists(&self, pool: &SqlitePool, id: i64) -> Result<bool> {
-        let row = query("SELECT 1 FROM chat_messages WHERE id = ? LIMIT 1")
+    async fn exists(&self, id: i64) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM chat_messages WHERE id = ? LIMIT 1")
             .bind(id)
-            .fetch_optional(pool)
+            .fetch_optional(&self.pool)
             .await?;
 
         Ok(row.is_some())
@@ -378,41 +309,31 @@ impl Repository for MessageRepository {
 }
 
 impl MessageRepository {
-    pub async fn list_by_session(&self, pool: &SqlitePool, session_id: i64) -> Result<Vec<ChatMessage>> {
-        let rows = query("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC")
+    pub async fn list_by_session(&self, session_id: i64) -> Result<Vec<ChatMessage>> {
+        let rows: Vec<ChatMessage> = sqlx::query_as("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC")
             .bind(session_id)
-            .fetch_all(pool)
+            .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.iter().map(Self::row_to_message).collect())
+        Ok(rows)
     }
 
-    pub async fn list_recent(&self, pool: &SqlitePool, limit: i32) -> Result<Vec<ChatMessage>> {
-        let rows = query("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT ?")
+    pub async fn list_recent(&self, limit: i32) -> Result<Vec<ChatMessage>> {
+        let rows: Vec<ChatMessage> = sqlx::query_as("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT ?")
             .bind(limit)
-            .fetch_all(pool)
+            .fetch_all(&self.pool)
             .await?;
 
-        Ok(rows.iter().map(Self::row_to_message).collect())
+        Ok(rows)
     }
 
-    pub async fn delete_by_session(&self, pool: &SqlitePool, session_id: i64) -> Result<()> {
-        query("DELETE FROM chat_messages WHERE session_id = ?")
+    pub async fn delete_by_session(&self, session_id: i64) -> Result<()> {
+        sqlx::query("DELETE FROM chat_messages WHERE session_id = ?")
             .bind(session_id)
-            .execute(pool)
+            .execute(&self.pool)
             .await?;
 
         Ok(())
-    }
-
-    fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> ChatMessage {
-        ChatMessage {
-            id: row.get("id"),
-            session_id: row.get("session_id"),
-            role: row.get("role"),
-            content: row.get("content"),
-            created_at: row.get("created_at"),
-        }
     }
 
     pub fn to_llm_message(chat_message: &ChatMessage) -> LlmChatMessage {

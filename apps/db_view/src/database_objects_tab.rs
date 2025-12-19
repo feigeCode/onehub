@@ -180,8 +180,6 @@ impl DatabaseObjects {
 
                 let conn = conn_arc.read().await;
 
-                let pool = storage_manager.get_pool().await.map_err(|e| anyhow!("获取连接池失败: {}", e))?;
-
                 // 获取当前连接的信息
                 let conn_repo_arc = storage_manager.get::<ConnectionRepository>().await
                     .ok_or_else(|| anyhow!("获取连接仓库失败"))?;
@@ -192,7 +190,7 @@ impl DatabaseObjects {
                             plugin.list_databases_view(&**conn).await.ok()
                         } else {
                             if let Some(w) = workspace {
-                                let connections = conn_repo_arc.list_by_workspace(&pool, w.id).await.ok();
+                                let connections = conn_repo_arc.list_by_workspace(w.id).await.ok();
                                 let rows = connections
                                     .map(|conns| {
                                         conns.iter().map(|stored_conn| {
@@ -578,7 +576,8 @@ impl DatabaseObjects {
                         .tooltip("编辑查询")
                         .into_any_element()
                 );
-            }
+            },
+            _ => {}
         }
 
         buttons
@@ -810,7 +809,7 @@ impl TableDelegate for ResultsDelegate {
             .unwrap_or_default();
 
         if col == 0 {
-            let icon = get_icon_for_node_type(&self.db_node_type, cx.theme());
+            let icon = get_icon_for_node_type(&self.db_node_type, cx.theme()).color();
             let label = if self.search_query.is_empty() {
                 Label::new(cell_value)
             } else {

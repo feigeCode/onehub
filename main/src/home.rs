@@ -94,8 +94,7 @@ impl HomePage {
                 Tokio::spawn_result(cx, async move {
                     let repo = storage.get::<WorkspaceRepository>().await
                         .ok_or_else(|| anyhow::anyhow!("WorkspaceRepository not found"))?;
-                    let pool = storage.get_pool().await?;
-                    let result: anyhow::Result<Vec<Workspace>> = repo.list(&pool).await;
+                    let result: anyhow::Result<Vec<Workspace>> = repo.list().await;
                     result
                 })?.await
             }.await;
@@ -121,8 +120,7 @@ impl HomePage {
                 Tokio::spawn_result(cx, async move {
                     let repo = storage.get::<ConnectionRepository>().await
                         .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
-                    let pool = storage.get_pool().await?;
-                    let result: anyhow::Result<Vec<StoredConnection>> = repo.list(&pool).await;
+                    let result: anyhow::Result<Vec<StoredConnection>> = repo.list().await;
                     result
                 })?.await
             }.await;
@@ -208,14 +206,13 @@ impl HomePage {
         let task = Tokio::spawn(cx, async move {
             let repo = storage.get::<WorkspaceRepository>().await
                 .ok_or_else(|| anyhow::anyhow!("WorkspaceRepository not found"))?;
-            let pool = storage.get_pool().await?;
-            
+
             if editing_id.is_some() {
-                repo.update(&pool, &mut workspace).await?;
+                repo.update(&mut workspace).await?;
             } else {
-                repo.insert(&pool, &mut workspace).await?;
+                repo.insert(&mut workspace).await?;
             }
-            
+
             let result: anyhow::Result<Workspace> = Ok(workspace);
             result
         });
@@ -428,14 +425,13 @@ impl HomePage {
         let task = Tokio::spawn(cx, async move {
             let repo = storage.get::<ConnectionRepository>().await
                 .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
-            let pool = storage.get_pool().await?;
-            
+
             if editing_id.is_some() {
-                repo.update(&pool, &mut stored).await?;
+                repo.update(&mut stored).await?;
             } else {
-                repo.insert(&pool, &mut stored).await?;
+                repo.insert(&mut stored).await?;
             }
-            
+
             let result: anyhow::Result<StoredConnection> = Ok(stored);
             result
         });

@@ -117,8 +117,7 @@ impl SqlEditorTab {
                     let storage = storage.clone();
                     let query_repo = storage.get::<QueryRepository>().await
                         .ok_or_else(|| anyhow::anyhow!("Query repository not found"))?;
-                    let pool = storage.get_pool().await?;
-                    query_repo.get(&pool, query_id).await
+                    query_repo.get(query_id).await
                 }) {
                     Ok(task) => match task.await {
                         Ok(Some(query)) => {
@@ -316,7 +315,7 @@ impl SqlEditorTab {
 
         let mut query = Query::new(query_name, sql, connection_id.clone(), saved_database.clone());
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            
+
             let storage = storage_manager.clone();
             match Tokio::spawn_result(cx, async move {
                 let storage = storage.clone();
@@ -324,8 +323,7 @@ impl SqlEditorTab {
                     .get::<QueryRepository>()
                     .await
                     .ok_or_else(|| anyhow::anyhow!("Query repository not found"))?;
-                let pool = storage.get_pool().await?;
-                query_repo.insert(&pool, &mut query).await?;
+                query_repo.insert(&mut query).await?;
                 Ok::<Option<i64>, anyhow::Error>(query.id)
             }) {
                 Ok(task) => match task.await {

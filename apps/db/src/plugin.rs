@@ -309,72 +309,61 @@ pub trait DatabasePlugin: Send + Sync {
 
         // 获取当前连接的信息
         let conn_repo_arc = global_storage_state.storage.get::<QueryRepository>().await;
-        if  let Some(conn_repo) = conn_repo_arc {
-            let pool = global_storage_state.storage.get_pool().await;
-            return match pool {
-                Ok(p) => {
-                    let query_repo = (*conn_repo).clone();
-                    let queries = query_repo.list_by_connection(&p, &connection_id_for_queries).await.unwrap_or_default();
-                    // Create QueriesFolder node
-                    let query_count = queries.len();
+        if let Some(conn_repo) = conn_repo_arc {
+            let query_repo = (*conn_repo).clone();
+            let queries = query_repo.list_by_connection(&connection_id_for_queries).await.unwrap_or_default();
+            // Create QueriesFolder node
+            let query_count = queries.len();
 
-                    // Add database name to metadata
-                    let mut metadata = HashMap::new();
-                    metadata.insert("database".to_string(), database_name.clone());
+            // Add database name to metadata
+            let mut metadata = HashMap::new();
+            metadata.insert("database".to_string(), database_name.clone());
 
-                    let queries_folder_node = DbNode::new(
-                        format!("{}:queries_folder", &node_id_for_queries),
-                        format!("Queries ({})", query_count),
-                        DbNodeType::QueriesFolder,
+            let queries_folder_node = DbNode::new(
+                format!("{}:queries_folder", &node_id_for_queries),
+                format!("Queries ({})", query_count),
+                DbNodeType::QueriesFolder,
+                connection_id_for_queries.clone(),
+                node.database_type
+            )
+                .with_parent_context(node_id_for_queries.clone())
+                .with_metadata(metadata.clone());
+
+            if !queries.is_empty() {
+                // Add NamedQuery children
+                let mut query_nodes = Vec::new();
+                for query in queries {
+                    let mut query_metadata: HashMap<String, String> = HashMap::new();
+                    metadata.iter().for_each(|(k, v)| {
+                        query_metadata.insert(k.clone(), v.clone());
+                    });
+                    // Add query_id to metadata
+                    if let Some(qid) = query.id {
+                        query_metadata.insert("query_id".to_string(), qid.to_string());
+                    }
+
+                    let query_node = DbNode::new(
+                        format!("{}:queries_folder:{}", &node_id_for_queries, query.id.unwrap_or(0)),
+                        query.name.clone(),
+                        DbNodeType::NamedQuery,
                         connection_id_for_queries.clone(),
                         node.database_type
                     )
-                        .with_parent_context(node_id_for_queries.clone())
-                        .with_metadata(metadata.clone());
+                        .with_parent_context(format!("{}:queries_folder", &node_id_for_queries))
+                        .with_metadata(query_metadata);
 
-                    if !queries.is_empty() {
-                        // Add NamedQuery children
-                        let mut query_nodes = Vec::new();
-                        for query in queries {
-                            let mut query_metadata:HashMap<String, String> = HashMap::new();
-                            metadata.iter().for_each(|(k,v)| {
-                                query_metadata.insert(k.clone(), v.clone());
-                            });
-                            // Add query_id to metadata
-                            if let Some(qid) = query.id {
-                                query_metadata.insert("query_id".to_string(), qid.to_string());
-                            }
-                            
-                            let query_node = DbNode::new(
-                                format!("{}:queries_folder:{}", &node_id_for_queries, query.id.unwrap_or(0)),
-                                query.name.clone(),
-                                DbNodeType::NamedQuery,
-                                connection_id_for_queries.clone(),
-                                node.database_type
-                            )
-                                .with_parent_context(format!("{}:queries_folder", &node_id_for_queries))
-                                .with_metadata(query_metadata);
-                            
-                           
-
-                            query_nodes.push(query_node);
-                        }
-
-                        let mut queries_folder_node = queries_folder_node;
-                        queries_folder_node.children = query_nodes;
-                        queries_folder_node.has_children = true;
-                        queries_folder_node.children_loaded = true;
-                        Ok(queries_folder_node)
-                    } else {
-                        // Add empty QueriesFolder node
-                        Ok(queries_folder_node)
-                    }
+                    query_nodes.push(query_node);
                 }
-                Err(e) => {
-                    Err(e)
-                }
+
+                let mut queries_folder_node = queries_folder_node;
+                queries_folder_node.children = query_nodes;
+                queries_folder_node.has_children = true;
+                queries_folder_node.children_loaded = true;
+                return Ok(queries_folder_node);
+            } else {
+                // Add empty QueriesFolder node
+                return Ok(queries_folder_node);
             }
-
         }
 
         // Add database name to metadata

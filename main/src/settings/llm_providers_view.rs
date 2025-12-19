@@ -43,10 +43,9 @@ impl LlmProvidersView {
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let task_result = match Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let repo = storage_manager.get::<ProviderRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("ProviderRepository not found"))?;
-                repo.list(&pool).await
+                repo.list().await
             }) {
                 Ok(task) => task.await.ok(),
                 Err(_) => None,
@@ -124,14 +123,13 @@ impl LlmProvidersView {
                     // 在 tokio 线程池中执行持久层操作
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let task_result = match Tokio::spawn(cx, async move {
-                            let pool = storage_manager_clone.get_pool().await?;
                             let repo = storage_manager_clone.get::<ProviderRepository>().await
                                 .ok_or_else(|| anyhow::anyhow!("ProviderRepository not found"))?;
                             // 如果是更新走更新逻辑
-                            if is_update { 
-                                repo.update(&pool, &config).await
-                            } else { 
-                                repo.insert(&pool, &mut config).await?;
+                            if is_update {
+                                repo.update(&config).await
+                            } else {
+                                repo.insert(&mut config).await?;
                                 Ok(())
                             }
                         }) {
@@ -164,10 +162,9 @@ impl LlmProvidersView {
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let task_result = match Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let repo = storage_manager.get::<ProviderRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("ProviderRepository not found"))?;
-                repo.delete(&pool, provider_id).await
+                repo.delete(provider_id).await
             }) {
                 Ok(task) => task.await.ok(),
                 Err(_) => None,
@@ -191,10 +188,9 @@ impl LlmProvidersView {
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let task_result = match Tokio::spawn(cx, async move {
-                let pool = storage_manager.get_pool().await?;
                 let repo = storage_manager.get::<ProviderRepository>().await
                     .ok_or_else(|| anyhow::anyhow!("ProviderRepository not found"))?;
-                repo.update(&pool, &provider).await
+                repo.update(&provider).await
             }) {
                 Ok(task) => task.await.ok(),
                 Err(_) => None,

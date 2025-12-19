@@ -84,24 +84,17 @@ pub enum DbTreeViewEvent {
 pub fn get_icon_for_node_type(node_type: &DbNodeType, theme: &gpui_component::Theme) -> Icon {
     match node_type {
         DbNodeType::Connection => IconName::MySQLLineColor.color().with_size(Size::Large),
+        DbNodeType::Schema => IconName::Schema.color(),
         DbNodeType::Database => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
-        DbNodeType::TablesFolder | DbNodeType::ViewsFolder |
-        DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
-        DbNodeType::TriggersFolder | DbNodeType::SequencesFolder |
-        DbNodeType::QueriesFolder => {
-            Icon::from(IconName::Folder).text_color(theme.primary).with_size(Size::Size(px(18.)))
-        }
         DbNodeType::Table => Icon::from(IconName::Table).text_color(gpui::rgb(0x10B981)),
-        DbNodeType::View => Icon::from(IconName::Table),
-        DbNodeType::Function | DbNodeType::Procedure => Icon::from(IconName::Settings),
+        DbNodeType::View => Icon::from(IconName::View),
+        DbNodeType::Function | DbNodeType::Procedure => Icon::from(IconName::Function),
         DbNodeType::Column => Icon::from(IconName::Column).text_color(gpui::rgb(0x6B7280)),
-        DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder => {
-            Icon::from(IconName::Folder).text_color(theme.primary)
-        }
         DbNodeType::Index => Icon::from(IconName::Settings),
         DbNodeType::Trigger => Icon::from(IconName::Settings),
         DbNodeType::Sequence => Icon::from(IconName::ArrowRight),
         DbNodeType::NamedQuery => Icon::from(IconName::File).text_color(theme.primary),
+        _ => IconName::File.color()
     }
 }
 
@@ -496,17 +489,14 @@ impl DbTreeView {
             Some(DbNodeType::TablesFolder) | Some(DbNodeType::ViewsFolder) |
             Some(DbNodeType::FunctionsFolder) | Some(DbNodeType::ProceduresFolder) |
             Some(DbNodeType::TriggersFolder) | Some(DbNodeType::SequencesFolder) |
-            Some(DbNodeType::QueriesFolder) => {
-                if is_expanded { Icon::new(IconName::FolderOpen).text_color(cx.theme().primary).with_size(Size::Size(px(18.))) } else { Icon::from(IconName::Folder).text_color(cx.theme().primary).with_size(Size::Size(px(18.))) }
+            Some(DbNodeType::QueriesFolder) | Some(DbNodeType::ColumnsFolder) | Some(DbNodeType::IndexesFolder) => {
+                if is_expanded { Icon::new(IconName::FolderOpen1).with_size(Size::Size(px(20.))) } else { Icon::from(IconName::Folder1).with_size(Size::Size(px(20.))) }
             }
-            Some(DbNodeType::Table) => Icon::from(IconName::Table).text_color(gpui::rgb(0x10B981)),
-            Some(DbNodeType::View) => Icon::from(IconName::Table),
-            Some(DbNodeType::Function) | Some(DbNodeType::Procedure) => Icon::from(IconName::Settings),
-            Some(DbNodeType::Column) => Icon::from(IconName::Column).text_color(gpui::rgb(0x6B7280)),
-            Some(DbNodeType::ColumnsFolder) | Some(DbNodeType::IndexesFolder) => {
-                if is_expanded { Icon::from(IconName::FolderOpen).text_color(cx.theme().primary) } else { Icon::from(IconName::Folder).text_color(cx.theme().primary) }
-            }
-            Some(DbNodeType::Index) => Icon::from(IconName::Settings),
+            Some(DbNodeType::Table) => Icon::from(IconName::Table).with_size(Size::Size(px(20.))),
+            Some(DbNodeType::View) => Icon::from(IconName::View).with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Function) | Some(DbNodeType::Procedure) => Icon::from(IconName::Function).with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Column) => Icon::from(IconName::Column).with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Index) => Icon::from(IconName::GoldKey).with_size(Size::Size(px(20.))),
             Some(DbNodeType::Trigger) => Icon::from(IconName::Settings),
             Some(DbNodeType::Sequence) => Icon::from(IconName::ArrowRight),
             Some(DbNodeType::NamedQuery) => Icon::from(IconName::File).text_color(cx.theme().primary),
@@ -785,7 +775,7 @@ impl Render for DbTreeView {
                                     move |ix, item, _depth, _selected, _window, cx| {
                                         let node_id = item.id.to_string();
                                         let (icon, label_text, label_for_tooltip, _item_clone, search_query) = view.update(cx, |this, cx| {
-                                            let icon = this.get_icon_for_node(&node_id, item.is_expanded(),cx);
+                                            let icon = this.get_icon_for_node(&node_id, item.is_expanded(),cx).color();
 
                                             // 同步节点展开状态
                                             if item.is_expanded() {

@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::log;
 use crate::gpui_tokio::Tokio;
@@ -36,10 +35,8 @@ impl Clone for GlobalStorageState {
 impl StorageManager {
     /// Create a new storage manager
     pub async fn new() -> Result<Self> {
-        let config_dir = get_config_dir()?;
-        fs::create_dir_all(config_dir.clone()).await?;
-        let db_path = config_dir.join("one-hub.db");
-        let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))?
+        let database_url = get_db_path()?;
+        let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
@@ -89,6 +86,12 @@ impl Clone for StorageManager {
             repositories: Arc::clone(&self.repositories),
         }
     }
+}
+
+pub fn get_db_path() -> Result<String> {
+    let config_dir = get_config_dir()?;
+    let db_path = config_dir.join("one-hub.db");
+    Ok(format!("sqlite://{}",db_path.display()))
 }
 
 pub fn get_config_dir() -> Result<PathBuf> {

@@ -22,6 +22,7 @@ pub enum DbNodeType {
     #[default]
     Connection,
     Database,
+    Schema,
     TablesFolder,
     Table,
     ColumnsFolder,
@@ -47,6 +48,7 @@ impl fmt::Display for DbNodeType {
         match self {
             DbNodeType::Connection => write!(f, "Connection"),
             DbNodeType::Database => write!(f, "Database"),
+            DbNodeType::Schema => write!(f, "Schema"),
             DbNodeType::TablesFolder => write!(f, "Tables"),
             DbNodeType::Table => write!(f, "Table"),
             DbNodeType::ColumnsFolder => write!(f, "Columns"),
