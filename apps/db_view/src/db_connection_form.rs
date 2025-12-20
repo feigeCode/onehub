@@ -200,6 +200,75 @@ impl DbFormConfig {
         }
     }
 
+    /// MSSQL (SQL Server) form configuration
+    pub fn mssql() -> Self {
+        Self {
+            db_type: DatabaseType::MSSQL,
+            title: "新建连接 (SQL Server)".to_string(),
+            tab_groups: vec![
+                TabGroup::new("general", "常规").fields(vec![
+                    FormField::new("name", "连接名称", FormFieldType::Text)
+                        .placeholder("My SQL Server Database")
+                        .default("Local SQL Server"),
+                    FormField::new("host", "主机", FormFieldType::Text)
+                        .placeholder("localhost")
+                        .default("localhost"),
+                    FormField::new("port", "端口", FormFieldType::Number)
+                        .placeholder("1433")
+                        .default("1433"),
+                    FormField::new("username", "用户名", FormFieldType::Text)
+                        .placeholder("sa")
+                        .default("sa"),
+                    FormField::new("password", "密码", FormFieldType::Password)
+                        .placeholder("Enter password"),
+                    FormField::new("database", "数据库", FormFieldType::Text)
+                        .optional()
+                        .placeholder("database name (optional)"),
+                ]),
+                TabGroup::new("advanced", "高级"),
+                TabGroup::new("ssl", "SSL"),
+                TabGroup::new("ssh", "SSH"),
+                TabGroup::new("notes", "备注"),
+            ],
+        }
+    }
+
+    /// Oracle form configuration
+    pub fn oracle() -> Self {
+        Self {
+            db_type: DatabaseType::Oracle,
+            title: "新建连接 (Oracle)".to_string(),
+            tab_groups: vec![
+                TabGroup::new("general", "常规").fields(vec![
+                    FormField::new("name", "连接名称", FormFieldType::Text)
+                        .placeholder("My Oracle Database")
+                        .default("Local Oracle"),
+                    FormField::new("host", "主机", FormFieldType::Text)
+                        .placeholder("localhost")
+                        .default("localhost"),
+                    FormField::new("port", "端口", FormFieldType::Number)
+                        .placeholder("1521")
+                        .default("1521"),
+                    FormField::new("username", "用户名", FormFieldType::Text)
+                        .placeholder("system")
+                        .default("system"),
+                    FormField::new("password", "密码", FormFieldType::Password)
+                        .placeholder("Enter password"),
+                    FormField::new("service_name", "Service Name", FormFieldType::Text)
+                        .optional()
+                        .placeholder("ORCL (或使用 SID)"),
+                    FormField::new("sid", "SID", FormFieldType::Text)
+                        .optional()
+                        .placeholder("orcl (或使用 Service Name)"),
+                ]),
+                TabGroup::new("advanced", "高级"),
+                TabGroup::new("ssl", "SSL"),
+                TabGroup::new("ssh", "SSH"),
+                TabGroup::new("notes", "备注"),
+            ],
+        }
+    }
+
     /// SQLite form configuration
     pub fn sqlite() -> Self {
         // Get default database path in user's home directory

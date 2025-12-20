@@ -22,6 +22,8 @@ mod db_tree_event;
 pub mod database_view_plugin;
 pub mod mysql;
 pub mod postgresql;
+pub mod mssql;
+pub mod oracle;
 mod import_export;
 
 pub use common::DatabaseFormEvent;

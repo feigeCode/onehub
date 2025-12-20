@@ -7,6 +7,8 @@ use crate::common::DatabaseEditorView;
 use crate::db_connection_form::DbConnectionForm;
 use crate::mysql::mysql_view_plugin::MySqlDatabaseViewPlugin;
 use crate::postgresql::postgresql_view_plugin::PostgreSqlDatabaseViewPlugin;
+use crate::mssql::mssql_view_plugin::MsSqlDatabaseViewPlugin;
+use crate::oracle::oracle_view_plugin::OracleDatabaseViewPlugin;
 
 /// 表设计器 UI 配置能力
 #[derive(Clone, Debug)]
@@ -152,6 +154,8 @@ impl DatabaseViewPluginRegistry {
 
         registry.register(MySqlDatabaseViewPlugin::new());
         registry.register(PostgreSqlDatabaseViewPlugin::new());
+        registry.register(MsSqlDatabaseViewPlugin::new());
+        registry.register(OracleDatabaseViewPlugin::new());
 
         registry
     }
