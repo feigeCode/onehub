@@ -178,6 +178,7 @@ impl DataImportView {
                 stop_on_error,
                 use_transaction,
                 truncate_before_import: truncate_before,
+                csv_config: None,
             };
 
             match DataImporter::import(connection.as_ref(), import_config, data).await {
@@ -336,21 +337,48 @@ impl Render for DataImportView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("stop_on_error").checked(*self.stop_on_error.read(cx)))
+                            .child(
+                                Switch::new("stop_on_error")
+                                    .checked(*self.stop_on_error.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.stop_on_error.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("Stop on error"),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("use_transaction").checked(*self.use_transaction.read(cx)))
+                            .child(
+                                Switch::new("use_transaction")
+                                    .checked(*self.use_transaction.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.use_transaction.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("Use transaction"),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("truncate_before").checked(*self.truncate_before.read(cx)))
+                            .child(
+                                Switch::new("truncate_before")
+                                    .checked(*self.truncate_before.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.truncate_before.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("Truncate before import"),
                     ),
             )

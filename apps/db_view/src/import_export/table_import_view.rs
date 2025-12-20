@@ -9,7 +9,7 @@ use gpui_component::{
     v_flex, ActiveTheme, IndexPath, Sizable,
 };
 
-use db::{DataFormat, DataImporter, GlobalDbState, ImportConfig};
+use db::{CsvImportConfig, DataFormat, DataImporter, GlobalDbState, ImportConfig};
 
 // 记录分隔符选项
 #[derive(Clone, Debug, PartialEq)]
@@ -230,6 +230,31 @@ impl TableImportView {
         let stop_on_error = *self.stop_on_error.read(cx);
         let use_transaction = *self.use_transaction.read(cx);
         let truncate_before = *self.truncate_before.read(cx);
+        let has_header = *self.has_header.read(cx);
+
+        let field_separator_str = self.field_separator_custom.read(cx).text().to_string();
+        let field_delimiter = if field_separator_str.is_empty() {
+            ','
+        } else if field_separator_str == "\\t" {
+            '\t'
+        } else {
+            field_separator_str.chars().next().unwrap_or(',')
+        };
+
+        let text_qualifier = self.text_qualifier.read(cx)
+            .selected_value()
+            .and_then(|s| s.chars().next());
+
+        let csv_config = if format == DataFormat::Csv {
+            Some(CsvImportConfig {
+                field_delimiter,
+                text_qualifier,
+                has_header,
+                record_terminator: "\n".to_string(),
+            })
+        } else {
+            None
+        };
 
         cx.spawn(async move |cx| {
             let config = match global_state.get_config_async(&connection_id).await {
@@ -271,7 +296,6 @@ impl TableImportView {
                 }
             };
 
-            // 读取文件
             let data = match std::fs::read_to_string(&file_path_str) {
                 Ok(d) => d,
                 Err(e) => {
@@ -292,6 +316,7 @@ impl TableImportView {
                 stop_on_error,
                 use_transaction,
                 truncate_before_import: truncate_before,
+                csv_config,
             };
 
             match DataImporter::import(connection.as_ref(), import_config, data).await {

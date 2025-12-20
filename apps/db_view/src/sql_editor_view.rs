@@ -53,7 +53,7 @@ impl SqlEditorTab {
             title: title.into(),
             editor: editor.clone(),
             connection_id: connection_id.into(),
-            sql_result_tab_container: cx.new(|cx| SqlResultTabContainer::new(cx)),
+            sql_result_tab_container: cx.new(|cx| SqlResultTabContainer::new(window, cx)),
             database_select: database_select.clone(),
             focus_handle,
         };

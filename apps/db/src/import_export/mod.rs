@@ -39,6 +39,26 @@ impl DataFormat {
     }
 }
 
+/// CSV导入配置
+#[derive(Debug, Clone)]
+pub struct CsvImportConfig {
+    pub field_delimiter: char,
+    pub text_qualifier: Option<char>,
+    pub has_header: bool,
+    pub record_terminator: String,
+}
+
+impl Default for CsvImportConfig {
+    fn default() -> Self {
+        Self {
+            field_delimiter: ',',
+            text_qualifier: Some('"'),
+            has_header: true,
+            record_terminator: "\n".to_string(),
+        }
+    }
+}
+
 /// 导入配置
 #[derive(Debug, Clone)]
 pub struct ImportConfig {
@@ -48,6 +68,7 @@ pub struct ImportConfig {
     pub stop_on_error: bool,
     pub use_transaction: bool,
     pub truncate_before_import: bool,
+    pub csv_config: Option<CsvImportConfig>,
 }
 
 impl Default for ImportConfig {
@@ -59,6 +80,7 @@ impl Default for ImportConfig {
             stop_on_error: true,
             use_transaction: true,
             truncate_before_import: false,
+            csv_config: None,
         }
     }
 }

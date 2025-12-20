@@ -10,31 +10,34 @@ use crate::import_export::{ExportConfig, ExportResult, FormatHandler, ImportConf
 pub struct CsvFormatHandler;
 
 impl CsvFormatHandler {
-    fn parse_csv_line(line: &str) -> Vec<String> {
+    fn parse_csv_line_with_config(line: &str, delimiter: char, qualifier: Option<char>) -> Vec<String> {
         let mut fields = Vec::new();
         let mut current_field = String::new();
         let mut in_quotes = false;
         let mut chars = line.chars().peekable();
 
         while let Some(ch) = chars.next() {
-            match ch {
-                '"' => {
+            if let Some(q) = qualifier {
+                if ch == q {
                     if in_quotes {
-                        if chars.peek() == Some(&'"') {
+                        if chars.peek() == Some(&q) {
                             chars.next();
-                            current_field.push('"');
+                            current_field.push(q);
                         } else {
                             in_quotes = false;
                         }
                     } else {
                         in_quotes = true;
                     }
+                    continue;
                 }
-                ',' if !in_quotes => {
-                    fields.push(current_field.clone());
-                    current_field.clear();
-                }
-                _ => current_field.push(ch),
+            }
+
+            if ch == delimiter && !in_quotes {
+                fields.push(current_field.clone());
+                current_field.clear();
+            } else {
+                current_field.push(ch);
             }
         }
         fields.push(current_field);
@@ -65,6 +68,11 @@ impl FormatHandler for CsvFormatHandler {
         let table = config.table.as_ref()
             .ok_or_else(|| anyhow!("Table name required for CSV import"))?;
 
+        let csv_config = config.csv_config.clone().unwrap_or_default();
+        let delimiter = csv_config.field_delimiter;
+        let qualifier = csv_config.text_qualifier;
+        let has_header = csv_config.has_header;
+
         let lines: Vec<&str> = data.lines().collect();
         if lines.is_empty() {
             return Ok(ImportResult {
@@ -75,18 +83,29 @@ impl FormatHandler for CsvFormatHandler {
             });
         }
 
-        // 第一行是列名
-        let columns = Self::parse_csv_line(lines[0]);
+        let columns: Vec<String>;
+        let data_start_line: usize;
+
+        if has_header {
+            columns = Self::parse_csv_line_with_config(lines[0], delimiter, qualifier);
+            data_start_line = 1;
+        } else {
+            let first_row = Self::parse_csv_line_with_config(lines[0], delimiter, qualifier);
+            columns = (0..first_row.len())
+                .map(|i| format!("col{}", i + 1))
+                .collect();
+            data_start_line = 0;
+        }
+
         if columns.is_empty() {
             return Err(anyhow!("CSV header is empty"));
         }
 
-        // TRUNCATE表
         if config.truncate_before_import {
             let truncate_sql = format!("TRUNCATE TABLE `{}`", table);
             let results = connection.execute(&truncate_sql, ExecOptions::default()).await
                 .map_err(|e| anyhow!("Truncate failed: {}", e))?;
-            
+
             for result in results {
                 if let SqlResult::Error(err) = result {
                     errors.push(format!("Truncate failed: {}", err.message));
@@ -102,15 +121,14 @@ impl FormatHandler for CsvFormatHandler {
             }
         }
 
-        // 插入数据行
-        for (line_num, line) in lines.iter().skip(1).enumerate() {
+        for (line_num, line) in lines.iter().skip(data_start_line).enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
 
-            let values = Self::parse_csv_line(line);
+            let values = Self::parse_csv_line_with_config(line, delimiter, qualifier);
             if values.len() != columns.len() {
-                errors.push(format!("Line {}: column count mismatch", line_num + 2));
+                errors.push(format!("Line {}: column count mismatch", line_num + data_start_line + 1));
                 if config.stop_on_error {
                     break;
                 }
@@ -150,7 +168,7 @@ impl FormatHandler for CsvFormatHandler {
                                 total_rows += exec_result.rows_affected;
                             }
                             SqlResult::Error(err) => {
-                                errors.push(format!("Line {}: {}", line_num + 2, err.message));
+                                errors.push(format!("Line {}: {}", line_num + data_start_line + 1, err.message));
                                 if config.stop_on_error {
                                     break;
                                 }
@@ -160,7 +178,7 @@ impl FormatHandler for CsvFormatHandler {
                     }
                 }
                 Err(e) => {
-                    errors.push(format!("Line {}: {}", line_num + 2, e));
+                    errors.push(format!("Line {}: {}", line_num + data_start_line + 1, e));
                     if config.stop_on_error {
                         break;
                     }

@@ -605,7 +605,7 @@ impl DatabaseEventHandler {
         // 根据节点类型选择不同的导入视图
         if node.node_type == DbNodeType::Table {
             // 表节点：使用表导入视图（支持 TXT/CSV/JSON）
-            use crate::table_import_view::TableImportView;
+            use crate::import_export::table_import_view::TableImportView;
 
             let db = node.metadata.as_ref()
                 .and_then(|m| m.get("database"))
@@ -659,7 +659,7 @@ impl DatabaseEventHandler {
             }).detach();
         } else {
             // 数据库节点：使用原有的导入视图（支持 SQL）
-            use crate::data_import_view::DataImportView;
+            use crate::import_export::data_import_view::DataImportView;
 
             let database = node.name.clone();
 
@@ -714,7 +714,7 @@ impl DatabaseEventHandler {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        use crate::data_export_view::DataExportView;
+        use crate::import_export::data_export_view::DataExportView;
         use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();

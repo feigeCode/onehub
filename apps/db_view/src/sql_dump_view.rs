@@ -7,7 +7,7 @@ use gpui_component::{
     v_flex, ActiveTheme, Sizable,
 };
 
-use db::{DataExporter, DataFormat, ExportConfig, GlobalDbState};
+use db::{DataFormat, ExportConfig, GlobalDbState};
 
 pub struct SqlDumpView {
     connection_id: String,
@@ -116,49 +116,9 @@ impl SqlDumpView {
             cx.notify();
         });
 
-        cx.spawn(async move |cx| {
-            let config = match global_state.get_config_async(&connection_id).await {
-                Some(cfg) => cfg,
-                None => {
-                    cx.update(|cx| {
-                        status.update(cx, |s, cx| {
-                            *s = "连接未找到".to_string();
-                            cx.notify();
-                        });
-                    }).ok();
-                    return;
-                }
-            };
-
-            let plugin = match global_state.db_manager.get_plugin(&config.database_type) {
-                Ok(p) => p,
-                Err(e) => {
-                    cx.update(|cx| {
-                        status.update(cx, |s, cx| {
-                            *s = format!("错误: {}", e);
-                            cx.notify();
-                        });
-                    }).ok();
-                    return;
-                }
-            };
-
-            let connection = match plugin.create_connection(config).await {
-                Ok(c) => c,
-                Err(e) => {
-                    cx.update(|cx| {
-                        status.update(cx, |s, cx| {
-                            *s = format!("连接错误: {}", e);
-                            cx.notify();
-                        });
-                    }).ok();
-                    return;
-                }
-            };
-
-            // 如果没有指定表，获取所有表
+        cx.spawn(async move |mut cx| {
             let tables: Vec<String> = if tables_str.is_empty() {
-                match plugin.list_tables(connection.as_ref(), &database).await {
+                match global_state.list_tables(&mut cx, connection_id.clone(), database.clone()).await {
                     Ok(t) => t.into_iter().map(|info| info.name).collect(),
                     Err(e) => {
                         cx.update(|cx| {
@@ -198,9 +158,8 @@ impl SqlDumpView {
                 limit: None,
             };
 
-            match DataExporter::export(connection.as_ref(), export_config).await {
+            match global_state.export_data(&mut cx, connection_id.clone(), export_config).await {
                 Ok(result) => {
-                    // 生成输出文件名
                     let timestamp = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -302,14 +261,32 @@ impl Render for SqlDumpView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("include_structure").checked(*self.include_structure.read(cx)))
+                            .child(
+                                Switch::new("include_structure")
+                                    .checked(*self.include_structure.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.include_structure.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("导出结构"),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("include_data").checked(*self.include_data.read(cx)))
+                            .child(
+                                Switch::new("include_data")
+                                    .checked(*self.include_data.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.include_data.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("导出数据"),
                     ),
             )

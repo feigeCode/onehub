@@ -353,14 +353,32 @@ impl Render for DataExportView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("include_schema").checked(*self.include_schema.read(cx)))
+                            .child(
+                                Switch::new("include_schema")
+                                    .checked(*self.include_schema.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.include_schema.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("Include schema"),
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Switch::new("include_data").checked(*self.include_data.read(cx)))
+                            .child(
+                                Switch::new("include_data")
+                                    .checked(*self.include_data.read(cx))
+                                    .on_click(cx.listener(|view, checked, _, cx| {
+                                        view.include_data.update(cx, |state, cx| {
+                                            *state = *checked;
+                                            cx.notify();
+                                        });
+                                    }))
+                            )
                             .child("Include data"),
                     ),
             )
