@@ -102,7 +102,7 @@ impl DatabaseTabContent {
         let first_conn = self.connections.first();
         let conn_name = first_conn.map(|c| c.name.clone()).unwrap_or_else(|| "Unknown".to_string());
         let (conn_host, conn_port, conn_username, conn_database) = first_conn
-            .and_then(|c| c.to_database_params().ok())
+            .and_then(|c| c.to_db_connection().ok())
             .map(|p| (p.host, p.port, p.username, p.database))
             .unwrap_or_default();
 

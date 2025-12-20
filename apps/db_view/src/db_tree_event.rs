@@ -246,9 +246,9 @@ impl DatabaseEventHandler {
                         Self::handle_run_sql_file(node, global_state, window, cx);
                     }
                 }
-                DbTreeViewEvent::DumpSqlFile { node_id } => {
+                DbTreeViewEvent::DumpSqlFile { node_id, mode } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_dump_sql_file(node, global_state, window, cx);
+                        Self::handle_dump_sql_file(node, *mode, global_state, window, cx);
                     }
                 }
             }
@@ -1687,6 +1687,7 @@ impl DatabaseEventHandler {
     /// 处理转储SQL文件事件
     fn handle_dump_sql_file(
         node: DbNode,
+        mode: crate::db_tree_view::SqlDumpMode,
         global_state: GlobalDbState,
         _window: &mut Window,
         cx: &mut App,
@@ -1709,7 +1710,7 @@ impl DatabaseEventHandler {
                 let _ = cx.update(|cx| {
                     if let Some(window_id) = cx.active_window() {
                         let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            let dump_view = SqlDumpView::new(config_id.clone(), database_for_view.clone(), window, cx);
+                            let dump_view = SqlDumpView::new(config_id.clone(), database_for_view.clone(), mode, window, cx);
 
                             window.open_dialog(cx, move |dialog, _window, _cx| {
                                 dialog

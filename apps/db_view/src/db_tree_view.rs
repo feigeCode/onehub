@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // 2. 外部 crate 导入（按字母顺序）
-use gpui::{App, AppContext, Context, Entity, IntoElement, InteractiveElement, ParentElement, Render, Styled, Window, div, StatefulInteractiveElement, EventEmitter, SharedString, Focusable, FocusHandle, AsyncApp, px, prelude::FluentBuilder, Subscription};
+use gpui::{App, AppContext, Context, Entity, IntoElement, InteractiveElement, ParentElement, Render, RenderOnce, Styled, Window, div, StatefulInteractiveElement, EventEmitter, SharedString, Focusable, FocusHandle, AsyncApp, px, prelude::FluentBuilder, Subscription, Task};
 use gpui_component::{
     ActiveTheme, IconName, h_flex, list::ListItem,
     menu::{ContextMenuExt, PopupMenuItem},
@@ -16,6 +16,8 @@ use gpui_component::{
     context_menu_tree::{context_menu_tree, ContextMenuTreeState},
     popover::Popover,
     checkbox::Checkbox,
+    list::{List, ListDelegate, ListState},
+    IndexPath, Selectable,
 };
 use tracing::log::{error, info, trace};
 
@@ -27,6 +29,192 @@ use one_core::{
 };
 use one_core::storage::DatabaseType;
 use one_core::utils::debouncer::Debouncer;
+
+// ============================================================================
+// SQL 导出模式
+// ============================================================================
+
+/// SQL 导出模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlDumpMode {
+    /// 仅导出结构
+    StructureOnly,
+    /// 仅导出数据
+    DataOnly,
+    /// 导出结构和数据
+    StructureAndData,
+}
+
+// ============================================================================
+// DatabaseListItem - 数据库筛选列表项
+// ============================================================================
+
+#[derive(IntoElement)]
+pub struct DatabaseListItem {
+    db_id: String,
+    db_name: String,
+    is_selected: bool,
+    selected: bool,
+    view: Entity<DbTreeView>,
+    connection_id: String,
+}
+
+impl DatabaseListItem {
+    pub fn new(
+        db_id: String,
+        db_name: String,
+        is_selected: bool,
+        selected: bool,
+        view: Entity<DbTreeView>,
+        connection_id: String,
+    ) -> Self {
+        Self {
+            db_id,
+            db_name,
+            is_selected,
+            selected,
+            view,
+            connection_id,
+        }
+    }
+}
+
+impl Selectable for DatabaseListItem {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for DatabaseListItem {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let view_item = self.view.clone();
+        let conn_item = self.connection_id.clone();
+        let db_id_item = self.db_id.clone();
+        let db_name_display = self.db_name.clone();
+        let is_selected = self.is_selected;
+
+        h_flex()
+            .id(SharedString::from(format!("db-item-{}", self.db_id)))
+            .w_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .cursor_pointer()
+            .rounded(px(4.0))
+            .when(self.selected, |el| {
+                el.bg(cx.theme().list_active)
+            })
+            .when(!self.selected, |el| {
+                el.hover(|style| style.bg(cx.theme().list_hover))
+            })
+            .on_click(move |_, _, cx| {
+                view_item.update(cx, |this, cx| {
+                    this.toggle_database_selection(&conn_item, &db_id_item, cx);
+                });
+            })
+            .child(
+                Checkbox::new(SharedString::from(format!("db-check-{}", self.db_id)))
+                    .checked(is_selected)
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_sm()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(db_name_display)
+            )
+    }
+}
+
+// ============================================================================
+// DatabaseListDelegate - 数据库筛选列表代理
+// ============================================================================
+
+pub struct DatabaseListDelegate {
+    view: Entity<DbTreeView>,
+    connection_id: String,
+    databases: Vec<(String, String)>,
+    filtered_databases: Vec<(String, String)>,
+    selected_index: Option<IndexPath>,
+}
+
+impl DatabaseListDelegate {
+    pub fn new(
+        view: Entity<DbTreeView>,
+        connection_id: String,
+        databases: Vec<(String, String)>,
+    ) -> Self {
+        let filtered_databases = databases.clone();
+        Self {
+            view,
+            connection_id,
+            databases,
+            filtered_databases,
+            selected_index: None,
+        }
+    }
+}
+
+impl ListDelegate for DatabaseListDelegate {
+    type Item = DatabaseListItem;
+
+    fn perform_search(&mut self, query: &str, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> Task<()> {
+        if query.is_empty() {
+            self.filtered_databases = self.databases.clone();
+        } else {
+            let query_lower = query.to_lowercase();
+            self.filtered_databases = self.databases
+                .iter()
+                .filter(|(_, name)| name.to_lowercase().contains(&query_lower))
+                .cloned()
+                .collect();
+        }
+        cx.notify();
+        Task::ready(())
+    }
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.filtered_databases.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let (db_id, db_name) = self.filtered_databases.get(ix.row)?.clone();
+        let is_selected = self.view.read(cx).is_database_selected(&self.connection_id, &db_id);
+        let selected = Some(ix) == self.selected_index;
+
+        Some(DatabaseListItem::new(
+            db_id,
+            db_name,
+            is_selected,
+            selected,
+            self.view.clone(),
+            self.connection_id.clone(),
+        ))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        ix: Option<IndexPath>,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) {
+        self.selected_index = ix;
+    }
+}
+
 // ============================================================================
 // DbTreeView Events
 // ============================================================================
@@ -79,7 +267,7 @@ pub enum DbTreeViewEvent {
     /// 运行SQL文件
     RunSqlFile { node_id: String },
     /// 转储SQL文件（导出结构和/或数据）
-    DumpSqlFile { node_id: String },
+    DumpSqlFile { node_id: String, mode: SqlDumpMode },
 }
 
 /// 根据节点类型获取图标（公共函数，可被其他模块复用）
@@ -133,6 +321,8 @@ pub struct DbTreeView {
     selected_databases: HashMap<String, Option<HashSet<String>>>,
     // 数据库筛选搜索词：连接ID -> 搜索词
     db_filter_search: HashMap<String, String>,
+    // 数据库筛选列表状态：连接ID -> ListState
+    db_filter_list_states: HashMap<String, Entity<ListState<DatabaseListDelegate>>>,
 
     _sub: Subscription
 }
@@ -160,6 +350,8 @@ impl DbTreeView {
         let mut db_nodes = HashMap::new();
         let mut init_nodes = vec![];
         let mut workspace_id = None;
+        let mut unselected_databases_map = HashMap::new();
+
         if connections.is_empty() {
             let node =  DbNode::new("root", "No Database Connected", DbNodeType::Connection, "".to_string(), DatabaseType::MySQL);
             db_nodes.insert(
@@ -171,8 +363,15 @@ impl DbTreeView {
             for conn in connections {
                 workspace_id = conn.workspace_id;
                 let id = conn.id.unwrap_or(0).to_string();
-                let conn = conn.to_db_connection().unwrap();
-                let node = DbNode::new(id.clone(), conn.name.to_string(), DbNodeType::Connection, id.clone(), conn.database_type);
+                let conn_config = conn.to_db_connection().unwrap();
+
+                // 读取已选中的数据库列表
+                if let Some(selected_dbs) = conn.get_selected_databases() {
+                    let selected: HashSet<String> = selected_dbs.into_iter().collect();
+                    unselected_databases_map.insert(id.clone(), Some(selected));
+                }
+
+                let node = DbNode::new(id.clone(), conn_config.name.to_string(), DbNodeType::Connection, id.clone(), conn_config.database_type);
                 db_nodes.insert(id, node.clone());
                 init_nodes.push(node);
             }
@@ -224,8 +423,9 @@ impl DbTreeView {
             search_query: String::new(),
             search_seq: 0,
             search_debouncer,
-            selected_databases: HashMap::new(),
+            selected_databases: unselected_databases_map,
             db_filter_search: HashMap::new(),
+            db_filter_list_states: HashMap::new(),
             _sub
         }
     }
@@ -311,18 +511,61 @@ impl DbTreeView {
         }
 
         self.rebuild_tree(cx);
+        self.save_database_filter(connection_id, cx);
     }
 
     /// 全选数据库
     pub fn select_all_databases(&mut self, connection_id: &str, cx: &mut Context<Self>) {
         self.selected_databases.insert(connection_id.to_string(), None);
         self.rebuild_tree(cx);
+        self.save_database_filter(connection_id, cx);
     }
 
     /// 清除筛选（取消全选）
     pub fn deselect_all_databases(&mut self, connection_id: &str, cx: &mut Context<Self>) {
         self.selected_databases.insert(connection_id.to_string(), Some(HashSet::new()));
         self.rebuild_tree(cx);
+        self.save_database_filter(connection_id, cx);
+    }
+
+    /// 保存数据库筛选状态到存储
+    fn save_database_filter(&self, connection_id: &str, cx: &mut Context<Self>) {
+        let selected_dbs: Option<Vec<String>> = match self.selected_databases.get(connection_id) {
+            None => None, // 全选
+            Some(None) => None, // 全选
+            Some(Some(selected_set)) => {
+                // 保存已选中的数据库列表
+                Some(selected_set.iter().cloned().collect())
+            }
+        };
+
+        let connection_id_str = connection_id.to_string();
+        let storage = cx.global::<GlobalStorageState>().storage.clone();
+
+        cx.spawn(async move |_view, cx| {
+            use one_core::storage::traits::Repository;
+            use one_core::storage::ConnectionRepository;
+            use one_core::gpui_tokio::Tokio;
+
+            let conn_id: i64 = match connection_id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return Ok::<(), anyhow::Error>(()),
+            };
+
+            let result = Tokio::spawn_result(cx, async move {
+                if let Some(repo_arc) = storage.get::<ConnectionRepository>().await {
+                    let repo = (*repo_arc).clone();
+                    if let Ok(Some(mut conn)) = repo.get(conn_id).await {
+                        conn.set_selected_databases(selected_dbs);
+                        let _ = repo.update(&mut conn).await;
+                    }
+                }
+                Ok(())
+            })?.await;
+
+            let _ = result;
+            Ok(())
+        }).detach();
     }
 
     /// 检查数据库是否被选中
@@ -645,7 +888,7 @@ impl DbTreeView {
     fn render_database_filter_popover(
         view: &Entity<Self>,
         connection_id: &str,
-        databases: &[(String, String)],
+        list_state: &Entity<ListState<DatabaseListDelegate>>,
         cx: &mut App,
     ) -> gpui::AnyElement {
         let view_clone = view.clone();
@@ -653,14 +896,16 @@ impl DbTreeView {
         let is_all_selected = view.read(cx).is_all_selected(&conn_id);
 
         v_flex()
-            .w(px(250.0))
-            .max_h(px(350.0))
+            .w(px(280.0))
+            .max_h(px(400.0))
             .gap_2()
+            .p_2()
             .child(
                 h_flex()
                     .w_full()
                     .items_center()
                     .justify_between()
+                    .px_1()
                     .child(
                         h_flex()
                             .gap_2()
@@ -706,49 +951,15 @@ impl DbTreeView {
                     .border_color(cx.theme().border)
             )
             .child(
-                v_flex()
+                List::new(list_state)
+                    .w_full()
+                    .max_h(px(320.0))
+                    .p(px(8.))
                     .flex_1()
-                    .max_h(px(300.0))
-                    .overflow_y_hidden()
-                    .gap_1()
-                    .children(
-                        databases.iter().map(|(db_id, db_name)| {
-                            let view_item = view_clone.clone();
-                            let conn_item = conn_id.clone();
-                            let db_id_item = db_id.clone();
-                            let db_name_display = db_name.clone();
-                            let is_selected = view.read(cx).is_database_selected(&conn_id, db_id);
-
-                            h_flex()
-                                .id(SharedString::from(format!("db-item-{}", db_id)))
-                                .w_full()
-                                .px_2()
-                                .py_1()
-                                .gap_2()
-                                .items_center()
-                                .cursor_pointer()
-                                .rounded(cx.theme().radius)
-                                .hover(|s| s.bg(cx.theme().muted))
-                                .on_click(move |_, _, cx| {
-                                    view_item.update(cx, |this, cx| {
-                                        this.toggle_database_selection(&conn_item, &db_id_item, cx);
-                                    });
-                                })
-                                .child(
-                                    Checkbox::new(SharedString::from(format!("db-check-{}", db_id)))
-                                        .checked(is_selected)
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .text_sm()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .text_ellipsis()
-                                        .child(db_name_display)
-                                )
-                        })
-                    )
+                    .w_full()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius)
             )
             .into_any_element()
     }
@@ -1098,15 +1309,11 @@ impl Render for DbTreeView {
                                         let node_id_clone = node_id.clone();
                                         trace!("node_id: {}, item: {}", &node_id, &item.label);
 
-                                        let (is_loading, error_msg, databases_for_filter) = view.update(cx, |this, _cx| {
+                                        let (is_loading, error_msg, db_filter_list) = view.update(cx, |this, _cx| {
                                             let is_loading = this.loading_nodes.contains(&node_id);
                                             let error_msg = this.error_nodes.get(&node_id);
-                                            let databases = if node_type == Some(DbNodeType::Connection) {
-                                                Some(this.get_databases_for_connection(&node_id))
-                                            } else {
-                                                None
-                                            };
-                                            (is_loading, error_msg.cloned(), databases)
+                                            let list_state = this.db_filter_list_states.get(&node_id).cloned();
+                                            (is_loading, error_msg.cloned(), list_state)
                                         });
 
                                         let view_for_filter = view.clone();
@@ -1142,26 +1349,61 @@ impl Render for DbTreeView {
                                                     )
                                                     .when_some(db_count, |this, (selected, total)| {
                                                         if total > 0 {
+                                                            let view_open = view_for_filter.clone();
+                                                            let node_id_open = node_id_for_filter.clone();
+
                                                             this.child(
                                                                 Popover::new(SharedString::from(format!("db-filter-{}", ix)))
+                                                                    .on_open_change(move |open, window, cx| {
+                                                                        if *open {
+                                                                            view_open.update(cx, |this, cx| {
+                                                                                let databases_data = this.get_databases_for_connection(&node_id_open);
+
+                                                                                if let Some(list_state) = this.db_filter_list_states.get(&node_id_open) {
+                                                                                    list_state.update(cx, |state, _| {
+                                                                                        let delegate = state.delegate_mut();
+                                                                                        delegate.databases = databases_data.clone();
+                                                                                        delegate.filtered_databases = databases_data;
+                                                                                    });
+                                                                                } else {
+                                                                                    let list_state = cx.new(|cx| {
+                                                                                        ListState::new(
+                                                                                            DatabaseListDelegate::new(
+                                                                                                view_open.clone(),
+                                                                                                node_id_open.clone(),
+                                                                                                databases_data.clone(),
+                                                                                            ),
+                                                                                            window,
+                                                                                            cx,
+                                                                                        )
+                                                                                        .searchable(true)
+                                                                                    });
+                                                                                    this.db_filter_list_states.insert(node_id_open.clone(), list_state);
+                                                                                }
+                                                                                cx.notify();
+                                                                            });
+                                                                        }
+                                                                    })
+                                                                    .when_some(db_filter_list.as_ref(), |popover, list| {
+                                                                        popover.track_focus(&list.focus_handle(cx))
+                                                                    })
                                                                     .trigger(
                                                                         Button::new(SharedString::from(format!("db-filter-trigger-{}", ix)))
                                                                             .ghost()
                                                                             .small()
                                                                             .label(format!("{} of {}", selected, total))
                                                                     )
-                                                                    .content({
+                                                                    .when_some(db_filter_list, |popover, list| {
                                                                         let view_content = view_for_filter.clone();
                                                                         let node_id_content = node_id_for_filter.clone();
-                                                                        let databases = databases_for_filter.clone().unwrap_or_default();
-                                                                        move |_state, _window, cx| {
+                                                                        popover.content(move |_state, _window, cx| {
                                                                             Self::render_database_filter_popover(
                                                                                 &view_content,
                                                                                 &node_id_content,
-                                                                                &databases,
+                                                                                &list,
                                                                                 cx,
                                                                             )
-                                                                        }
+                                                                        })
                                                                     })
                                                             )
                                                         } else {
@@ -1216,7 +1458,49 @@ impl Render for DbTreeView {
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "新建查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateNewQuery { node_id: n.clone() }))
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "运行SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::RunSqlFile { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "转储SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::DumpSqlFile { node_id: n.clone() }))
+                                                                        .submenu("转储SQL文件", window, cx, {
+                                                                            let view_submenu = view_clone.clone();
+                                                                            let node_id_submenu = node_id_for_menu.clone();
+                                                                            move |menu, window, _cx| {
+                                                                                menu
+                                                                                    .item(
+                                                                                        PopupMenuItem::new("导出结构")
+                                                                                            .on_click(window.listener_for(&view_submenu, {
+                                                                                                let node_id = node_id_submenu.clone();
+                                                                                                move |_this, _, _, cx| {
+                                                                                                    cx.emit(DbTreeViewEvent::DumpSqlFile {
+                                                                                                        node_id: node_id.clone(),
+                                                                                                        mode: SqlDumpMode::StructureOnly,
+                                                                                                    });
+                                                                                                }
+                                                                                            }))
+                                                                                    )
+                                                                                    .item(
+                                                                                        PopupMenuItem::new("导出数据")
+                                                                                            .on_click(window.listener_for(&view_submenu, {
+                                                                                                let node_id = node_id_submenu.clone();
+                                                                                                move |_this, _, _, cx| {
+                                                                                                    cx.emit(DbTreeViewEvent::DumpSqlFile {
+                                                                                                        node_id: node_id.clone(),
+                                                                                                        mode: SqlDumpMode::DataOnly,
+                                                                                                    });
+                                                                                                }
+                                                                                            }))
+                                                                                    )
+                                                                                    .item(
+                                                                                        PopupMenuItem::new("导出结构和数据")
+                                                                                            .on_click(window.listener_for(&view_submenu, {
+                                                                                                let node_id = node_id_submenu.clone();
+                                                                                                move |_this, _, _, cx| {
+                                                                                                    cx.emit(DbTreeViewEvent::DumpSqlFile {
+                                                                                                        node_id: node_id.clone(),
+                                                                                                        mode: SqlDumpMode::StructureAndData,
+                                                                                                    });
+                                                                                                }
+                                                                                            }))
+                                                                                    )
+                                                                            }
+                                                                        })
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "编辑数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditDatabase { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "关闭数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseDatabase { node_id: n.clone() }))

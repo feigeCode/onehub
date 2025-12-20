@@ -8,6 +8,7 @@ use gpui_component::{
 };
 
 use db::{DataFormat, ExportConfig, GlobalDbState};
+use crate::db_tree_view::SqlDumpMode;
 
 pub struct SqlDumpView {
     connection_id: String,
@@ -25,6 +26,7 @@ impl SqlDumpView {
     pub fn new(
         connection_id: impl Into<String>,
         database: String,
+        mode: SqlDumpMode,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -35,12 +37,18 @@ impl SqlDumpView {
                 state
             });
 
+            let (structure, data) = match mode {
+                SqlDumpMode::StructureOnly => (true, false),
+                SqlDumpMode::DataOnly => (false, true),
+                SqlDumpMode::StructureAndData => (true, true),
+            };
+
             Self {
                 connection_id: connection_id.into(),
                 database: database_input,
                 tables: cx.new(|cx| InputState::new(window, cx)),
-                include_structure: cx.new(|_| true),
-                include_data: cx.new(|_| true),
+                include_structure: cx.new(|_| structure),
+                include_data: cx.new(|_| data),
                 output_path: cx.new(|cx| InputState::new(window, cx)),
                 pending_output_path: cx.new(|_| None),
                 status: cx.new(|_| String::new()),

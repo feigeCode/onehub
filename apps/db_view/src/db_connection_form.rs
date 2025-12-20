@@ -329,7 +329,7 @@ impl DbConnectionForm {
         self.set_field_value("name", &connection.name, window, cx);
         
         // Parse database params
-        if let Ok(params) = connection.to_database_params() {
+        if let Ok(params) = connection.to_db_connection() {
             self.set_field_value("host", &params.host, window, cx);
             self.set_field_value("port", &params.port.to_string(), window, cx);
             self.set_field_value("username", &params.username, window, cx);

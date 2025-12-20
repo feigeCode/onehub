@@ -431,16 +431,19 @@ impl HomePage {
             let mut conn = self.connections.iter()
                 .find(|c| c.id == Some(id))
                 .cloned()
-                .unwrap_or_else(|| StoredConnection::from_db_connection(config.clone()));
+                .unwrap_or_else(|| StoredConnection::from_db_connection(config.clone(), ));
             conn.name = config.name.clone();
             conn.workspace_id = config.workspace_id;
-            conn.params = serde_json::to_string(&one_core::storage::DatabaseParams {
-                db_type: config.database_type,
+            conn.params = serde_json::to_string(&DbConnectionConfig {
+                id: "".to_string(),
+                database_type: config.database_type,
+                name: "".to_string(),
                 host: config.host.clone(),
                 port: config.port,
                 username: config.username.clone(),
                 password: config.password.clone(),
                 database: config.database.clone(),
+                workspace_id: config.workspace_id,
             }).unwrap();
             conn
         } else {
@@ -705,7 +708,7 @@ impl HomePage {
         }
         
         // 匹配连接参数（主机/IP、端口、用户名、数据库名）
-        if let Ok(params) = conn.to_database_params() {
+        if let Ok(params) = conn.to_db_connection() {
             // 主机名或 IP 地址
             if params.host.to_lowercase().contains(query) {
                 return true;
@@ -821,7 +824,6 @@ impl HomePage {
                             .hover(|style| {
                                 style.text_color(cx.theme().primary)
                             })
-                            .cursor_pointer()
                             .child(workspace.name.clone())
                     )
                     .child(
@@ -981,8 +983,8 @@ impl HomePage {
                                 cx.stop_propagation();
                                 if let Some(conn_id) = edit_conn.id {
                                     this.editing_connection_id = Some(conn_id);
-                                    if let Ok(params) = edit_conn.to_database_params() {
-                                        this.show_connection_form(params.db_type, window, cx);
+                                    if let Ok(params) = edit_conn.to_db_connection() {
+                                        this.show_connection_form(params.database_type, window, cx);
                                     }
                                 }
                             }))
@@ -1064,8 +1066,8 @@ impl HomePage {
                                                     .text_color(cx.theme().foreground)
                                                     .child(conn.name.clone())
                                             )
-                                            .when_some(conn.to_database_params().ok(), |this, params| {
-                                                let conn_info = if params.db_type == DatabaseType::SQLite {
+                                            .when_some(conn.to_db_connection().ok(), |this, params| {
+                                                let conn_info = if params.database_type == DatabaseType::SQLite {
                                                     params.host.clone()
                                                 } else {
                                                     format!("{}@{}:{}", params.username, params.host, params.port)
@@ -1090,7 +1092,7 @@ impl HomePage {
                         div()
                             .px_3()
                             .py_2()
-                            .when_some(conn.to_database_params().ok().and_then(|p| p.database), |this, db| {
+                            .when_some(conn.to_db_connection().ok().and_then(|p| p.database), |this, db| {
                                 this.child(
                                     div()
                                         .text_xs()

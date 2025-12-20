@@ -1,6 +1,6 @@
 use crate::storage::traits::Entity;
 use gpui_component::Size::Large;
-use gpui_component::{Icon, IconName, Sizable, Size};
+use gpui_component::{Icon, IconName, Sizable};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -90,17 +90,6 @@ impl DatabaseType {
     }
 }
 
-/// Connection parameters for different connection types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatabaseParams {
-    pub db_type: DatabaseType,
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub password: String,
-    pub database: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshParams {
     pub host: String,
@@ -132,15 +121,17 @@ pub struct MongoDBParams {
 /// Connection configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConnectionConfig {
+    #[serde(skip)]
     pub id: String,
     pub database_type: DatabaseType,
+    #[serde(skip)]
     pub name: String,
     pub host: String,
     pub port: u16,
     pub username: String,
     pub password: String,
     pub database: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub workspace_id: Option<i64>,
 }
 
@@ -219,6 +210,9 @@ pub struct StoredConnection {
     pub params: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<i64>,
+    /// 已选中的数据库ID列表（JSON数组），None表示全选
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_databases: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,13 +234,14 @@ impl Entity for StoredConnection {
 }
 
 impl StoredConnection {
-    pub fn new_database(name: String, params: DatabaseParams, workspace_id: Option<i64>) -> Self {
+    pub fn new_database(name: String, params: DbConnectionConfig, workspace_id: Option<i64>) -> Self {
         Self {
             id: None,
             name,
             connection_type: ConnectionType::Database,
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
+            selected_databases: None,
             created_at: None,
             updated_at: None,
         }
@@ -259,6 +254,7 @@ impl StoredConnection {
             connection_type: ConnectionType::SshSftp,
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
+            selected_databases: None,
             created_at: None,
             updated_at: None,
         }
@@ -271,6 +267,7 @@ impl StoredConnection {
             connection_type: ConnectionType::Redis,
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
+            selected_databases: None,
             created_at: None,
             updated_at: None,
         }
@@ -283,13 +280,10 @@ impl StoredConnection {
             connection_type: ConnectionType::MongoDB,
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
+            selected_databases: None,
             created_at: None,
             updated_at: None,
         }
-    }
-
-    pub fn to_database_params(&self) -> Result<DatabaseParams, serde_json::Error> {
-        serde_json::from_str(&self.params)
     }
 
     pub fn to_ssh_params(&self) -> Result<SshParams, serde_json::Error> {
@@ -305,30 +299,31 @@ impl StoredConnection {
     }
 
     pub fn to_db_connection(&self) -> Result<DbConnectionConfig, serde_json::Error> {
-        let params: DatabaseParams = self.to_database_params()?;
-        Ok(DbConnectionConfig {
-            id: self.id.unwrap().to_string(),
-            database_type: params.db_type,
-            name: self.name.clone(),
-            host: params.host,
-            port: params.port,
-            username: params.username,
-            password: params.password,
-            database: params.database,
-            workspace_id: self.workspace_id,
-        })
+        let mut params: DbConnectionConfig =  serde_json::from_str(&self.params)?;
+        params.name = self.name.clone();
+        params.workspace_id = self.workspace_id;
+        params.id = self.id.unwrap_or(0).to_string();
+        Ok(params)
     }
 
     pub fn from_db_connection(connection: DbConnectionConfig) -> Self {
-        let params = DatabaseParams {
-            db_type: connection.database_type,
-            host: connection.host,
-            port: connection.port,
-            username: connection.username,
-            password: connection.password,
-            database: connection.database,
-        };
-        Self::new_database(connection.name, params, connection.workspace_id)
+        let name = connection.name.clone();
+        let workspace_id = connection.workspace_id.clone();
+        Self::new_database(name, connection, workspace_id)
+    }
+
+    /// 获取已选中的数据库列表，None表示全选
+    pub fn get_selected_databases(&self) -> Option<Vec<String>> {
+        self.selected_databases.as_ref().and_then(|json| {
+            serde_json::from_str(json).ok()
+        })
+    }
+
+    /// 设置已选中的数据库列表，None表示全选
+    pub fn set_selected_databases(&mut self, databases: Option<Vec<String>>) {
+        self.selected_databases = databases.map(|dbs| {
+            serde_json::to_string(&dbs).unwrap_or_default()
+        });
     }
 }
 
