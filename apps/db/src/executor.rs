@@ -206,6 +206,7 @@ impl SqlStatementClassifier {
             || trimmed.starts_with("EXPLAIN")
             || trimmed.starts_with("WITH") // CTE
             || trimmed.starts_with("TABLE") // PostgreSQL TABLE command
+            || trimmed.starts_with("PRAGMA") // SQLite PRAGMA (table_info, index_list, etc.)
     }
 
     /// Check if a SELECT query might be editable (basic heuristic)

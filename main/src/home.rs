@@ -249,6 +249,7 @@ impl HomePage {
         let config = match db_type {
             DatabaseType::MySQL => DbFormConfig::mysql(),
             DatabaseType::PostgreSQL => DbFormConfig::postgres(),
+            DatabaseType::SQLite => DbFormConfig::sqlite(),
             _ => {
                 panic!("Unsupported database type");
             }
@@ -526,23 +527,30 @@ impl HomePage {
                                 menu
                                     .item(
                                     PopupMenuItem::new("工作区")
-                                                .icon(IconName::Apps)
+                                                .icon(IconName::Apps.color().with_size(Size::Large))
                                                 .on_click(window.listener_for(&view, move |this, _, window, cx| {
                                                     this.show_workspace_form(None, window, cx);
                                                 }))
                                 ).item(
                                     PopupMenuItem::new("MySQL")
-                                        .icon(Icon::from(IconName::MySQLLineColor))
+                                        .icon(Icon::from(IconName::MySQLLineColor).color().with_size(Size::Large))
                                         .on_click(window.listener_for(&view, move |this, _, window, cx| {
                                             this.editing_connection_id = None;
                                             this.show_connection_form(DatabaseType::MySQL, window, cx);
                                         }))
                                 ).item(
                                     PopupMenuItem::new("PostgreSQL")
-                                        .icon(Icon::from(IconName::MySQLLineColor))
+                                        .icon(Icon::from(IconName::PostgreSQLLineColor).color().with_size(Size::Large))
                                         .on_click(window.listener_for(&view, move |this, _, window, cx| {
                                             this.editing_connection_id = None;
                                             this.show_connection_form(DatabaseType::PostgreSQL, window, cx);
+                                        }))
+                                ).item(
+                                    PopupMenuItem::new("SQLite")
+                                        .icon(Icon::from(IconName::SQLiteLineColor).color().with_size(Size::Large))
+                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                            this.editing_connection_id = None;
+                                            this.show_connection_form(DatabaseType::SQLite, window, cx);
                                         }))
                                 )
                             })
@@ -1032,11 +1040,16 @@ impl HomePage {
                                                     .child(conn.name.clone())
                                             )
                                             .when_some(conn.to_database_params().ok(), |this, params| {
+                                                let conn_info = if params.db_type == DatabaseType::SQLite {
+                                                    params.host.clone()
+                                                } else {
+                                                    format!("{}@{}:{}", params.username, params.host, params.port)
+                                                };
                                                 this.child(
                                                     div()
                                                         .text_xs()
                                                         .text_color(cx.theme().muted_foreground)
-                                                        .child(format!("{}@{}:{}", params.username, params.host, params.port))
+                                                        .child(conn_info)
                                                 )
                                             })
                                     )

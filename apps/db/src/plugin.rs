@@ -105,6 +105,7 @@ pub trait DatabasePlugin: Send + Sync {
         match self.name() {
             DatabaseType::MySQL => "`",
             DatabaseType::PostgreSQL => "\"",
+            DatabaseType::SQLite => "\"",
             DatabaseType::MSSQL => "",
             DatabaseType::Oracle => "",
         }
@@ -124,9 +125,19 @@ pub trait DatabasePlugin: Send + Sync {
 
     // === Database/Schema Level Operations ===
     async fn list_databases(&self, connection: &dyn DbConnection) -> Result<Vec<String>>;
-    
+
     async fn list_databases_view(&self, connection: &dyn DbConnection) -> Result<ObjectView>;
     async fn list_databases_detailed(&self, connection: &dyn DbConnection) -> Result<Vec<DatabaseInfo>>;
+
+    /// Whether this database supports schemas (e.g., PostgreSQL, MSSQL)
+    fn supports_schema(&self) -> bool {
+        false
+    }
+
+    /// List schemas in a database (for databases that support schemas)
+    async fn list_schemas(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 
     // === Table Operations ===
     async fn list_tables(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<TableInfo>>;
@@ -209,14 +220,61 @@ pub trait DatabasePlugin: Send + Sync {
 
     // === Tree Building ===
     async fn build_database_tree(&self, connection: &dyn DbConnection, node: &DbNode, global_storage_state: &GlobalStorageState) -> Result<Vec<DbNode>> {
-        let mut nodes = Vec::new();
         let database = &node.name;
+        let id = &node.id;
+
+        if self.supports_schema() {
+            let schemas = self.list_schemas(connection, database).await?;
+            let mut nodes = Vec::new();
+
+            for schema in schemas {
+                let mut metadata: HashMap<String, String> = HashMap::new();
+                metadata.insert("database".to_string(), database.to_string());
+                metadata.insert("schema".to_string(), schema.clone());
+
+                let schema_node = DbNode::new(
+                    format!("{}:schema:{}", id, schema),
+                    schema.clone(),
+                    DbNodeType::Schema,
+                    node.connection_id.clone(),
+                    node.database_type
+                )
+                .with_children_flag(true)
+                .with_parent_context(id)
+                .with_metadata(metadata);
+
+                nodes.push(schema_node);
+            }
+
+            let queries_folder = self.load_queries(node, global_storage_state).await?;
+            nodes.push(queries_folder);
+
+            Ok(nodes)
+        } else {
+            self.build_schema_tree(connection, node, None, global_storage_state).await
+        }
+    }
+
+    async fn build_schema_tree(&self, connection: &dyn DbConnection, node: &DbNode, schema: Option<&str>, global_storage_state: &GlobalStorageState) -> Result<Vec<DbNode>> {
+        let mut nodes = Vec::new();
+        let database = node.metadata.as_ref()
+            .and_then(|m| m.get("database"))
+            .map(|s| s.as_str())
+            .unwrap_or(&node.name);
         let id = &node.id;
         let mut metadata: HashMap<String, String> = HashMap::new();
         metadata.insert("database".to_string(), database.to_string());
-        // Tables folder
+        if let Some(s) = schema {
+            metadata.insert("schema".to_string(), s.to_string());
+        }
+
         let tables = self.list_tables(connection, database).await?;
-        let table_count = tables.len();
+        let filtered_tables: Vec<_> = if let Some(s) = schema {
+            tables.into_iter().filter(|t| t.schema.as_deref() == Some(s)).collect()
+        } else {
+            tables
+        };
+        let table_count = filtered_tables.len();
         let mut table_folder = DbNode::new(
             format!("{}:table_folder", id),
             format!("Tables ({})", table_count),
@@ -225,14 +283,13 @@ pub trait DatabasePlugin: Send + Sync {
             node.database_type
         ).with_parent_context(id).with_metadata(metadata.clone());
         if table_count > 0 {
-            let children: Vec<DbNode> = tables
+            let children: Vec<DbNode> = filtered_tables
                 .into_iter()
                 .map(|table_info| {
-                    let mut metadata: HashMap<String, String> = metadata.clone();
-                    // Add comment as additional metadata if available
+                    let mut meta: HashMap<String, String> = metadata.clone();
                     if let Some(comment) = &table_info.comment {
                         if !comment.is_empty() {
-                            metadata.insert("comment".to_string(), comment.clone());
+                            meta.insert("comment".to_string(), comment.clone());
                         }
                     }
 
@@ -245,7 +302,7 @@ pub trait DatabasePlugin: Send + Sync {
                     )
                     .with_children_flag(true)
                     .with_parent_context(format!("{}:table_folder", id))
-                    .with_metadata(metadata)
+                    .with_metadata(meta)
                 })
                 .collect();
             table_folder.children = children;
@@ -254,9 +311,13 @@ pub trait DatabasePlugin: Send + Sync {
         }
         nodes.push(table_folder);
 
-        // Views folder
         let views = self.list_views(connection, database).await?;
-        let view_count = views.len();
+        let filtered_views: Vec<_> = if let Some(s) = schema {
+            views.into_iter().filter(|v| v.schema.as_deref() == Some(s)).collect()
+        } else {
+            views
+        };
+        let view_count = filtered_views.len();
         if view_count > 0 {
             let mut views_folder = DbNode::new(
                 format!("{}:views_folder", id),
@@ -266,26 +327,26 @@ pub trait DatabasePlugin: Send + Sync {
                 node.database_type
             ).with_parent_context(id).with_metadata(metadata.clone());
 
-            let children: Vec<DbNode> = views
+            let children: Vec<DbNode> = filtered_views
                 .into_iter()
                 .map(|view| {
-                    let mut metadata: HashMap<String, String> = metadata.clone();
+                    let mut meta: HashMap<String, String> = metadata.clone();
                     if let Some(comment) = view.comment {
-                        metadata.insert("comment".to_string(), comment);
+                        meta.insert("comment".to_string(), comment);
                     }
-                    
-                    let mut node = DbNode::new(
+
+                    let mut vnode = DbNode::new(
                         format!("{}:views_folder:{}", id, view.name),
                         view.name.clone(),
                         DbNodeType::View,
                         node.connection_id.clone(),
                         node.database_type
                     ).with_parent_context(format!("{}:views_folder", id));
-                    
-                    if !metadata.is_empty() {
-                        node = node.with_metadata(metadata);
+
+                    if !meta.is_empty() {
+                        vnode = vnode.with_metadata(meta);
                     }
-                    node
+                    vnode
                 })
                 .collect();
 
@@ -295,9 +356,10 @@ pub trait DatabasePlugin: Send + Sync {
             nodes.push(views_folder);
         }
 
-        // Load queries folder
-        let queries_folder = self.load_queries(node, global_storage_state).await?;
-        nodes.push(queries_folder);
+        if schema.is_none() {
+            let queries_folder = self.load_queries(node, global_storage_state).await?;
+            nodes.push(queries_folder);
+        }
 
         Ok(nodes)
     }
@@ -398,6 +460,12 @@ pub trait DatabasePlugin: Send + Sync {
             }
             DbNodeType::Database => {
                 self.build_database_tree(connection, node, global_storage_state).await
+            }
+            DbNodeType::Schema => {
+                let schema_name = node.metadata.as_ref()
+                    .and_then(|m| m.get("schema"))
+                    .map(|s| s.as_str());
+                self.build_schema_tree(connection, node, schema_name, global_storage_state).await
             }
             DbNodeType::TablesFolder | DbNodeType::ViewsFolder |
             DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
@@ -819,25 +887,48 @@ pub trait DatabasePlugin: Send + Sync {
 
                 let (where_clause, limit_clause) = self.build_where_and_limit_clause(request, original_data);
 
-                Some(format!(
-                    "UPDATE {} SET {}{}{}{}",
-                    table_ident,
-                    set_clause.join(", "),
-                    if where_clause.is_empty() { "" } else { " WHERE " },
-                    where_clause,
-                    limit_clause
-                ))
+                // Handle SQLite rowid subquery for tables without unique key
+                if limit_clause == " __SQLITE_ROWID_LIMIT__" {
+                    let simple_table = format!("{}{}{}", quote, request.table, quote);
+                    Some(format!(
+                        "UPDATE {} SET {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} LIMIT 1)",
+                        table_ident,
+                        set_clause.join(", "),
+                        simple_table,
+                        where_clause
+                    ))
+                } else {
+                    Some(format!(
+                        "UPDATE {} SET {}{}{}{}",
+                        table_ident,
+                        set_clause.join(", "),
+                        if where_clause.is_empty() { "" } else { " WHERE " },
+                        where_clause,
+                        limit_clause
+                    ))
+                }
             }
             TableRowChange::Deleted { original_data } => {
                 let (where_clause, limit_clause) = self.build_where_and_limit_clause(request, original_data);
 
-                Some(format!(
-                    "DELETE FROM {}{}{}{}",
-                    table_ident,
-                    if where_clause.is_empty() { "" } else { " WHERE " },
-                    where_clause,
-                    limit_clause
-                ))
+                // Handle SQLite rowid subquery for tables without unique key
+                if limit_clause == " __SQLITE_ROWID_LIMIT__" {
+                    let simple_table = format!("{}{}{}", quote, request.table, quote);
+                    Some(format!(
+                        "DELETE FROM {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} LIMIT 1)",
+                        table_ident,
+                        simple_table,
+                        where_clause
+                    ))
+                } else {
+                    Some(format!(
+                        "DELETE FROM {}{}{}{}",
+                        table_ident,
+                        if where_clause.is_empty() { "" } else { " WHERE " },
+                        where_clause,
+                        limit_clause
+                    ))
+                }
             }
         }
     }
@@ -846,6 +937,7 @@ pub trait DatabasePlugin: Send + Sync {
         match self.name() {
             DatabaseType::MySQL => " LIMIT 1".to_string(),
             DatabaseType::PostgreSQL => " LIMIT 1".to_string(),
+            DatabaseType::SQLite => String::new(), // SQLite UPDATE/DELETE does not support LIMIT by default
             DatabaseType::MSSQL => " FETCH FIRST 1 ROWS ONLY".to_string(),
             DatabaseType::Oracle => String::new(),
         }
@@ -856,18 +948,35 @@ pub trait DatabasePlugin: Send + Sync {
         request: &TableSaveRequest,
         original_data: &[String],
     ) -> (String, String) {
-        let mut where_clause = self.build_table_change_where_clause(request, original_data);
+        let where_clause = self.build_table_change_where_clause(request, original_data);
+        let has_unique_key = !request.primary_key_indices.is_empty() || !request.unique_key_indices.is_empty();
 
         // Add LIMIT/ROWNUM constraint based on database type
-        if self.name() == DatabaseType::Oracle {
-            if where_clause.is_empty() {
-                where_clause = "ROWNUM <= 1".to_string();
-            } else {
-                where_clause = format!("{} AND ROWNUM <= 1", where_clause);
+        match self.name() {
+            DatabaseType::Oracle => {
+                // Oracle uses ROWNUM in WHERE clause
+                let mut oracle_where = where_clause;
+                if oracle_where.is_empty() {
+                    oracle_where = "ROWNUM <= 1".to_string();
+                } else {
+                    oracle_where = format!("{} AND ROWNUM <= 1", oracle_where);
+                }
+                (oracle_where, String::new())
             }
-            (where_clause, String::new())
-        } else {
-            (where_clause, self.build_limit_clause())
+            DatabaseType::SQLite => {
+                // SQLite doesn't support LIMIT in UPDATE/DELETE by default
+                // Use rowid subquery when no unique key exists
+                if has_unique_key {
+                    (where_clause, String::new())
+                } else {
+                    // Will be handled specially in build_table_change_sql
+                    (where_clause, " __SQLITE_ROWID_LIMIT__".to_string())
+                }
+            }
+            _ => {
+                // MySQL, PostgreSQL, MSSQL use LIMIT clause
+                (where_clause, self.build_limit_clause())
+            }
         }
     }
 
@@ -958,7 +1067,7 @@ pub trait DatabasePlugin: Send + Sync {
                 self.quote_identifier(old_name),
                 self.quote_identifier(new_name)
             ),
-            DatabaseType::PostgreSQL => format!(
+            DatabaseType::PostgreSQL | DatabaseType::SQLite => format!(
                 "ALTER TABLE {} RENAME TO {}",
                 self.quote_identifier(old_name),
                 self.quote_identifier(new_name)

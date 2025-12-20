@@ -1,11 +1,12 @@
-use gpui::{div, prelude::*, px, App, AppContext, Axis, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Window};
+use gpui::{div, prelude::*, px, App, AppContext, Axis, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, PathPromptOptions, Render, SharedString, Styled, Window};
 use gpui_component::{
-    form::{field, v_form}
-    ,
+    button::{Button, ButtonVariants as _},
+    form::{field, v_form},
+    h_flex,
     input::{Input, InputEvent, InputState},
     select::{Select, SelectItem, SelectState},
     tab::{Tab, TabBar},
-    v_flex, ActiveTheme, Sizable, Size,
+    v_flex, ActiveTheme, IconName, Sizable, Size,
 };
 use one_core::storage::{DatabaseType, DbConnectionConfig, StoredConnection, Workspace};
 
@@ -198,6 +199,30 @@ impl DbFormConfig {
             ],
         }
     }
+
+    /// SQLite form configuration
+    pub fn sqlite() -> Self {
+        // Get default database path in user's home directory
+        let default_db_path = dirs::home_dir()
+            .map(|p| p.join("onehub_default.db").to_string_lossy().to_string())
+            .unwrap_or_else(|| "onehub_default.db".to_string());
+
+        Self {
+            db_type: DatabaseType::SQLite,
+            title: "新建连接 (SQLite)".to_string(),
+            tab_groups: vec![
+                TabGroup::new("general", "常规").fields(vec![
+                    FormField::new("name", "连接名称", FormFieldType::Text)
+                        .placeholder("My SQLite Database")
+                        .default("Local SQLite"),
+                    FormField::new("host", "数据库文件路径", FormFieldType::Text)
+                        .placeholder("/path/to/database.db")
+                        .default(default_db_path),
+                ]),
+                TabGroup::new("notes", "备注"),
+            ],
+        }
+    }
 }
 
 pub enum DbConnectionFormEvent {
@@ -218,6 +243,7 @@ pub struct DbConnectionForm {
     is_testing: Entity<bool>,
     test_result: Entity<Option<Result<bool, String>>>,
     workspace_select: Entity<SelectState<Vec<WorkspaceSelectItem>>>,
+    pending_file_path: Entity<Option<String>>,
 }
 
 impl DbConnectionForm {
@@ -266,11 +292,13 @@ impl DbConnectionForm {
 
         let is_testing = cx.new(|_| false);
         let test_result = cx.new(|_| None);
-        
+
         let workspace_items = vec![WorkspaceSelectItem::none()];
         let workspace_select = cx.new(|cx| {
             SelectState::new(workspace_items, Some(Default::default()), window, cx)
         });
+
+        let pending_file_path = cx.new(|_| None);
 
         Self {
             config,
@@ -282,6 +310,7 @@ impl DbConnectionForm {
             is_testing,
             test_result,
             workspace_select,
+            pending_file_path,
         }
     }
 
@@ -436,6 +465,45 @@ impl DbConnectionForm {
             cx.notify();
         });
     }
+
+    fn browse_file_path(&mut self, _window: &mut Window, cx: &mut App) {
+        let pending = self.pending_file_path.clone();
+
+        let future = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            multiple: false,
+            directories: false,
+            prompt: Some("选择SQLite数据库文件".into()),
+        });
+
+        cx.spawn(async move |cx| {
+            if let Ok(Ok(Some(paths))) = future.await {
+                if let Some(path) = paths.first() {
+                    let path_str = path.to_string_lossy().to_string();
+                    let _ = cx.update(|cx| {
+                        pending.update(cx, |p, cx| {
+                            *p = Some(path_str);
+                            cx.notify();
+                        });
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn get_input_by_name(&self, field_name: &str) -> Option<&Entity<InputState>> {
+        let mut idx = 0;
+        for tab_group in &self.config.tab_groups {
+            for field in &tab_group.fields {
+                if field.name == field_name {
+                    return self.field_inputs.get(idx);
+                }
+                idx += 1;
+            }
+        }
+        None
+    }
 }
 
 impl EventEmitter<DbConnectionFormEvent> for DbConnectionForm {}
@@ -447,7 +515,17 @@ impl Focusable for DbConnectionForm {
 }
 
 impl Render for DbConnectionForm {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Check if there's a pending file path to apply
+        if let Some(path) = self.pending_file_path.read(cx).clone() {
+            if let Some(host_input) = self.get_input_by_name("host").cloned() {
+                host_input.update(cx, |state, cx| {
+                    state.set_value(path, window, cx);
+                });
+            }
+            self.pending_file_path.update(cx, |p, _| *p = None);
+        }
+
         let test_result_msg = self.test_result.read(cx).as_ref().map(|r| match r {
             Ok(true) => "✓ 连接成功!".to_string(),
             Ok(false) => "✗ 连接失败".to_string(),
@@ -496,6 +574,7 @@ impl Render for DbConnectionForm {
                     .min_h(px(250.))
                     .when(!current_tab_fields.is_empty(), |this| {
                         let is_general_tab = self.active_tab == 0;
+                        let db_type = self.config.db_type;
 
                         this.child(
                             v_form()
@@ -509,12 +588,29 @@ impl Render for DbConnectionForm {
                                         .enumerate()
                                         .map(|(i, field_info)| {
                                             let input_idx = field_input_offset + i;
+                                            let is_sqlite_path = db_type == DatabaseType::SQLite && field_info.name == "host";
+
                                             field()
                                                 .label(field_info.label.clone())
                                                 .required(field_info.required)
                                                 .items_center()
                                                 .label_justify_end()
-                                                .child(Input::new(&self.field_inputs[input_idx]).w_full())
+                                                .child(
+                                                    h_flex()
+                                                        .w_full()
+                                                        .gap_2()
+                                                        .child(Input::new(&self.field_inputs[input_idx]).w_full())
+                                                        .when(is_sqlite_path, |el| {
+                                                            el.child(
+                                                                Button::new("browse-file")
+                                                                    .icon(IconName::FolderOpen)
+                                                                    .ghost()
+                                                                    .on_click(cx.listener(|this, _, window, cx| {
+                                                                        this.browse_file_path(window, cx);
+                                                                    }))
+                                                            )
+                                                        })
+                                                )
                                         }),
                                 )
                                 .when(is_general_tab, |form| {

@@ -192,6 +192,7 @@ pub struct IndexInfo {
 #[derive(Debug, Clone)]
 pub struct TableInfo {
     pub name: String,
+    pub schema: Option<String>,
     pub comment: Option<String>,
     pub engine: Option<String>,
     pub row_count: Option<i64>,
@@ -204,6 +205,7 @@ pub struct TableInfo {
 #[derive(Debug, Clone)]
 pub struct ViewInfo {
     pub name: String,
+    pub schema: Option<String>,
     pub definition: Option<String>,
     pub comment: Option<String>,
 }

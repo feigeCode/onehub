@@ -484,7 +484,13 @@ impl DbTreeView {
     fn get_icon_for_node(&self, node_id: &str, is_expanded: bool, cx: &mut Context<Self>) -> Icon {
         let node = self.db_nodes.get(node_id);
         match node.map(|n| &n.node_type) {
-            Some(DbNodeType::Connection) => IconName::MySQLLineColor.color().with_size(Size::Large),
+            Some(DbNodeType::Connection) => {
+                if let Some(n) = node {
+                    n.database_type.as_icon()
+                } else {
+                    IconName::MySQLLineColor.color().with_size(Size::Large)
+                }
+            }
             Some(DbNodeType::Database) => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
             Some(DbNodeType::TablesFolder) | Some(DbNodeType::ViewsFolder) |
             Some(DbNodeType::FunctionsFolder) | Some(DbNodeType::ProceduresFolder) |
@@ -548,7 +554,7 @@ impl DbTreeView {
                         node_id: node.id.clone()
                     });
                 }
-                DbNodeType::Connection | DbNodeType::Database |
+                DbNodeType::Connection | DbNodeType::Database | DbNodeType::Schema |
                 DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder |
                 DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
                 DbNodeType::TriggersFolder | DbNodeType::SequencesFolder |

@@ -43,6 +43,7 @@ impl ConnectionType {
 pub enum DatabaseType {
     MySQL,
     PostgreSQL,
+    SQLite,
     MSSQL,
     Oracle
 }
@@ -52,6 +53,7 @@ impl DatabaseType {
         match self {
             DatabaseType::MySQL => "MySQL",
             DatabaseType::PostgreSQL => "PostgreSQL",
+            DatabaseType::SQLite => "SQLite",
             DatabaseType::MSSQL => "MSSQL",
             DatabaseType::Oracle => "Oracle",
         }
@@ -61,6 +63,7 @@ impl DatabaseType {
         match s {
             "MySQL" => Some(DatabaseType::MySQL),
             "PostgreSQL" => Some(DatabaseType::PostgreSQL),
+            "SQLite" => Some(DatabaseType::SQLite),
             "MSSQL" => Some(DatabaseType::MSSQL),
             "Oracle" => Some(DatabaseType::Oracle),
             _ => None,
@@ -71,6 +74,7 @@ impl DatabaseType {
         match self {
             DatabaseType::MySQL => IconName::MySQLColor.color().with_size(Large),
             DatabaseType::PostgreSQL => IconName::PostgreSQLColor.color().with_size(Large),
+            DatabaseType::SQLite => IconName::SQLiteColor.color().with_size(Large),
             DatabaseType::MSSQL => IconName::MSSQLColor.color().with_size(Large),
             DatabaseType::Oracle => IconName::OracleColor.color().with_size(Large),
         }
@@ -348,6 +352,7 @@ pub fn parse_db_type(s: &str) -> DatabaseType {
     match s {
         "MySQL" => DatabaseType::MySQL,
         "PostgreSQL" => DatabaseType::PostgreSQL,
+        "SQLite" => DatabaseType::SQLite,
         _ => DatabaseType::MySQL,
     }
 }

@@ -26,6 +26,28 @@ impl DatabasePlugin for PostgresPlugin {
         DatabaseType::PostgreSQL
     }
 
+    fn supports_schema(&self) -> bool {
+        true
+    }
+
+    async fn list_schemas(&self, connection: &dyn DbConnection, _database: &str) -> Result<Vec<String>> {
+        let result = connection.query(
+            "SELECT schema_name FROM information_schema.schemata \
+             WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') \
+             ORDER BY schema_name",
+            None,
+            ExecOptions::default()
+        ).await.map_err(|e| anyhow::anyhow!("Failed to list schemas: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            Ok(query_result.rows.iter()
+                .filter_map(|row| row.first().and_then(|v| v.clone()))
+                .collect())
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
     fn get_completion_info(&self) -> SqlCompletionInfo {
         SqlCompletionInfo {
             keywords: vec![
@@ -338,15 +360,14 @@ impl DatabasePlugin for PostgresPlugin {
     // === Table Operations ===
 
     async fn list_tables(&self, connection: &dyn DbConnection, _database: &str) -> Result<Vec<TableInfo>> {
-        // Query to get all tables with their description/metadata
-        // PostgreSQL stores table comments in pg_description
         let sql = "SELECT \
                 t.tablename, \
+                t.schemaname, \
                 obj_description((quote_ident(t.schemaname) || '.' || quote_ident(t.tablename))::regclass) AS table_comment, \
-                (SELECT reltuples::bigint FROM pg_class WHERE relname = t.tablename AND relnamespace = 'public'::regnamespace) AS row_count \
+                (SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid WHERE c.relname = t.tablename AND n.nspname = t.schemaname) AS row_count \
              FROM pg_tables t \
-             WHERE t.schemaname = 'public' \
-             ORDER BY t.tablename";
+             WHERE t.schemaname NOT IN ('pg_catalog', 'information_schema') \
+             ORDER BY t.schemaname, t.tablename";
 
         let result = connection.query(sql, None, ExecOptions::default())
             .await
@@ -354,17 +375,17 @@ impl DatabasePlugin for PostgresPlugin {
 
         if let SqlResult::Query(query_result) = result {
             let tables: Vec<TableInfo> = query_result.rows.iter().map(|row| {
-                // Parse row count
-                let row_count = row.get(2).and_then(|v| v.clone()).and_then(|s| s.parse::<i64>().ok());
+                let row_count = row.get(3).and_then(|v| v.clone()).and_then(|s| s.parse::<i64>().ok());
 
                 TableInfo {
                     name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
-                    comment: row.get(1).and_then(|v| v.clone()).filter(|s| !s.is_empty()),
-                    engine: None, // PostgreSQL doesn't have engine concept like MySQL
+                    schema: row.get(1).and_then(|v| v.clone()),
+                    comment: row.get(2).and_then(|v| v.clone()).filter(|s| !s.is_empty()),
+                    engine: None,
                     row_count,
-                    create_time: None, // Would require additional query to pg_stat_user_tables
-                    charset: None, // PostgreSQL uses database-level encoding
-                    collation: None, // PostgreSQL uses database-level collation
+                    create_time: None,
+                    charset: None,
+                    collation: None,
                 }
             }).collect();
 
@@ -541,7 +562,9 @@ impl DatabasePlugin for PostgresPlugin {
     // === View Operations ===
 
     async fn list_views(&self, connection: &dyn DbConnection, _database: &str) -> Result<Vec<ViewInfo>> {
-        let sql = "SELECT table_name, view_definition FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name";
+        let sql = "SELECT table_name, table_schema, view_definition FROM information_schema.views \
+                   WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
+                   ORDER BY table_schema, table_name";
 
         let result = connection.query(sql, None, ExecOptions::default())
             .await
@@ -551,7 +574,8 @@ impl DatabasePlugin for PostgresPlugin {
             Ok(query_result.rows.iter().map(|row| {
                 ViewInfo {
                     name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
-                    definition: row.get(1).and_then(|v| v.clone()),
+                    schema: row.get(1).and_then(|v| v.clone()),
+                    definition: row.get(2).and_then(|v| v.clone()),
                     comment: None,
                 }
             }).collect())

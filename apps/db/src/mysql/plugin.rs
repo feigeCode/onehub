@@ -286,6 +286,7 @@ impl DatabasePlugin for MySqlPlugin {
 
                 TableInfo {
                     name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
+                    schema: None,
                     comment: row.get(1).and_then(|v| v.clone()).filter(|s| !s.is_empty()),
                     engine: row.get(2).and_then(|v| v.clone()),
                     row_count,
@@ -479,6 +480,7 @@ impl DatabasePlugin for MySqlPlugin {
             Ok(query_result.rows.iter().map(|row| {
                 ViewInfo {
                     name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
+                    schema: None,
                     definition: row.get(1).and_then(|v| v.clone()),
                     comment: None,
                 }

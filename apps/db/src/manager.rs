@@ -2,6 +2,7 @@ use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::plugin::DatabasePlugin;
 use crate::mysql::MySqlPlugin;
 use crate::postgresql::PostgresPlugin;
+use crate::sqlite::SqlitePlugin;
 use crate::import_export::{DataExporter, DataImporter, ExportConfig, ExportResult, ImportConfig, ImportResult};
 use crate::{DbNode, ExecOptions, SqlResult};
 use tokio::sync::mpsc;
@@ -55,6 +56,7 @@ impl DbManager {
         match db_type {
             DatabaseType::MySQL => Ok(Box::new(MySqlPlugin::new())),
             DatabaseType::PostgreSQL => Ok(Box::new(PostgresPlugin::new())),
+            DatabaseType::SQLite => Ok(Box::new(SqlitePlugin::new())),
             _ => Err(DbError::new("Unsupported database type")),
         }
     }

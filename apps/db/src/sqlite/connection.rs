@@ -29,7 +29,7 @@ impl SqliteDbConnection {
     }
 
     fn extract_value(row: &SqliteRow, index: usize) -> Option<String> {
-        use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+        use sqlx::types::chrono::{NaiveDate, NaiveDateTime, NaiveTime, DateTime};
         use sqlx::{TypeInfo, ValueRef};
 
         if let Ok(val) = row.try_get_raw(index) {
@@ -43,16 +43,34 @@ impl SqliteDbConnection {
 
         match type_name.as_str() {
             "DATETIME" | "TIMESTAMP" => {
+                // Try parsing as string first (ISO8601 format)
+                if let Ok(val) = row.try_get::<String, _>(index) {
+                    return Some(val);
+                }
+                // Try parsing as Unix timestamp (integer, milliseconds)
+                if let Ok(ts) = row.try_get::<i64, _>(index) {
+                    if let Some(dt) = DateTime::from_timestamp_millis(ts) {
+                        return Some(dt.format("%Y-%m-%d %H:%M:%S").to_string());
+                    }
+                    return Some(ts.to_string());
+                }
+                // Try parsing as NaiveDateTime
                 if let Ok(val) = row.try_get::<NaiveDateTime, _>(index) {
                     return Some(val.format("%Y-%m-%d %H:%M:%S").to_string());
                 }
             }
             "DATE" => {
+                if let Ok(val) = row.try_get::<String, _>(index) {
+                    return Some(val);
+                }
                 if let Ok(val) = row.try_get::<NaiveDate, _>(index) {
                     return Some(val.format("%Y-%m-%d").to_string());
                 }
             }
             "TIME" => {
+                if let Ok(val) = row.try_get::<String, _>(index) {
+                    return Some(val);
+                }
                 if let Ok(val) = row.try_get::<NaiveTime, _>(index) {
                     return Some(val.format("%H:%M:%S").to_string());
                 }
@@ -60,6 +78,7 @@ impl SqliteDbConnection {
             _ => {}
         }
 
+        // Generic type handling
         if let Ok(val) = row.try_get::<String, _>(index) {
             return Some(val);
         }
@@ -99,15 +118,17 @@ impl DbConnection for SqliteDbConnection {
             .as_ref()
             .ok_or_else(|| DbError::ConnectionError("No configuration provided".to_string()))?;
 
-        let database_path = config
-            .database
-            .as_ref()
-            .ok_or_else(|| {
+        // SQLite uses `host` field as the database file path
+        let database_path = if !config.host.is_empty() {
+            config.host.clone()
+        } else {
+            config.database.clone().ok_or_else(|| {
                 DbError::ConnectionError("Database path is required for SQLite".to_string())
             })?
-            .clone();
+        };
 
-        let url = format!("sqlite://{}", database_path);
+        // Handle create_if_missing for SQLite
+        let url = format!("sqlite://{}?mode=rwc", database_path);
         let conn = SqliteConnection::connect(&url)
             .await
             .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;

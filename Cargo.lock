@@ -1793,6 +1793,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "db",
+ "dirs 6.0.0",
  "futures",
  "gpui",
  "gpui-component",
