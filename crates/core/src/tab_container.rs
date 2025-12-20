@@ -1,9 +1,12 @@
-use std::{any::Any, sync::Arc};
 use gpui::prelude::FluentBuilder;
-use gpui::StatefulInteractiveElement as _;
-use gpui::{div, px, AnyElement, App, AppContext, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, ScrollHandle, SharedString, Styled, Window};
-use gpui_component::{h_flex, v_flex, ActiveTheme, IconName, Size};
+use gpui::{div, px, AnyElement, App, AppContext as _, Context, Corner, Entity, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Render, RenderOnce, SharedString, Styled, Task, Window};
+use gpui::{ScrollHandle, StatefulInteractiveElement as _};
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::list::{List, ListDelegate, ListState};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_component::popover::Popover;
+use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName, IndexPath, Selectable, Size};
+use std::{any::Any, sync::Arc};
 // ============================================================================
 // TabContent Trait - Strategy Pattern Interface
 // ============================================================================
@@ -15,7 +18,7 @@ pub trait TabContent: Send + Sync {
     fn title(&self) -> SharedString;
 
     /// Get optional icon for the tab
-    fn icon(&self) -> Option<IconName> {
+    fn icon(&self) -> Option<Icon> {
         None
     }
 
@@ -126,6 +129,198 @@ impl Render for DragTab {
 }
 
 // ============================================================================
+// TabListItem - Custom list item for tab dropdown
+// ============================================================================
+
+#[derive(IntoElement)]
+pub struct TabListItem {
+    tab_index: usize,
+    title: SharedString,
+    icon: Option<Icon>,
+    closeable: bool,
+    selected: bool,
+    container: Entity<TabContainer>,
+}
+
+impl TabListItem {
+    pub fn new(
+        tab_index: usize,
+        title: SharedString,
+        icon: Option<Icon>,
+        closeable: bool,
+        selected: bool,
+        container: Entity<TabContainer>,
+    ) -> Self {
+        Self {
+            tab_index,
+            title,
+            icon,
+            closeable,
+            selected,
+            container,
+        }
+    }
+}
+
+impl Selectable for TabListItem {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for TabListItem {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let container = self.container.clone();
+        let tab_index = self.tab_index;
+        let selected = self.selected;
+
+        h_flex()
+            .id(SharedString::from(format!("tab-item-{}", tab_index)))
+            .w_full()
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .items_center()
+            .gap_2()
+            .cursor_pointer()
+            .when(selected, |el| {
+                el.bg(cx.theme().list_active)
+            })
+            .when(!selected, |el| {
+                el.hover(|style| style.bg(cx.theme().list_hover))
+            })
+            .when_some(self.icon, |el, icon| {
+                el.child(
+                    Icon::new(icon)
+                        .size_4()
+                        .text_color(cx.theme().muted_foreground)
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(self.title)
+            )
+            .when(self.closeable, |el| {
+                let container = container.clone();
+                el.child(
+                    div()
+                        .id(SharedString::from(format!("close-btn-{}", tab_index)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .rounded(px(2.0))
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|style| {
+                            style
+                                .bg(cx.theme().muted)
+                                .text_color(cx.theme().foreground)
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                            container.update(cx, |this, cx| {
+                                this.close_tab(tab_index, cx);
+                            });
+                        })
+                        .child("×")
+                )
+            })
+    }
+}
+
+// ============================================================================
+// TabListDelegate - List delegate for tab dropdown
+// ============================================================================
+
+pub struct TabListDelegate {
+    container: Entity<TabContainer>,
+    tabs: Vec<(usize, SharedString, Option<Icon>, bool)>,
+    filtered_tabs: Vec<(usize, SharedString, Option<Icon>, bool)>,
+    selected_index: Option<IndexPath>,
+}
+
+impl ListDelegate for TabListDelegate {
+    type Item = TabListItem;
+
+    fn perform_search(&mut self, query: &str, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> Task<()> {
+        if query.is_empty() {
+            self.filtered_tabs = self.tabs.clone();
+        } else {
+            let query_lower = query.to_lowercase();
+            self.filtered_tabs = self.tabs
+                .iter()
+                .filter(|(_, title, _, _)| title.to_lowercase().contains(&query_lower))
+                .cloned()
+                .collect();
+        }
+        cx.notify();
+        Task::ready(())
+    }
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.filtered_tabs.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let (tab_index, title, icon, closeable) = self.filtered_tabs.get(ix.row)?.clone();
+        let active_index = self.container.read(cx).active_index();
+        let is_active = tab_index == active_index;
+
+        Some(TabListItem::new(
+            tab_index,
+            title,
+            icon,
+            closeable,
+            is_active,
+            self.container.clone(),
+        ))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        ix: Option<IndexPath>,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) {
+        self.selected_index = ix;
+    }
+
+    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        if let Some(ix) = self.selected_index {
+            if let Some((tab_index, _, _, _)) = self.filtered_tabs.get(ix.row) {
+                let tab_index = *tab_index;
+                self.container.update(cx, |this, cx| {
+                    this.list_popover_open = false;
+                    this.set_active_index(tab_index, window, cx);
+                });
+            }
+        }
+    }
+
+    fn cancel(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        self.container.update(cx, |this, cx| {
+            this.list_popover_open = false;
+            cx.notify();
+        });
+    }
+}
+
+// ============================================================================
 // TabContainer - Main container component
 // ============================================================================
 
@@ -155,6 +350,10 @@ pub struct TabContainer {
     /// Optional top padding for vertical centering (defaults to 0)
     top_padding: Option<gpui::Pixels>,
     tab_bar_scroll_handle: ScrollHandle,
+    /// Whether the tab list popover is open
+    list_popover_open: bool,
+    /// List state for the tab dropdown
+    tab_list: Option<Entity<ListState<TabListDelegate>>>,
 }
 
 impl TabContainer {
@@ -176,6 +375,8 @@ impl TabContainer {
             left_padding: None,
             top_padding: None,
             tab_bar_scroll_handle: ScrollHandle::new(),
+            list_popover_open: false,
+            tab_list: None,
         }
     }
 
@@ -542,6 +743,8 @@ impl TabContainer {
         let icon_color = self.tab_icon_color.unwrap_or(theme.tab_foreground);
         let active_index = self.active_index;
 
+        let tab_list = self.tab_list.clone();
+
         h_flex()
             .w_full()
             .h(px(40.0))
@@ -567,7 +770,7 @@ impl TabContainer {
                         let is_active = idx == active_index;
                         let view_clone = view.clone();
                         let title_clone = title.clone();
-                        let tab_width = self.get_tab_width(tab);  // 动态获取宽度
+                        let tab_width = self.get_tab_width(tab);
 
                         div()
                             .id(idx)
@@ -577,7 +780,7 @@ impl TabContainer {
                             .items_center()
                             .gap_2()
                             .h(px(32.0))
-                            .w(tab_width)  // 使用动态宽度
+                            .w(tab_width)
                             .px_3()
                             .rounded(px(6.0))
                             .cursor_grab()
@@ -590,12 +793,10 @@ impl TabContainer {
                                     cx.new(|_| drag.clone())
                                 },
                             )
-                            // 拖动经过时的样式
                             .drag_over::<DragTab>(move |el, _, _, _cx| {
                                 el.border_l_2()
                                     .border_color(drag_border_color)
                             })
-                            // 放下事件
                             .on_drop(cx.listener(move |this, drag: &DragTab, window, cx| {
                                 let from_idx = drag.tab_index;
                                 let to_idx = idx;
@@ -604,11 +805,9 @@ impl TabContainer {
                                 }
                                 this.set_active_index(to_idx, window, cx);
                             }))
-                            // 点击激活
                             .on_click(cx.listener(move |this, _event, window, cx| {
                                 this.set_active_index(idx, window, cx);
                             }))
-                            // 图标（如果有）
                             .when_some(icon, |el, icon| {
                                 el.child(
                                     div()
@@ -619,7 +818,6 @@ impl TabContainer {
                                         .child(icon)
                                 )
                             })
-                            // 标签文字 - 可自动省略
                             .child(
                                 div()
                                     .flex_1()
@@ -629,7 +827,6 @@ impl TabContainer {
                                     .text_ellipsis()
                                     .child(title_clone.to_string())
                             )
-                            // 关闭按钮 - 不被挤压
                             .when(closeable, |el| {
                                 let view_clone = view_clone.clone();
                                 el.child(
@@ -665,30 +862,25 @@ impl TabContainer {
                                 .unwrap_or(false);
 
                             menu
-                                // Close current tab
                                 .item(PopupMenuItem::new("Close")
                                     .disabled(!closeable)
                                     .on_click(window.listener_for(&view_for_menu, move |this, _, _, cx| {
                                         this.close_tab(idx, cx);
                                     })))
-                                // Close all tabs
                                 .item(PopupMenuItem::new("Close All")
                                     .on_click(window.listener_for(&view_for_menu, move |this, _, _, cx| {
                                         this.close_all_tabs(cx);
                                     })))
-                                // Close other tabs
                                 .item(PopupMenuItem::new("Close Others")
                                     .disabled(tab_count <= 1)
                                     .on_click(window.listener_for(&view_for_menu, move |this, _, _, cx| {
                                         this.close_other_tabs(idx, cx);
                                     })))
-                                // Close tabs to the left
                                 .item(PopupMenuItem::new("Close Tabs To The Left")
                                     .disabled(!has_tabs_left)
                                     .on_click(window.listener_for(&view_for_menu, move |this, _, _, cx| {
                                         this.close_tabs_to_left(idx, cx);
                                     })))
-                                // Close tabs to the right
                                 .item(PopupMenuItem::new("Close Tabs To The Right")
                                     .disabled(!has_tabs_right)
                                     .on_click(window.listener_for(&view_for_menu, move |this, _, _, cx| {
@@ -697,6 +889,61 @@ impl TabContainer {
 
                         })
                     }))
+            )
+            .child(
+                Popover::new("tab-list-popover")
+                    .anchor(Corner::TopRight)
+                    .p_0()
+                    .open(self.list_popover_open)
+                    .on_open_change(cx.listener(move |this, open, window, cx| {
+                        this.list_popover_open = *open;
+                        if *open {
+                            let tabs_data: Vec<(usize, SharedString, Option<Icon>, bool)> = this.tabs
+                                .iter()
+                                .enumerate()
+                                .map(|(idx, tab)| (idx, tab.content().title(), tab.content().icon(), tab.content().closeable()))
+                                .collect();
+                            let container = cx.entity();
+
+                            if let Some(tab_list) = &this.tab_list {
+                                tab_list.update(cx, |state, _| {
+                                    let delegate = state.delegate_mut();
+                                    delegate.tabs = tabs_data.clone();
+                                    delegate.filtered_tabs = tabs_data;
+                                });
+                            } else {
+                                this.tab_list = Some(cx.new(|cx| {
+                                    ListState::new(
+                                        TabListDelegate {
+                                            container,
+                                            tabs: tabs_data.clone(),
+                                            filtered_tabs: tabs_data,
+                                            selected_index: None,
+                                        },
+                                        window,
+                                        cx,
+                                    ).searchable(true)
+                                }));
+                            }
+                        }
+                        cx.notify();
+                    }))
+                    .when_some(tab_list.as_ref(), |popover, list| {
+                        popover.track_focus(&list.focus_handle(cx))
+                    })
+                    .trigger(
+                        Button::new("tab-dropdown-btn")
+                            .icon(IconName::ChevronDown)
+                            .ghost()
+                            .compact()
+                    )
+                    .when_some(tab_list, |popover, list| {
+                        popover.child(
+                            List::new(&list)
+                                .w(px(280.0))
+                                .max_h(px(300.0))
+                        )
+                    })
             )
     }
 }
