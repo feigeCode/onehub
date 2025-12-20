@@ -1,13 +1,9 @@
 use std::any::Any;
 
 use gpui::{AnyElement, App, AppContext, Entity, FocusHandle, Global, IntoElement, SharedString, Window};
-use gpui_component::{
-    ActiveTheme, IconName, Sizable, Size, Theme, ThemeMode,
-    group_box::GroupBoxVariant,
-    setting::{
-        NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
-    },
-};
+use gpui_component::{ActiveTheme, IconName, Sizable, Size, Theme, ThemeMode, group_box::GroupBoxVariant, setting::{
+    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+}, Icon};
 use one_core::tab_container::{TabContent, TabContentType};
 
 use crate::settings::llm_providers_view::LlmProvidersView;
@@ -165,8 +161,8 @@ impl TabContent for SettingsTabContent {
         "设置".into()
     }
 
-    fn icon(&self) -> Option<IconName> {
-        Some(IconName::Settings)
+    fn icon(&self) -> Option<Icon> {
+        Some(IconName::Settings.color())
     }
 
     fn closeable(&self) -> bool {

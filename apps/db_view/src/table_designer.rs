@@ -1864,8 +1864,8 @@ impl TabContent for TableDesignerTabContent {
         self.title.clone()
     }
 
-    fn icon(&self) -> Option<IconName> {
-        Some(IconName::Table)
+    fn icon(&self) -> Option<Icon> {
+        Some(IconName::Table.color())
     }
 
     fn closeable(&self) -> bool {

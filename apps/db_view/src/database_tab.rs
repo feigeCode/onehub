@@ -1,13 +1,13 @@
 use std::any::Any;
 
-use db::GlobalDbState;
-use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, AsyncApp, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window};
-use gpui_component::{h_flex, resizable::{h_resizable, resizable_panel}, v_flex, ActiveTheme, IconName};
 use crate::database_objects_tab::DatabaseObjectsPanel;
 use crate::db_tree_event::DatabaseEventHandler;
 use crate::db_tree_view::DbTreeView;
-use one_core::{storage::StoredConnection, tab_container::{TabContainer, TabContent, TabContentType, TabItem}};
+use db::GlobalDbState;
+use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, AsyncApp, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window};
+use gpui_component::{h_flex, resizable::{h_resizable, resizable_panel}, v_flex, ActiveTheme, Icon, IconName};
 use one_core::storage::Workspace;
+use one_core::{storage::StoredConnection, tab_container::{TabContainer, TabContent, TabContentType, TabItem}};
 
 // Database connection tab content - using TabContainer architecture
 pub struct DatabaseTabContent {
@@ -227,8 +227,28 @@ impl TabContent for DatabaseTabContent {
 
     }
 
-    fn icon(&self) -> Option<IconName> {
-        Some(IconName::File)
+    fn icon(&self) -> Option<Icon> {
+        if self.workspace.is_some() {
+            Some(IconName::Workspace.color())
+        }else {
+            let db_connection = self.connections.first()
+                .map(|c| c.to_db_connection());
+            match db_connection {
+                None => {
+                    Some(IconName::Database.color())
+                }
+                Some(result) => {
+                    match result {
+                        Ok(conn) => {
+                            Some(conn.database_type.as_node_icon())
+                        }
+                        Err(_) => {
+                            Some(IconName::Database.color())
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn closeable(&self) -> bool {

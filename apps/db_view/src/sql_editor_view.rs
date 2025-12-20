@@ -9,7 +9,7 @@ use gpui::prelude::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectState};
-use gpui_component::{h_flex, v_flex, ActiveTheme, IconName, IndexPath, Sizable, Size, WindowExt};
+use gpui_component::{h_flex, v_flex, ActiveTheme, Icon, IconName, IndexPath, Sizable, Size, WindowExt};
 use std::any::Any;
 use tracing::log::error;
 use one_core::storage::GlobalStorageState;
@@ -563,8 +563,8 @@ impl TabContent for SqlEditorTabContent {
         self.title.clone()
     }
 
-    fn icon(&self) -> Option<IconName> {
-        Some(IconName::File)
+    fn icon(&self) -> Option<Icon> {
+        Some(IconName::File.color())
     }
 
     fn closeable(&self) -> bool {

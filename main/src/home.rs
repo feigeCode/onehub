@@ -138,6 +138,33 @@ impl HomePage {
         }).detach();
     }
 
+    fn delete_connection(&mut self, conn_id: i64, cx: &mut Context<Self>) {
+        let storage = cx.global::<GlobalStorageState>().storage.clone();
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            let delete_result = async {
+                Tokio::spawn_result(cx, async move {
+                    let repo = storage.get::<ConnectionRepository>().await
+                        .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
+                    repo.delete(conn_id).await
+                })?.await
+            }.await;
+            match delete_result {
+                Ok(_) => {
+                    _ = this.update(cx, |this, cx| {
+                        this.connections.retain(|c| c.id != Some(conn_id));
+                        if this.selected_connection_id == Some(conn_id) {
+                            this.selected_connection_id = None;
+                        }
+                        cx.notify();
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Failed to delete connection: {}", e);
+                }
+            }
+        }).detach();
+    }
+
     fn show_workspace_form(&mut self, workspace_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
         let workspace_data = workspace_id.and_then(|id| {
             self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
@@ -476,9 +503,9 @@ impl HomePage {
     fn add_item_to_tab(&mut self, conn: &StoredConnection, workspace: Option<Workspace>, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_container.update(cx, |tc, cx| {
             let w = workspace.clone();
-            let mut tab_id = format!("database-{}", conn.id.unwrap_or(0));
+            let mut tab_id = format!("database-tab-{}", conn.id.unwrap_or(0));
             if let Some (w) = w {
-                tab_id = format!("database-{}", w.id.unwrap_or(0));
+                tab_id = format!("workspace-database-tab-{}", w.id.unwrap_or(0));
             }
 
             tc.activate_or_add_tab_lazy(
@@ -759,34 +786,6 @@ impl HomePage {
             })
     }
 
-    fn open_workspace_tab(&mut self, workspace_id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
-        let connections: Vec<StoredConnection> = self.connections.iter().filter(|&conn| conn.workspace_id == workspace_id).cloned()
-            .collect();
-        let workspace = workspace_id.and_then(|id| {
-            self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
-        });
-        self.tab_container.update(cx, |tc, cx| {
-            let tab_id = format!("database-{}", workspace_id.unwrap_or(0));
-            tc.activate_or_add_tab_lazy(
-                tab_id.clone(),
-                {
-                    move |window, cx| {
-                        let ws_content = DatabaseTabContent::new_with_active_conn(
-                            workspace,
-                            connections,
-                            None,
-                            window,
-                            cx
-                        );
-                        TabItem::new(tab_id.clone(), ws_content)
-                    }
-                },
-                window,
-                cx
-            )
-        });
-    }
-
     fn render_workspace_section(
         &self,
         workspace: Workspace,
@@ -824,9 +823,6 @@ impl HomePage {
                             })
                             .cursor_pointer()
                             .child(workspace.name.clone())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_workspace_tab(workspace_id, window, cx);
-                            }))
                     )
                     .child(
                         div()
@@ -928,6 +924,8 @@ impl HomePage {
         let conn_id = conn.id;
         let clone_conn = conn.clone();
         let edit_conn = conn.clone();
+        let delete_conn_id = conn.id;
+        let delete_conn_name = conn.name.clone();
         let is_selected = selected_id == conn.id;
         let workspace = workspace_id.and_then(|id| {
             self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
@@ -966,11 +964,12 @@ impl HomePage {
                 cx.notify();
             }))
             .child(
-                // hover时显示的编辑按钮
-                div()
+                // hover时显示的编辑和删除按钮
+                h_flex()
                     .absolute()
                     .top_2()
                     .right_2()
+                    .gap_1()
                     .group_hover("", |style| style.opacity(1.0))
                     .opacity(0.0)
                     .child(
@@ -985,6 +984,32 @@ impl HomePage {
                                     if let Ok(params) = edit_conn.to_database_params() {
                                         this.show_connection_form(params.db_type, window, cx);
                                     }
+                                }
+                            }))
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("delete-conn-{}", conn.id.unwrap_or(0))))
+                            .icon(IconName::Delete)
+                            .with_size(Size::Small)
+                            .tooltip("删除连接")
+                            .on_click(cx.listener(move |_this, _, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(conn_id) = delete_conn_id {
+                                    let view = cx.entity().clone();
+                                    let conn_name = delete_conn_name.clone();
+                                    window.open_dialog(cx, move |dialog, _window, _cx| {
+                                        let view_clone = view.clone();
+                                        dialog
+                                            .title("确认删除")
+                                            .child(format!("确定要删除连接 \"{}\" 吗？", conn_name))
+                                            .confirm()
+                                            .on_ok(move |_, _, cx| {
+                                                let _ = view_clone.update(cx, |this, cx| {
+                                                    this.delete_connection(conn_id, cx);
+                                                });
+                                                true
+                                            })
+                                    });
                                 }
                             }))
                     )
@@ -1152,8 +1177,8 @@ impl TabContent for HomeTabContent {
         "首页".into()
     }
 
-    fn icon(&self) -> Option<IconName> {
-        Some(IconName::LayoutDashboard)
+    fn icon(&self) -> Option<Icon> {
+        Some(IconName::LayoutDashboard.color())
     }
 
     fn closeable(&self) -> bool {

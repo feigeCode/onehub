@@ -1,8 +1,8 @@
-use gpui::{div, App, AsyncApp, Context, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window};
+use gpui::{div, App, AsyncApp, Context, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use crate::list::{ListDelegate, ListItem, ListState};
+use crate::list::{ListDelegate, ListState};
 use crate::tooltip::Tooltip;
 use crate::{checkbox::Checkbox, h_flex, label::Label, ActiveTheme, IndexPath, Selectable};
 
@@ -30,7 +30,6 @@ impl FilterValue {
 
 #[derive(IntoElement)]
 pub struct FilterListItem {
-    pub base: ListItem,
     pub value: Rc<FilterValue>,
     pub selected: bool,
     /// 回调：当复选框状态改变时
@@ -40,9 +39,8 @@ pub struct FilterListItem {
 
 impl FilterListItem {
 
-    pub fn new(id: impl Into<ElementId> , value: Rc<FilterValue>, selected: bool) -> Self {
+    pub fn new(value: Rc<FilterValue>, selected: bool) -> Self {
         Self {
-            base: ListItem::new(id).selected(selected),
             value,
             selected,
             on_toggle: None,
@@ -271,7 +269,7 @@ impl ListDelegate for FilterPanel {
         let selected = Some(ix) == self.selected_index || Some(ix) == self.confirmed_index;
         if let Some(value) = self.filtered_values.get(ix.row) {
             let value_rc = Rc::from(value.clone());
-            let mut item = FilterListItem::new(ix, value_rc.clone(), selected);
+            let mut item = FilterListItem::new(value_rc.clone(), selected);
             
             // 如果有回调，设置到item上
             if let Some(on_toggle) = self.on_toggle.as_ref() {

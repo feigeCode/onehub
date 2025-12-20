@@ -1,6 +1,6 @@
 use crate::storage::traits::Entity;
 use gpui_component::Size::Large;
-use gpui_component::{Icon, IconName, Sizable};
+use gpui_component::{Icon, IconName, Sizable, Size};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -77,6 +77,15 @@ impl DatabaseType {
             DatabaseType::SQLite => IconName::SQLiteColor.color().with_size(Large),
             DatabaseType::MSSQL => IconName::MSSQLColor.color().with_size(Large),
             DatabaseType::Oracle => IconName::OracleColor.color().with_size(Large),
+        }
+    }
+    pub fn as_node_icon(&self) -> Icon {
+        match self {
+            DatabaseType::MySQL => IconName::MySQLLineColor.color().with_size(Large),
+            DatabaseType::PostgreSQL => IconName::PostgreSQLLineColor.color().with_size(Large),
+            DatabaseType::SQLite => IconName::SQLiteLineColor.color().with_size(Large),
+            DatabaseType::MSSQL => IconName::MySQLLineColor.color().with_size(Large),
+            DatabaseType::Oracle => IconName::MySQLLineColor.color().with_size(Large),
         }
     }
 }

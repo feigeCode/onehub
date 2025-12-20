@@ -1,6 +1,6 @@
 use std::any::Any;
 use gpui::{AnyElement, App, AppContext, Entity, IntoElement, SharedString, Window};
-use gpui_component::IconName;
+use gpui_component::{Icon, IconName};
 
 use crate::data_grid::{DataGrid, DataGridConfig};
 use one_core::tab_container::{TabContent, TabContentType};
@@ -46,8 +46,8 @@ impl TabContent for TableDataTabContent {
         format!("{}.{} - Data", self.database_name, self.table_name).into()
     }
 
-    fn icon(&self) -> Option<IconName> {
-        Some(IconName::Folder)
+    fn icon(&self) -> Option<Icon> {
+        Some(IconName::Folder.color())
     }
 
     fn closeable(&self) -> bool {
