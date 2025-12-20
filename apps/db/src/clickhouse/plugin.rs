@@ -1,0 +1,516 @@
+use anyhow::Result;
+use gpui_component::table::Column;
+use one_core::storage::{DatabaseType, DbConnectionConfig};
+
+use crate::connection::{DbConnection, DbError};
+use crate::executor::{ExecOptions, SqlResult};
+use crate::clickhouse::connection::ClickHouseDbConnection;
+use crate::plugin::{DatabaseOperationRequest, DatabasePlugin, SqlCompletionInfo};
+use crate::types::*;
+
+/// ClickHouse database plugin implementation (stateless)
+pub struct ClickHousePlugin;
+
+impl ClickHousePlugin {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait::async_trait]
+impl DatabasePlugin for ClickHousePlugin {
+    fn name(&self) -> DatabaseType {
+        DatabaseType::ClickHouse
+    }
+
+    fn get_completion_info(&self) -> SqlCompletionInfo {
+        SqlCompletionInfo {
+            keywords: vec![
+                ("FINAL", "Force merge for ReplacingMergeTree"),
+                ("SAMPLE", "Sample data clause"),
+                ("PREWHERE", "Pre-filter clause (optimized WHERE)"),
+                ("ARRAY JOIN", "Array join operation"),
+                ("GLOBAL", "Global join modifier"),
+                ("LOCAL", "Local join modifier"),
+                ("ASOF", "ASOF join"),
+                ("ANTI", "ANTI join"),
+                ("SEMI", "SEMI join"),
+                ("MATERIALIZED", "Materialized column/view"),
+                ("ALIAS", "Alias column"),
+                ("CODEC", "Column compression codec"),
+                ("TTL", "Time to live expression"),
+                ("SETTINGS", "Query/table settings"),
+            ],
+            functions: vec![
+                // ClickHouse-specific functions
+                ("now()", "Current timestamp"),
+                ("today()", "Current date"),
+                ("yesterday()", "Yesterday's date"),
+                ("toDate(expr)", "Convert to Date"),
+                ("toDateTime(expr)", "Convert to DateTime"),
+                ("toString(expr)", "Convert to String"),
+                ("toInt32(expr)", "Convert to Int32"),
+                ("toUInt32(expr)", "Convert to UInt32"),
+                ("toFloat64(expr)", "Convert to Float64"),
+                ("arrayJoin(arr)", "Unfold array to rows"),
+                ("arrayElement(arr, n)", "Get array element"),
+                ("arraySlice(arr, offset, length)", "Array slice"),
+                ("arrayMap(func, arr)", "Map function over array"),
+                ("arrayFilter(func, arr)", "Filter array"),
+                ("arrayReduce(func, arr)", "Reduce array"),
+                ("groupArray(expr)", "Collect to array (aggregate)"),
+                ("groupUniqArray(expr)", "Collect unique to array"),
+                ("uniq(expr)", "Count unique values"),
+                ("uniqExact(expr)", "Count unique values (exact)"),
+                ("topK(n)(expr)", "Top K most frequent values"),
+                ("quantile(level)(expr)", "Quantile aggregate"),
+                ("median(expr)", "Median value"),
+                ("stddevPop(expr)", "Population standard deviation"),
+                ("varPop(expr)", "Population variance"),
+                ("corr(x, y)", "Correlation"),
+                ("covarPop(x, y)", "Population covariance"),
+            ],
+            operators: vec![
+                ("GLOBAL IN", "Global IN operator"),
+                ("NOT GLOBAL IN", "Negated global IN"),
+                ("IN", "Set membership"),
+                ("NOT IN", "Not in set"),
+                ("LIKE", "Pattern match"),
+                ("ILIKE", "Case-insensitive LIKE"),
+                ("NOT LIKE", "Negated LIKE"),
+            ],
+            data_types: vec![
+                ("Int8", "8-bit signed integer"),
+                ("Int16", "16-bit signed integer"),
+                ("Int32", "32-bit signed integer"),
+                ("Int64", "64-bit signed integer"),
+                ("UInt8", "8-bit unsigned integer"),
+                ("UInt16", "16-bit unsigned integer"),
+                ("UInt32", "32-bit unsigned integer"),
+                ("UInt64", "64-bit unsigned integer"),
+                ("Float32", "32-bit float"),
+                ("Float64", "64-bit float"),
+                ("Decimal(P, S)", "Decimal number"),
+                ("String", "Variable-length string"),
+                ("FixedString(N)", "Fixed-length string"),
+                ("Date", "Date (days since 1970-01-01)"),
+                ("DateTime", "Unix timestamp"),
+                ("DateTime64(precision)", "High-precision timestamp"),
+                ("UUID", "UUID type"),
+                ("IPv4", "IPv4 address"),
+                ("IPv6", "IPv6 address"),
+                ("Enum8('a'=1,'b'=2)", "8-bit enum"),
+                ("Enum16('a'=1,'b'=2)", "16-bit enum"),
+                ("Array(T)", "Array of type T"),
+                ("Tuple(T1, T2, ...)", "Tuple type"),
+                ("Nullable(T)", "Nullable type"),
+                ("LowCardinality(T)", "Low cardinality optimization"),
+                ("JSON", "JSON data type"),
+            ],
+            snippets: vec![
+                ("crt", "CREATE TABLE $1 (\n  id UInt64,\n  $2\n) ENGINE = MergeTree()\nORDER BY id", "Create table"),
+                ("idx", "CREATE INDEX $1 ON $2 $3 TYPE $4", "Create index"),
+                ("mat", "CREATE MATERIALIZED VIEW $1 AS\nSELECT $2\nFROM $3", "Create materialized view"),
+            ],
+        }
+        .with_standard_sql()
+    }
+
+    async fn create_connection(
+        &self,
+        config: DbConnectionConfig,
+    ) -> Result<Box<dyn DbConnection + Send + Sync>, DbError> {
+        let mut conn = ClickHouseDbConnection::new(config);
+        conn.connect().await?;
+        Ok(Box::new(conn))
+    }
+
+    // === Database/Schema Level Operations ===
+
+    async fn list_databases(&self, connection: &dyn DbConnection) -> Result<Vec<String>> {
+        let result = connection
+            .query(
+                "SELECT name FROM system.databases WHERE name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') ORDER BY name",
+                None,
+                ExecOptions::default(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list databases: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            Ok(query_result
+                .rows
+                .iter()
+                .filter_map(|row| row.first().and_then(|v| v.clone()))
+                .collect())
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
+    async fn list_databases_view(&self, connection: &dyn DbConnection) -> Result<ObjectView> {
+        use gpui::px;
+
+        let databases = self.list_databases_detailed(connection).await?;
+
+        let columns = vec![
+            Column::new("name", "Name").width(px(200.0)),
+            Column::new("engine", "Engine").width(px(120.0)),
+            Column::new("tables", "Tables").width(px(80.0)).text_right(),
+            Column::new("comment", "Comment").width(px(300.0)),
+        ];
+
+        let rows: Vec<Vec<String>> = databases
+            .iter()
+            .map(|db| {
+                vec![
+                    db.name.clone(),
+                    db.charset.as_deref().unwrap_or("-").to_string(), // Using charset field for engine
+                    db.table_count
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    db.comment.as_deref().unwrap_or("").to_string(),
+                ]
+            })
+            .collect();
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Database,
+            title: "Databases".to_string(),
+            columns,
+            rows,
+        })
+    }
+
+    async fn list_databases_detailed(&self, connection: &dyn DbConnection) -> Result<Vec<DatabaseInfo>> {
+        let result = connection
+            .query(
+                "SELECT name, engine, comment FROM system.databases WHERE name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') ORDER BY name",
+                None,
+                ExecOptions::default(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list databases: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            let mut databases = Vec::new();
+
+            for row in query_result.rows {
+                if let (Some(name), engine, comment) = (
+                    row.get(0).and_then(|v| v.clone()),
+                    row.get(1).and_then(|v| v.clone()),
+                    row.get(2).and_then(|v| v.clone()),
+                ) {
+                    databases.push(DatabaseInfo {
+                        name: name.clone(),
+                        charset: engine, // Store engine in charset field
+                        collation: None,
+                        size: None,
+                        table_count: None,
+                        comment,
+                    });
+                }
+            }
+
+            Ok(databases)
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
+    // === Table Operations ===
+
+    async fn list_tables(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<TableInfo>> {
+        let sql = format!(
+            "SELECT name, engine, comment FROM system.tables WHERE database = '{}' ORDER BY name",
+            database.replace("'", "''")
+        );
+
+        let result = connection
+            .query(&sql, None, ExecOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list tables: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            let mut tables = Vec::new();
+
+            for row in query_result.rows {
+                if let (Some(name), engine) = (
+                    row.get(0).and_then(|v| v.clone()),
+                    row.get(1).and_then(|v| v.clone()),
+                ) {
+                    let comment = row.get(2).and_then(|v| v.clone());
+
+                    tables.push(TableInfo {
+                        name: name.clone(),
+                        schema: None,
+                        row_count: None,
+                        create_time: None,
+                        charset: None,
+                        collation: None,
+                        engine,
+                        comment,
+                    });
+                }
+            }
+
+            Ok(tables)
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
+    async fn list_tables_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        let tables = self.list_tables(connection, database).await?;
+
+        let columns = vec![
+            Column::new("name", "Name").width(px(200.0)),
+            Column::new("engine", "Engine").width(px(150.0)),
+            Column::new("comment", "Comment").width(px(300.0)),
+        ];
+
+        let rows: Vec<Vec<String>> = tables
+            .iter()
+            .map(|table| {
+                vec![
+                    table.name.clone(),
+                    table.engine.as_deref().unwrap_or("-").to_string(),
+                    table.comment.as_deref().unwrap_or("").to_string(),
+                ]
+            })
+            .collect();
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Table,
+            title: "Tables".to_string(),
+            columns,
+            rows,
+        })
+    }
+
+    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+        let sql = format!(
+            "SELECT name, type, default_kind, default_expression, comment FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
+            database.replace("'", "''"),
+            table.replace("'", "''")
+        );
+
+        let result = connection
+            .query(&sql, None, ExecOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list columns: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            let mut columns = Vec::new();
+
+            for row in query_result.rows {
+                if let (Some(name), Some(data_type)) = (
+                    row.get(0).and_then(|v| v.clone()),
+                    row.get(1).and_then(|v| v.clone()),
+                ) {
+                    let default_kind = row.get(2).and_then(|v| v.clone());
+                    let default_expression = row.get(3).and_then(|v| v.clone());
+                    let comment = row.get(4).and_then(|v| v.clone());
+
+                    let is_nullable = data_type.starts_with("Nullable(");
+                    let default_value = if default_kind.as_deref() == Some("DEFAULT") {
+                        default_expression
+                    } else {
+                        None
+                    };
+
+                    columns.push(ColumnInfo {
+                        name: name.clone(),
+                        data_type: data_type.clone(),
+                        is_nullable,
+                        default_value,
+                        is_primary_key: false, // ClickHouse doesn't have explicit primary keys in system.columns
+                        comment,
+                    });
+                }
+            }
+
+            Ok(columns)
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        let columns = self.list_columns(connection, database, table).await?;
+
+        let column_defs = vec![
+            Column::new("name", "Name").width(px(150.0)),
+            Column::new("type", "Type").width(px(150.0)),
+            Column::new("nullable", "Nullable").width(px(80.0)),
+            Column::new("default", "Default").width(px(150.0)),
+            Column::new("comment", "Comment").width(px(200.0)),
+        ];
+
+        let rows: Vec<Vec<String>> = columns
+            .iter()
+            .map(|col| {
+                vec![
+                    col.name.clone(),
+                    col.data_type.clone(),
+                    if col.is_nullable { "YES" } else { "NO" }.to_string(),
+                    col.default_value.as_deref().unwrap_or("").to_string(),
+                    col.comment.as_deref().unwrap_or("").to_string(),
+                ]
+            })
+            .collect();
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Column,
+            title: "Columns".to_string(),
+            columns: column_defs,
+            rows,
+        })
+    }
+
+    async fn list_indexes(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<IndexInfo>> {
+        // ClickHouse doesn't have traditional indexes like MySQL
+        // It has data skipping indexes, but they are not directly comparable
+        Ok(Vec::new())
+    }
+
+    async fn list_indexes_view(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Index,
+            title: "Indexes".to_string(),
+            columns: vec![
+                Column::new("name", "Name").width(px(150.0)),
+                Column::new("type", "Type").width(px(100.0)),
+                Column::new("columns", "Columns").width(px(200.0)),
+            ],
+            rows: Vec::new(),
+        })
+    }
+
+    // === View Operations ===
+
+    async fn list_views(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<ViewInfo>> {
+        // ClickHouse has materialized views, which are different from traditional views
+        // For now, return empty
+        Ok(Vec::new())
+    }
+
+    async fn list_views_view(&self, _connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::View,
+            title: "Views".to_string(),
+            columns: vec![
+                Column::new("name", "Name").width(px(200.0)),
+                Column::new("definition", "Definition").width(px(400.0)),
+            ],
+            rows: Vec::new(),
+        })
+    }
+
+    // === Function Operations ===
+
+    async fn list_functions(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<FunctionInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_functions_view(&self, _connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Function,
+            title: "Functions".to_string(),
+            columns: vec![Column::new("name", "Name").width(px(200.0))],
+            rows: Vec::new(),
+        })
+    }
+
+    // === Procedure Operations ===
+
+    async fn list_procedures(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<FunctionInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_procedures_view(&self, _connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Procedure,
+            title: "Procedures".to_string(),
+            columns: vec![Column::new("name", "Name").width(px(200.0))],
+            rows: Vec::new(),
+        })
+    }
+
+    // === Trigger Operations ===
+
+    async fn list_triggers(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<TriggerInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_triggers_view(&self, _connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Trigger,
+            title: "Triggers".to_string(),
+            columns: vec![Column::new("name", "Name").width(px(200.0))],
+            rows: Vec::new(),
+        })
+    }
+
+    // === Sequence Operations ===
+
+    async fn list_sequences(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<SequenceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_sequences_view(&self, _connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        Ok(ObjectView {
+            db_node_type: DbNodeType::Sequence,
+            title: "Sequences".to_string(),
+            columns: vec![Column::new("name", "Name").width(px(200.0))],
+            rows: Vec::new(),
+        })
+    }
+
+    // === Database Management Operations ===
+
+    fn build_create_database_sql(&self, request: &DatabaseOperationRequest) -> String {
+        let db_name = self.quote_identifier(&request.database_name);
+        let mut sql = format!("CREATE DATABASE {}", db_name);
+
+        if let Some(engine) = request.field_values.get("engine") {
+            if !engine.is_empty() {
+                sql.push_str(&format!(" ENGINE = {}", engine));
+            }
+        }
+
+        if let Some(comment) = request.field_values.get("comment") {
+            if !comment.is_empty() {
+                sql.push_str(&format!(" COMMENT '{}'", comment.replace("'", "''")));
+            }
+        }
+
+        sql
+    }
+
+    fn build_modify_database_sql(&self, request: &DatabaseOperationRequest) -> String {
+        // ClickHouse doesn't support ALTER DATABASE for changing properties
+        // Return a comment indicating this
+        format!("-- ClickHouse does not support modifying database properties for '{}'", request.database_name)
+    }
+
+    fn build_drop_database_sql(&self, database_name: &str) -> String {
+        format!("DROP DATABASE IF EXISTS {}", self.quote_identifier(database_name))
+    }
+}

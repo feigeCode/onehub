@@ -12,15 +12,14 @@ use tokio::sync::mpsc;
 use crate::SqlValue;
 
 pub struct PostgresDbConnection {
-    config: Option<DbConnectionConfig>,
-    // PostgreSQL client wrapped in Mutex for interior mutability
+    config: DbConnectionConfig,
     client: Arc<Mutex<Option<Client>>>,
 }
 
 impl PostgresDbConnection {
     pub fn new(config: DbConnectionConfig) -> Self {
         Self {
-            config: Some(config),
+            config,
             client: Arc::new(Mutex::new(None)),
         }
     }
@@ -184,15 +183,20 @@ impl tokio_postgres::types::ToSql for PgParam {
 
 #[async_trait]
 impl DbConnection for PostgresDbConnection {
-    fn config(&self) -> Option<DbConnectionConfig> {
-        self.config.clone()
+    fn config(&self) -> &DbConnectionConfig {
+        &self.config
+    }
+
+    fn set_config_database(&mut self, database: Option<String>) {
+        self.config.database = database;
+    }
+
+    fn supports_database_switch(&self) -> bool {
+        false
     }
 
     async fn connect(&mut self) -> anyhow::Result<(), DbError> {
-        let config = self
-            .config
-            .as_ref()
-            .ok_or_else(|| DbError::ConnectionError("No database configuration provided".to_string()))?;
+        let config = &self.config;
 
         let mut pg_config = Config::new();
         pg_config
@@ -212,13 +216,25 @@ impl DbConnection for PostgresDbConnection {
             .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
         connection.await.map_err(|e| DbError::ConnectionError(format!("Connection error: {}", e)))?;
-        // Store client and current database
         {
             let mut guard = self.client.lock().await;
             *guard = Some(client);
         }
 
         Ok(())
+    }
+
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected".into()))?;
+
+        let row = client
+            .query_one("SELECT current_database()", &[])
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
+
+        Ok(row.try_get::<_, Option<String>>(0).ok().flatten())
     }
 
     async fn disconnect(&mut self) -> Result<(), DbError> {
@@ -886,5 +902,13 @@ impl DbConnection for PostgresDbConnection {
         }
 
         Ok(())
+    }
+
+    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
+        // PostgreSQL doesn't support switching databases within a connection
+        // The connection must be recreated to connect to a different database
+        Err(DbError::QueryError(
+            "PostgreSQL does not support switching databases within a connection. Please create a new connection.".to_string()
+        ))
     }
 }

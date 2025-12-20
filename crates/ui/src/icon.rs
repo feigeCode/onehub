@@ -126,6 +126,7 @@ pub enum IconName {
     Redis,
     Terminal,
     Apps,
+    AppsColor,
     MongoDB,
     MySQLColor,
     MySQLLineColor,
@@ -134,7 +135,11 @@ pub enum IconName {
     PostgreSQLColor,
     PostgreSQLLineColor,
     MSSQLColor,
+    MSSQLLineColor,
     OracleColor,
+    OracleLineColor,
+    ClickHouseColor,
+    ClickHouseLineColor,
     Workspace,
     RedisColor,
     All,
@@ -144,6 +149,7 @@ pub enum IconName {
     EditBorder,
     Folder1,
     FolderOpen1,
+    Remove
 }
 
 impl IconName {
@@ -260,6 +266,7 @@ impl IconNamed for IconName {
             Self::Redis => "icons/redis.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Apps => "icons/apps.svg",
+            Self::AppsColor => "icons/apps_color.svg",
             Self::MongoDB => "icons/mongodb.svg",
             Self::MySQLColor => "icons/mysql_color.svg",
             Self::SQLiteColor => "icons/sqlite_color.svg",
@@ -276,6 +283,11 @@ impl IconNamed for IconName {
             Self::Filter => "icons/filter.svg",
             Self::Refresh => "icons/refresh.svg",
             Self::EditBorder => "icons/edit_border.svg",
+            Self::MSSQLLineColor => "icons/mssql_line_color.svg",
+            Self::OracleLineColor => "icons/oracle_line_color.svg",
+            Self::ClickHouseColor => "icons/clickhouse_color.svg",
+            Self::ClickHouseLineColor => "icons/clickhouse_line_color.svg",
+            Self::Remove => "icons/remove.svg",
         }
         .into()
     }

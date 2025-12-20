@@ -23,7 +23,6 @@ one-core.workspace = true
 sum-tree.workspace = true
 lsp-types.workspace = true
 uuid.workspace = true
-dirs.workspace = true
 [dev-dependencies]
 proptest = { workspace = true }
 

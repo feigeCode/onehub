@@ -24,6 +24,8 @@ pub mod mysql;
 pub mod postgresql;
 pub mod mssql;
 pub mod oracle;
+pub mod clickhouse;
+pub mod sqlite;
 mod import_export;
 
 pub use common::DatabaseFormEvent;

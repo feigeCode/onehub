@@ -706,31 +706,6 @@ impl DatabasePlugin for MySqlPlugin {
         })
     }
 
-
-    // === Database Switching ===
-
-    async fn switch_db(&self, connection: &dyn DbConnection, database: &str) -> Result<SqlResult> {
-        // MySQL supports switching database using USE statement.
-        // Delegate to connection.execute so the underlying implementation can adjust its pool/context.
-        let sql = format!("USE `{}`", database);
-        let results = connection
-            .execute(&sql, ExecOptions::default())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to switch database: {}", e))?;
-
-        // For a single USE statement we expect exactly one Exec result.
-        if let Some(result) = results.into_iter().next() {
-            Ok(result)
-        } else {
-            Ok(SqlResult::Exec(ExecResult {
-                sql,
-                rows_affected: 0,
-                elapsed_ms: 0,
-                message: Some("Database changed".to_string()),
-            }))
-        }
-    }
-
     fn get_charsets(&self) -> Vec<CharsetInfo> {
         vec![
             CharsetInfo { name: "utf8mb4".into(), description: "UTF-8 Unicode (4 bytes)".into(), default_collation: "utf8mb4_general_ci".into() },

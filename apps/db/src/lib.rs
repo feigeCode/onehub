@@ -11,6 +11,7 @@ pub mod postgresql;
 pub mod mssql;
 pub mod sqlite;
 pub mod oracle;
+pub mod clickhouse;
 pub mod sql_editor;
 
 // Re-exports

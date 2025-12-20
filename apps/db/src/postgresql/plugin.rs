@@ -820,23 +820,6 @@ impl DatabasePlugin for PostgresPlugin {
         })
     }
 
-    // === Database Switching ===
-
-    async fn switch_db(&self, _connection: &dyn DbConnection, database: &str) -> Result<SqlResult> {
-        // PostgreSQL does not support switching database on an existing connection.
-        // Return a clear Exec message instructing the caller to create a new connection.
-        let message = format!(
-            "PostgreSQL cannot switch database on an existing connection. Please reconnect to database '{}'.",
-            database
-        );
-        Ok(SqlResult::Exec(ExecResult {
-            sql: format!("-- switch to {}", database),
-            rows_affected: 0,
-            elapsed_ms: 0,
-            message: Some(message),
-        }))
-    }
-
     fn get_data_types(&self) -> Vec<DataTypeInfo> {
         vec![
             // 数值类型

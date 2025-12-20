@@ -1,38 +1,30 @@
+use std::sync::Arc;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use mysql_async::{prelude::*, Conn, Opts, OptsBuilder, Row, Value};
+use one_core::storage::DbConnectionConfig;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+
 use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
 use crate::SqlValue;
 
-use mysql_async::{prelude::*, Conn, Opts, OptsBuilder, Pool, Row, Value};
-use std::time::Instant;
-use async_trait::async_trait;
-use std::sync::RwLock;
-use one_core::storage::DbConnectionConfig;
-use tokio::sync::mpsc;
-
 pub struct MysqlDbConnection {
-    config: Option<DbConnectionConfig>,
-    // Use Pool for connection management
-    pool: RwLock<Option<Pool>>,
+    config: DbConnectionConfig,
+    conn: Arc<Mutex<Option<Conn>>>,
 }
 
 impl MysqlDbConnection {
     pub fn new(config: DbConnectionConfig) -> Self {
         Self {
-            config: Some(config),
-            pool: RwLock::new(None),
+            config,
+            conn: Arc::new(Mutex::new(None)),
         }
     }
 
-    fn ensure_connected(&self) -> Result<Pool, DbError> {
-        self.pool
-            .read()
-            .unwrap()
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))
-    }
-
-    /// Extract value from mysql_async::Value - much simpler than sqlx!
+    /// Extract value from mysql_async::Value
     fn extract_value(value: &Value) -> Option<String> {
         match value {
             Value::NULL => None,
@@ -43,10 +35,8 @@ impl MysqlDbConnection {
             Value::Double(d) => Some(d.to_string()),
             Value::Date(year, month, day, hour, min, sec, micro) => {
                 if *hour == 0 && *min == 0 && *sec == 0 && *micro == 0 {
-                    // Pure DATE
                     Some(format!("{:04}-{:02}-{:02}", year, month, day))
                 } else {
-                    // DATETIME or TIMESTAMP
                     Some(format!(
                         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
                         year, month, day, hour, min, sec
@@ -67,7 +57,6 @@ impl MysqlDbConnection {
         }
     }
 
-    /// Convert SqlValue to mysql_async::Value for parameter binding
     fn convert_param(param: &SqlValue) -> Value {
         match param {
             SqlValue::Null => Value::NULL,
@@ -144,7 +133,6 @@ impl MysqlDbConnection {
         })
     }
 
-    /// Execute a single statement and return the result
     async fn execute_single(
         conn: &mut Conn,
         sql: &str,
@@ -183,15 +171,16 @@ impl MysqlDbConnection {
 
 #[async_trait]
 impl DbConnection for MysqlDbConnection {
-    fn config(&self) -> Option<DbConnectionConfig> {
-        self.config.clone()
+    fn config(&self) -> &DbConnectionConfig {
+        &self.config
+    }
+
+    fn set_config_database(&mut self, database: Option<String>) {
+        self.config.database = database;
     }
 
     async fn connect(&mut self) -> anyhow::Result<(), DbError> {
-        let config = self
-            .config
-            .as_ref()
-            .ok_or_else(|| DbError::ConnectionError("No database configuration provided".to_string()))?;
+        let config = &self.config;
 
         let mut opts_builder = OptsBuilder::default()
             .ip_or_hostname(&config.host)
@@ -204,34 +193,39 @@ impl DbConnection for MysqlDbConnection {
         }
 
         let opts = Opts::from(opts_builder);
-        let pool = Pool::new(opts);
-
-        // Test the connection
-        let conn = pool
-            .get_conn()
+        let conn = Conn::new(opts)
             .await
             .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
-        // Return connection to pool
-        drop(conn);
-
-        // Store pool and current database
         {
-            let mut guard = self.pool.write().unwrap();
-            *guard = Some(pool);
+            let mut guard = self.conn.lock().await;
+            *guard = Some(conn);
         }
 
         Ok(())
     }
 
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
+
+        let result: Option<String> = conn
+            .query_first("SELECT DATABASE()")
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
+
+        Ok(result)
+    }
+
     async fn disconnect(&mut self) -> Result<(), DbError> {
-        let pool_opt = {
-            let mut guard = self.pool.write().unwrap();
+        let conn_opt = {
+            let mut guard = self.conn.lock().await;
             guard.take()
         };
 
-        if let Some(pool) = pool_opt {
-            pool.disconnect()
+        if let Some(conn) = conn_opt {
+            conn.disconnect()
                 .await
                 .map_err(|e| DbError::ConnectionError(format!("Failed to disconnect: {}", e)))?;
         }
@@ -240,11 +234,9 @@ impl DbConnection for MysqlDbConnection {
     }
 
     async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
-        let pool = self.ensure_connected()?;
-        let mut conn = pool
-            .get_conn()
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
         let statements = SqlScriptSplitter::split(script);
         let mut results = Vec::new();
@@ -317,7 +309,7 @@ impl DbConnection for MysqlDbConnection {
 
                 let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
                 let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
-                let result = Self::execute_single(&mut conn, &modified_sql, is_query).await?;
+                let result = Self::execute_single(conn, &modified_sql, is_query).await?;
 
                 let is_error = result.is_error();
                 results.push(result);
@@ -337,11 +329,9 @@ impl DbConnection for MysqlDbConnection {
         params: Option<Vec<SqlValue>>,
         _options: ExecOptions,
     ) -> Result<SqlResult, DbError> {
-        let pool = self.ensure_connected()?;
-        let mut conn = pool
-            .get_conn()
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
         let start = Instant::now();
         let is_query = SqlStatementClassifier::is_query_statement(query);
@@ -376,7 +366,7 @@ impl DbConnection for MysqlDbConnection {
                 }
             }
         } else {
-            Self::execute_single(&mut conn, query, is_query).await
+            Self::execute_single(conn, query, is_query).await
         }
     }
 
@@ -386,11 +376,9 @@ impl DbConnection for MysqlDbConnection {
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
     ) -> Result<(), DbError> {
-        let pool = self.ensure_connected()?;
-        let mut conn = pool
-            .get_conn()
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to get connection: {}", e)))?;
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
         let statements: Vec<String> = SqlScriptSplitter::split(script)
             .into_iter()
@@ -474,7 +462,7 @@ impl DbConnection for MysqlDbConnection {
                 let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
                 let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
 
-                let result = match Self::execute_single(&mut conn, &modified_sql, is_query).await {
+                let result = match Self::execute_single(conn, &modified_sql, is_query).await {
                     Ok(r) => r,
                     Err(e) => SqlResult::Error(SqlErrorInfo {
                         sql: sql.clone(),
@@ -498,6 +486,19 @@ impl DbConnection for MysqlDbConnection {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
+
+        let sql = format!("USE `{}`", database.replace("`", "``"));
+        conn.query_drop(&sql)
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to switch database: {}", e)))?;
 
         Ok(())
     }

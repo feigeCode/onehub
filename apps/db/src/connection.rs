@@ -39,7 +39,16 @@ pub struct StreamingProgress {
 
 #[async_trait]
 pub trait DbConnection: Sync + Send {
-    fn config(&self) -> Option<DbConnectionConfig>;
+    fn config(&self) -> &DbConnectionConfig;
+
+    /// Update database field in config (used when connection's actual database changes)
+    fn set_config_database(&mut self, database: Option<String>);
+
+    /// Whether this database type supports switching database within a connection
+    fn supports_database_switch(&self) -> bool {
+        true
+    }
+
     async fn connect(&mut self) -> Result<(), DbError>;
     async fn disconnect(&mut self) -> Result<(), DbError>;
     async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError>;
@@ -48,6 +57,12 @@ pub trait DbConnection: Sync + Send {
     async fn ping(&self) -> Result<(), DbError> {
         self.query("SELECT 1", None, ExecOptions::default()).await.map(|_| ())
     }
+
+    /// Get current database/schema name from the connection
+    async fn current_database(&self) -> Result<Option<String>, DbError>;
+
+    /// Switch to a different database
+    async fn switch_database(&self, database: &str) -> Result<(), DbError>;
 
     async fn execute_streaming(
         &self,

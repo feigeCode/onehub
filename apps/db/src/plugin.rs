@@ -108,6 +108,7 @@ pub trait DatabasePlugin: Send + Sync {
             DatabaseType::SQLite => "\"",
             DatabaseType::MSSQL => "",
             DatabaseType::Oracle => "",
+            DatabaseType::ClickHouse => "`",
         }
     }
 
@@ -584,8 +585,6 @@ pub trait DatabasePlugin: Send + Sync {
 
  
 
-    async fn switch_db(&self, connection: &dyn DbConnection, database: &str) -> Result<SqlResult>;
-
     // === Table Data Operations ===
     /// Query table data with pagination, filtering and sorting
     async fn query_table_data(
@@ -940,6 +939,7 @@ pub trait DatabasePlugin: Send + Sync {
             DatabaseType::SQLite => String::new(), // SQLite UPDATE/DELETE does not support LIMIT by default
             DatabaseType::MSSQL => " FETCH FIRST 1 ROWS ONLY".to_string(),
             DatabaseType::Oracle => String::new(),
+            DatabaseType::ClickHouse => " LIMIT 1".to_string(),
         }
     }
 
@@ -1062,7 +1062,7 @@ pub trait DatabasePlugin: Send + Sync {
     /// Rename table
     fn rename_table(&self, _database: &str, old_name: &str, new_name: &str) -> String {
         match self.name() {
-            DatabaseType::MySQL => format!(
+            DatabaseType::MySQL | DatabaseType::ClickHouse => format!(
                 "RENAME TABLE {} TO {}",
                 self.quote_identifier(old_name),
                 self.quote_identifier(new_name)

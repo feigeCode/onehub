@@ -450,15 +450,6 @@ impl DatabasePlugin for SqlitePlugin {
         })
     }
 
-    async fn switch_db(&self, _connection: &dyn DbConnection, _database: &str) -> Result<SqlResult> {
-        Ok(SqlResult::Exec(ExecResult {
-            sql: String::new(),
-            rows_affected: 0,
-            elapsed_ms: 0,
-            message: Some("SQLite uses single database per file".to_string()),
-        }))
-    }
-
     fn get_data_types(&self) -> Vec<DataTypeInfo> {
         vec![
             DataTypeInfo::new("INTEGER", "Signed integer (up to 8 bytes)").with_category(DataTypeCategory::Numeric),

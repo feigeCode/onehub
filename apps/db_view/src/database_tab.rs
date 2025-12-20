@@ -5,7 +5,7 @@ use crate::db_tree_event::DatabaseEventHandler;
 use crate::db_tree_view::DbTreeView;
 use db::GlobalDbState;
 use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, AsyncApp, Entity, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, Window};
-use gpui_component::{h_flex, resizable::{h_resizable, resizable_panel}, v_flex, ActiveTheme, Icon, IconName};
+use gpui_component::{h_flex, resizable::{h_resizable, resizable_panel}, v_flex, ActiveTheme, Icon, IconName, Sizable, Size};
 use one_core::storage::Workspace;
 use one_core::{storage::StoredConnection, tab_container::{TabContainer, TabContent, TabContentType, TabItem}};
 
@@ -229,7 +229,7 @@ impl TabContent for DatabaseTabContent {
 
     fn icon(&self) -> Option<Icon> {
         if self.workspace.is_some() {
-            Some(IconName::Workspace.color())
+            Some(IconName::AppsColor.color().with_size(Size::Medium))
         }else {
             let db_connection = self.connections.first()
                 .map(|c| c.to_db_connection());
@@ -240,10 +240,10 @@ impl TabContent for DatabaseTabContent {
                 Some(result) => {
                     match result {
                         Ok(conn) => {
-                            Some(conn.database_type.as_node_icon())
+                            Some(conn.database_type.as_node_icon().with_size(Size::Medium))
                         }
                         Err(_) => {
-                            Some(IconName::Database.color())
+                            Some(IconName::Database.color().with_size(Size::Medium))
                         }
                     }
                 }

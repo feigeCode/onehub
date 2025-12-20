@@ -24,6 +24,7 @@ bb8-tiberius.workspace = true
 tiberius.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 oracle.workspace = true
+clickhouse.workspace = true
 one-core.workspace = true
 uuid = { version = "1.18.0", features = ["v4"] }
 

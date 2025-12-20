@@ -3,6 +3,9 @@ use crate::plugin::DatabasePlugin;
 use crate::mysql::MySqlPlugin;
 use crate::postgresql::PostgresPlugin;
 use crate::sqlite::SqlitePlugin;
+use crate::clickhouse::ClickHousePlugin;
+use crate::mssql::MsSqlPlugin;
+use crate::oracle::OraclePlugin;
 use crate::import_export::{DataExporter, DataImporter, ExportConfig, ExportResult, ImportConfig, ImportResult};
 use crate::{DbNode, ExecOptions, SqlResult};
 use tokio::sync::mpsc;
@@ -45,19 +48,35 @@ macro_rules! with_plugin_session {
 }
 
 /// Database manager - creates database plugins
-pub struct DbManager {}
+pub struct DbManager {
+    mysql: Arc<dyn DatabasePlugin>,
+    postgresql: Arc<dyn DatabasePlugin>,
+    sqlite: Arc<dyn DatabasePlugin>,
+    clickhouse: Arc<dyn DatabasePlugin>,
+    mssql: Arc<dyn DatabasePlugin>,
+    oracle: Arc<dyn DatabasePlugin>,
+}
 
 impl DbManager {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            mysql: Arc::new(MySqlPlugin::new()),
+            postgresql: Arc::new(PostgresPlugin::new()),
+            sqlite: Arc::new(SqlitePlugin::new()),
+            clickhouse: Arc::new(ClickHousePlugin::new()),
+            mssql: Arc::new(MsSqlPlugin::new()),
+            oracle: Arc::new(OraclePlugin::new()),
+        }
     }
 
-    pub fn get_plugin(&self, db_type: &DatabaseType) -> Result<Box<dyn DatabasePlugin>, DbError> {
+    pub fn get_plugin(&self, db_type: &DatabaseType) -> Result<Arc<dyn DatabasePlugin>, DbError> {
         match db_type {
-            DatabaseType::MySQL => Ok(Box::new(MySqlPlugin::new())),
-            DatabaseType::PostgreSQL => Ok(Box::new(PostgresPlugin::new())),
-            DatabaseType::SQLite => Ok(Box::new(SqlitePlugin::new())),
-            _ => Err(DbError::new("Unsupported database type")),
+            DatabaseType::MySQL => Ok(Arc::clone(&self.mysql)),
+            DatabaseType::PostgreSQL => Ok(Arc::clone(&self.postgresql)),
+            DatabaseType::SQLite => Ok(Arc::clone(&self.sqlite)),
+            DatabaseType::ClickHouse => Ok(Arc::clone(&self.clickhouse)),
+            DatabaseType::MSSQL => Ok(Arc::clone(&self.mssql)),
+            DatabaseType::Oracle => Ok(Arc::clone(&self.oracle)),
         }
     }
 }
@@ -70,27 +89,31 @@ impl Default for DbManager {
 
 impl Clone for DbManager {
     fn clone(&self) -> Self {
-        Self {}
+        Self {
+            mysql: Arc::clone(&self.mysql),
+            postgresql: Arc::clone(&self.postgresql),
+            sqlite: Arc::clone(&self.sqlite),
+            clickhouse: Arc::clone(&self.clickhouse),
+            mssql: Arc::clone(&self.mssql),
+            oracle: Arc::clone(&self.oracle),
+        }
     }
 }
 
 /// Connection session - represents a single database connection
 struct ConnectionSession {
     connection: Box<dyn DbConnection + Send + Sync>,
-    config: DbConnectionConfig,
     last_active: Instant,
     created_at: Instant,
     session_id: String,
-    /// Whether this session is currently checked out for use
     in_use: bool,
 }
 
 impl ConnectionSession {
-    fn new(connection: Box<dyn DbConnection + Send + Sync>, config: DbConnectionConfig, session_id: String) -> Self {
+    fn new(connection: Box<dyn DbConnection + Send + Sync>, session_id: String) -> Self {
         let now = Instant::now();
         Self {
             connection,
-            config,
             last_active: now,
             created_at: now,
             session_id,
@@ -112,7 +135,6 @@ impl ConnectionSession {
         self.last_active = Instant::now();
     }
 
-    /// Check if session is expired (idle timeout)
     fn is_expired(&self, timeout: Duration) -> bool {
         if self.in_use {
             return false;
@@ -120,9 +142,32 @@ impl ConnectionSession {
         self.last_active.elapsed() > timeout
     }
 
-    /// Check if session has exceeded maximum lifetime
     fn is_lifetime_expired(&self, max_lifetime: Duration) -> bool {
         self.created_at.elapsed() > max_lifetime
+    }
+
+    /// Check if current database matches config database
+    /// Returns Ok(true) if consistent, Ok(false) if updated config, Err if check failed
+    async fn verify_and_sync_database(&mut self) -> Result<bool, DbError> {
+        // Skip check for databases that don't support switching
+        if !self.connection.supports_database_switch() {
+            return Ok(true);
+        }
+
+        let config_db = self.connection.config().database.clone();
+        let current_db = self.connection.current_database().await?;
+
+        if config_db == current_db {
+            Ok(true)
+        } else {
+            // Database changed, update config
+            self.connection.set_config_database(current_db.clone());
+            info!(
+                "Session {} database changed: {:?} -> {:?}",
+                self.session_id, config_db, current_db
+            );
+            Ok(false)
+        }
     }
 
     async fn close(&mut self) {
@@ -180,7 +225,8 @@ impl ConnectionManager {
     ) -> Result<String, DbError> {
         let config_id = config.id.clone();
 
-        if let Some(session_id) = self.try_acquire_session(&config).await {
+        // Try to acquire an existing session and switch database if needed
+        if let Some(session_id) = self.try_acquire_session(&config).await? {
             return Ok(session_id);
         }
 
@@ -195,7 +241,7 @@ impl ConnectionManager {
         info!("Created new session: {}", session_id);
 
         // Store session
-        let mut session = ConnectionSession::new(connection, config, session_id.clone());
+        let mut session = ConnectionSession::new(connection, session_id.clone());
         session.mark_in_use();
 
         let mut sessions = self.sessions.write().await;
@@ -229,21 +275,27 @@ impl ConnectionManager {
         })
     }
 
-    async fn try_acquire_session(&self, config: &DbConnectionConfig) -> Option<String> {
+    /// Try to acquire an existing idle session with matching database
+    async fn try_acquire_session(
+        &self,
+        config: &DbConnectionConfig,
+    ) -> Result<Option<String>, DbError> {
         let mut sessions = self.sessions.write().await;
 
         if let Some(session_list) = sessions.get_mut(&config.id) {
-            if let Some(session) = session_list.iter_mut().find(|s| {
-                !s.in_use && s.config.database == config.database
-            }) {
-                session.config = config.clone();
+            // Find an idle session (database already verified on release)
+            if let Some(session) = session_list.iter_mut().find(|s| !s.in_use) {
                 session.mark_in_use();
-                info!("Reusing session: {} (database: {:?})", session.session_id, config.database);
-                return Some(session.session_id.clone());
+
+                info!(
+                    "Reusing session: {} (database: {:?})",
+                    session.session_id, config.database
+                );
+                return Ok(Some(session.session_id.clone()));
             }
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -273,7 +325,7 @@ impl ConnectionManager {
 
         for session_list in sessions.values() {
             if let Some(session) = session_list.iter().find(|s| s.session_id == session_id) {
-                return Some(session.config.clone());
+                return Some(session.connection.config().clone());
             }
         }
 
@@ -283,11 +335,46 @@ impl ConnectionManager {
     pub async fn release_session(&self, session_id: &str) -> Result<(), DbError> {
         let mut sessions = self.sessions.write().await;
 
-        for session_list in sessions.values_mut() {
+        // First, find and verify the session
+        let mut should_close = false;
+        let mut found_config_id: Option<String> = None;
+
+        for (config_id, session_list) in sessions.iter_mut() {
             if let Some(session) = session_list.iter_mut().find(|s| s.session_id == session_id) {
-                session.release();
-                info!("Session {} released", session_id);
-                return Ok(());
+                // Verify database consistency before release
+                match session.verify_and_sync_database().await {
+                    Ok(_) => {
+                        // Check passed (consistent or updated), release normally
+                        session.release();
+                        info!("Session {} released", session_id);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        // Check failed, mark for closing
+                        warn!("Session {} database check failed: {}, closing connection", session_id, e);
+                        should_close = true;
+                        found_config_id = Some(config_id.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If check failed, close and remove the session
+        if should_close {
+            if let Some(config_id) = found_config_id {
+                if let Some(session_list) = sessions.get_mut(&config_id) {
+                    if let Some(pos) = session_list.iter().position(|s| s.session_id == session_id) {
+                        let mut session = session_list.remove(pos);
+                        session.close().await;
+
+                        // Remove empty config entry
+                        if session_list.is_empty() {
+                            sessions.remove(&config_id);
+                        }
+                        return Ok(());
+                    }
+                }
             }
         }
 
@@ -398,7 +485,7 @@ impl ConnectionManager {
             .map(|list| {
                 list.iter().map(|s| SessionInfo {
                     session_id: s.session_id.clone(),
-                    database: s.config.database.clone(),
+                    database: s.connection.config().database.clone(),
                     in_use: s.in_use,
                     idle_time: s.last_active.elapsed(),
                     lifetime: s.created_at.elapsed(),
@@ -507,7 +594,7 @@ impl GlobalDbState {
     }
     
     
-    pub fn get_plugin(&self, database_type: &DatabaseType) -> Result<Box<dyn DatabasePlugin>, DbError> {
+    pub fn get_plugin(&self, database_type: &DatabaseType) -> Result<Arc<dyn DatabasePlugin>, DbError> {
         self.db_manager.get_plugin(database_type)
     }
 

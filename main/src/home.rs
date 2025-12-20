@@ -11,7 +11,8 @@ use one_core::tab_container::{TabContainer, TabContent, TabContentType, TabItem}
 use one_core::themes::SwitchThemeMode;
 use db_view::ai_chat_panel::AiChatPanel;
 use db_view::database_tab::DatabaseTabContent;
-use db_view::db_connection_form::{DbConnectionForm, DbConnectionFormEvent, DbFormConfig};
+use db_view::database_view_plugin::DatabaseViewPluginRegistry;
+use db_view::db_connection_form::{DbConnectionForm, DbConnectionFormEvent};
 use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::DropdownMenu;
@@ -273,18 +274,16 @@ impl HomePage {
     }
 
     fn show_connection_form(&mut self, db_type: DatabaseType, window: &mut Window, cx: &mut Context<Self>) {
-        let config = match db_type {
-            DatabaseType::MySQL => DbFormConfig::mysql(),
-            DatabaseType::PostgreSQL => DbFormConfig::postgres(),
-            DatabaseType::SQLite => DbFormConfig::sqlite(),
-            _ => {
-                panic!("Unsupported database type");
+        let plugin_registry = cx.global::<DatabaseViewPluginRegistry>();
+        let plugin = match plugin_registry.get(&db_type) {
+            Some(p) => p,
+            None => {
+                tracing::error!("No plugin found for database type: {:?}", db_type);
+                return;
             }
         };
 
-        let form = cx.new(|cx| {
-            DbConnectionForm::new(config, window, cx)
-        });
+        let form = plugin.create_connection_form(window, cx);
 
         // 设置工作区列表
         form.update(cx, |f, cx| {
@@ -554,35 +553,30 @@ impl HomePage {
                             .with_size(Size::Large)
                             .with_variant(ButtonVariant::Custom(ButtonCustomVariant::new(cx).hover(cx.theme().primary)))
                             .dropdown_menu(move |menu, window, _cx| {
-                                menu
+                                let mut menu = menu
+                                    .large()
                                     .item(
                                     PopupMenuItem::new("工作区")
-                                                .icon(IconName::Apps.color().with_size(Size::Large))
+                                                .icon(IconName::AppsColor.color().with_size(Size::Medium))
                                                 .on_click(window.listener_for(&view, move |this, _, window, cx| {
                                                     this.show_workspace_form(None, window, cx);
                                                 }))
-                                ).item(
-                                    PopupMenuItem::new("MySQL")
-                                        .icon(Icon::from(IconName::MySQLLineColor).color().with_size(Size::Large))
-                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                            this.editing_connection_id = None;
-                                            this.show_connection_form(DatabaseType::MySQL, window, cx);
-                                        }))
-                                ).item(
-                                    PopupMenuItem::new("PostgreSQL")
-                                        .icon(Icon::from(IconName::PostgreSQLLineColor).color().with_size(Size::Large))
-                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                            this.editing_connection_id = None;
-                                            this.show_connection_form(DatabaseType::PostgreSQL, window, cx);
-                                        }))
-                                ).item(
-                                    PopupMenuItem::new("SQLite")
-                                        .icon(Icon::from(IconName::SQLiteLineColor).color().with_size(Size::Large))
-                                        .on_click(window.listener_for(&view, move |this, _, window, cx| {
-                                            this.editing_connection_id = None;
-                                            this.show_connection_form(DatabaseType::SQLite, window, cx);
-                                        }))
-                                )
+                                );
+
+                                for db_type in DatabaseType::all() {
+                                    let db_type = *db_type;
+                                    let label: SharedString = db_type.as_str().to_string().into();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(label)
+                                            .icon(db_type.as_node_icon().with_size(Size::Medium))
+                                            .on_click(window.listener_for(&view, move |this, _, window, cx| {
+                                                this.editing_connection_id = None;
+                                                this.show_connection_form(db_type, window, cx);
+                                            }))
+                                    );
+                                }
+
+                                menu
                             })
                     )
             )
@@ -814,7 +808,7 @@ impl HomePage {
                             .text_color(cx.theme().primary)
                     })
                     .child(
-                        Icon::new(IconName::Workspace).color()
+                        Icon::new(IconName::AppsColor).color().with_size(Size::Medium)
                     )
                     .child(
                         div()
@@ -991,7 +985,7 @@ impl HomePage {
                     )
                     .child(
                         Button::new(SharedString::from(format!("delete-conn-{}", conn.id.unwrap_or(0))))
-                            .icon(IconName::Delete)
+                            .icon(IconName::Remove)
                             .with_size(Size::Small)
                             .tooltip("删除连接")
                             .on_click(cx.listener(move |_this, _, window, cx| {
@@ -1180,7 +1174,7 @@ impl TabContent for HomeTabContent {
     }
 
     fn icon(&self) -> Option<Icon> {
-        Some(IconName::LayoutDashboard.color())
+        Some(IconName::Workspace.color().with_size(Size::Medium))
     }
 
     fn closeable(&self) -> bool {

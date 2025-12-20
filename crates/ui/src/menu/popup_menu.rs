@@ -640,8 +640,20 @@ impl PopupMenu {
     }
 
     /// Use small size, the menu item will have smaller height.
-    pub(crate) fn small(mut self) -> Self {
+    pub fn small(mut self) -> Self {
         self.size = Size::Small;
+        self
+    }
+
+    /// Use large size, the menu item will have larger height.
+    pub fn large(mut self) -> Self {
+        self.size = Size::Large;
+        self
+    }
+
+    /// Set the size of the menu.
+    pub fn with_size(mut self, size: Size) -> Self {
+        self.size = size;
         self
     }
 
@@ -973,6 +985,7 @@ impl PopupMenu {
         has_icon: bool,
         checked: bool,
         icon: Option<Icon>,
+        size: Size,
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<impl IntoElement> {
@@ -988,7 +1001,10 @@ impl PopupMenu {
             Icon::empty()
         };
 
-        Some(icon.xsmall())
+        Some(match size {
+            Size::Large => icon,
+            _ => icon.xsmall(),
+        })
     }
 
     #[inline]
@@ -1025,7 +1041,10 @@ impl PopupMenu {
         let has_left_icon = options.has_left_icon;
         let is_left_check = options.check_side.is_left() && item.is_checked();
         let right_check_icon = if options.check_side.is_right() && item.is_checked() {
-            Some(Icon::new(IconName::Check).xsmall())
+            Some(match options.size {
+                Size::Large => Icon::new(IconName::Check).with_size(Size::Medium),
+                _ => Icon::new(IconName::Check).xsmall(),
+            })
         } else {
             None
         };
@@ -1039,12 +1058,14 @@ impl PopupMenu {
 
         let (item_height, radius) = match self.size {
             Size::Small => (px(20.), options.radius.half()),
+            Size::Large => (px(36.), options.radius),
             _ => (px(26.), options.radius),
         };
 
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
-            .text_sm()
+            .when(options.size == Size::Large, |this| this.text_base())
+            .when(options.size != Size::Large, |this| this.text_sm())
             .py_0()
             .px(INNER_PADDING)
             .rounded(radius)
@@ -1075,7 +1096,7 @@ impl PopupMenu {
                     .cursor_default()
                     .items_center()
                     .gap_x_1()
-                    .children(Self::render_icon(has_left_icon, false, None, window, cx))
+                    .children(Self::render_icon(has_left_icon, false, None, options.size, window, cx))
                     .child(div().flex_1().child(label.clone())),
             ),
             PopupMenuItem::ElementItem {
@@ -1100,6 +1121,7 @@ impl PopupMenu {
                             has_left_icon,
                             is_left_check,
                             icon.clone(),
+                            options.size,
                             window,
                             cx,
                         ))
@@ -1130,6 +1152,7 @@ impl PopupMenu {
                     has_left_icon,
                     is_left_check,
                     icon.clone(),
+                    options.size,
                     window,
                     cx,
                 ))
@@ -1142,6 +1165,10 @@ impl PopupMenu {
                         .when(!show_link_icon, |this| this.child(label.clone()))
                         .children(right_check_icon)
                         .when(show_link_icon, |this| {
+                            let link_icon = match options.size {
+                                Size::Large => Icon::new(IconName::ExternalLink).with_size(Size::Medium),
+                                _ => Icon::new(IconName::ExternalLink).xsmall(),
+                            };
                             this.child(
                                 h_flex()
                                     .w_full()
@@ -1149,9 +1176,7 @@ impl PopupMenu {
                                     .gap_1p5()
                                     .child(label.clone())
                                     .child(
-                                        Icon::new(IconName::ExternalLink)
-                                            .xsmall()
-                                            .text_color(cx.theme().muted_foreground),
+                                        link_icon.text_color(cx.theme().muted_foreground),
                                     ),
                             )
                         })
@@ -1163,56 +1188,61 @@ impl PopupMenu {
                 label,
                 menu,
                 disabled,
-            } => this
-                .selected(selected)
-                .disabled(*disabled)
-                .items_start()
-                .child(
-                    h_flex()
-                        .min_h(item_height)
-                        .size_full()
-                        .items_center()
-                        .gap_x_1()
-                        .children(Self::render_icon(
-                            has_left_icon,
-                            false,
-                            icon.clone(),
-                            window,
-                            cx,
-                        ))
-                        .child(
-                            h_flex()
-                                .flex_1()
-                                .gap_2()
-                                .items_center()
-                                .justify_between()
-                                .child(label.clone())
-                                .child(
-                                    Icon::new(IconName::ChevronRight)
-                                        .xsmall()
-                                        .text_color(cx.theme().muted_foreground),
-                                ),
-                        ),
-                )
-                .when(selected, |this| {
-                    this.child({
-                        let (anchor, left) = self.submenu_anchor;
-                        let is_bottom_pos =
-                            matches!(anchor, Corner::BottomLeft | Corner::BottomRight);
-                        anchored()
-                            .anchor(anchor)
+            } => {
+                let chevron_icon = match options.size {
+                    Size::Large => Icon::new(IconName::ChevronRight).with_size(Size::Medium),
+                    _ => Icon::new(IconName::ChevronRight).xsmall(),
+                };
+                this
+                    .selected(selected)
+                    .disabled(*disabled)
+                    .items_start()
+                    .child(
+                        h_flex()
+                            .min_h(item_height)
+                            .size_full()
+                            .items_center()
+                            .gap_x_1()
+                            .children(Self::render_icon(
+                                has_left_icon,
+                                false,
+                                icon.clone(),
+                                options.size,
+                                window,
+                                cx,
+                            ))
                             .child(
-                                div()
-                                    .id("submenu")
-                                    .occlude()
-                                    .when(is_bottom_pos, |this| this.bottom_0())
-                                    .when(!is_bottom_pos, |this| this.top_neg_1())
-                                    .left(left)
-                                    .child(menu.clone()),
-                            )
-                            .snap_to_window_with_margin(Edges::all(EDGE_PADDING))
+                                h_flex()
+                                    .flex_1()
+                                    .gap_2()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(label.clone())
+                                    .child(
+                                        chevron_icon.text_color(cx.theme().muted_foreground),
+                                    ),
+                            ),
+                    )
+                    .when(selected, |this| {
+                        this.child({
+                            let (anchor, left) = self.submenu_anchor;
+                            let is_bottom_pos =
+                                matches!(anchor, Corner::BottomLeft | Corner::BottomRight);
+                            anchored()
+                                .anchor(anchor)
+                                .child(
+                                    div()
+                                        .id("submenu")
+                                        .occlude()
+                                        .when(is_bottom_pos, |this| this.bottom_0())
+                                        .when(!is_bottom_pos, |this| this.top_neg_1())
+                                        .left(left)
+                                        .child(menu.clone()),
+                                )
+                                .snap_to_window_with_margin(Edges::all(EDGE_PADDING))
+                        })
                     })
-                }),
+            }
         }
     }
 }
@@ -1230,6 +1260,7 @@ struct RenderOptions {
     has_left_icon: bool,
     check_side: Side,
     radius: Pixels,
+    size: Size,
 }
 
 impl Render for PopupMenu {
@@ -1254,6 +1285,7 @@ impl Render for PopupMenu {
             has_left_icon,
             check_side: self.check_side,
             radius: cx.theme().radius.min(px(8.)),
+            size: self.size,
         };
 
         v_flex()

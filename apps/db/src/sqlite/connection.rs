@@ -16,14 +16,14 @@ use crate::executor::{
 use crate::types::{SqlValue};
 
 pub struct SqliteDbConnection {
-    config: Option<DbConnectionConfig>,
+    config: DbConnectionConfig,
     connection: Arc<Mutex<Option<SqliteConnection>>>,
 }
 
 impl SqliteDbConnection {
     pub fn new(config: DbConnectionConfig) -> Self {
         Self {
-            config: Some(config),
+            config,
             connection: Arc::new(Mutex::new(None)),
         }
     }
@@ -108,15 +108,20 @@ impl SqliteDbConnection {
 
 #[async_trait]
 impl DbConnection for SqliteDbConnection {
-    fn config(&self) -> Option<DbConnectionConfig> {
-        self.config.clone()
+    fn config(&self) -> &DbConnectionConfig {
+        &self.config
+    }
+
+    fn set_config_database(&mut self, database: Option<String>) {
+        self.config.database = database;
+    }
+
+    fn supports_database_switch(&self) -> bool {
+        false
     }
 
     async fn connect(&mut self) -> Result<(), DbError> {
-        let config = self
-            .config
-            .as_ref()
-            .ok_or_else(|| DbError::ConnectionError("No configuration provided".to_string()))?;
+        let config = &self.config;
 
         // SQLite uses `host` field as the database file path
         let database_path = if !config.host.is_empty() {
@@ -139,6 +144,12 @@ impl DbConnection for SqliteDbConnection {
         }
 
         Ok(())
+    }
+
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        // SQLite doesn't have a "current database" concept like other DBs
+        // Return the database file path from config
+        Ok(self.config.database.clone())
     }
 
     async fn disconnect(&mut self) -> Result<(), DbError> {
@@ -615,5 +626,13 @@ impl DbConnection for SqliteDbConnection {
         }
 
         Ok(())
+    }
+
+    async fn switch_database(&self, _database: &str) -> Result<(), DbError> {
+        // SQLite doesn't support switching databases - each database is a separate file
+        // The connection must be recreated to connect to a different database file
+        Err(DbError::QueryError(
+            "SQLite does not support switching databases. Each database is a separate file connection.".to_string()
+        ))
     }
 }

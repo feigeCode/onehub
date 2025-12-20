@@ -8,7 +8,7 @@ use gpui_component::{
     tab::{Tab, TabBar},
     v_flex, ActiveTheme, IconName, Sizable, Size,
 };
-use one_core::storage::{DatabaseType, DbConnectionConfig, StoredConnection, Workspace};
+use one_core::storage::{get_config_dir, DatabaseType, DbConnectionConfig, StoredConnection, Workspace};
 
 /// Workspace select item for dropdown
 #[derive(Clone, Debug)]
@@ -269,12 +269,45 @@ impl DbFormConfig {
         }
     }
 
+    /// ClickHouse form configuration
+    pub fn clickhouse() -> Self {
+        Self {
+            db_type: DatabaseType::ClickHouse,
+            title: "新建连接 (ClickHouse)".to_string(),
+            tab_groups: vec![
+                TabGroup::new("general", "常规").fields(vec![
+                    FormField::new("name", "连接名称", FormFieldType::Text)
+                        .placeholder("My ClickHouse Database")
+                        .default("Local ClickHouse"),
+                    FormField::new("host", "主机", FormFieldType::Text)
+                        .placeholder("localhost")
+                        .default("localhost"),
+                    FormField::new("port", "端口", FormFieldType::Number)
+                        .placeholder("9000")
+                        .default("9000"),
+                    FormField::new("username", "用户名", FormFieldType::Text)
+                        .placeholder("default")
+                        .default("default"),
+                    FormField::new("password", "密码", FormFieldType::Password)
+                        .placeholder("Enter password"),
+                    FormField::new("database", "数据库", FormFieldType::Text)
+                        .optional()
+                        .placeholder("database name (optional)"),
+                ]),
+                TabGroup::new("advanced", "高级"),
+                TabGroup::new("ssl", "SSL"),
+                TabGroup::new("ssh", "SSH"),
+                TabGroup::new("notes", "备注"),
+            ],
+        }
+    }
+
     /// SQLite form configuration
     pub fn sqlite() -> Self {
         // Get default database path in user's home directory
-        let default_db_path = dirs::home_dir()
+        let default_db_path = get_config_dir()
             .map(|p| p.join("onehub_default.db").to_string_lossy().to_string())
-            .unwrap_or_else(|| "onehub_default.db".to_string());
+            .unwrap_or_else(|_| "onehub_default.db".to_string());
 
         Self {
             db_type: DatabaseType::SQLite,

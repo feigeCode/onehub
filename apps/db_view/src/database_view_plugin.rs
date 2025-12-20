@@ -9,6 +9,8 @@ use crate::mysql::mysql_view_plugin::MySqlDatabaseViewPlugin;
 use crate::postgresql::postgresql_view_plugin::PostgreSqlDatabaseViewPlugin;
 use crate::mssql::mssql_view_plugin::MsSqlDatabaseViewPlugin;
 use crate::oracle::oracle_view_plugin::OracleDatabaseViewPlugin;
+use crate::clickhouse::clickhouse_view_plugin::ClickHouseDatabaseViewPlugin;
+use crate::sqlite::sqlite_view_plugin::SqliteDatabaseViewPlugin;
 
 /// 表设计器 UI 配置能力
 #[derive(Clone, Debug)]
@@ -156,6 +158,8 @@ impl DatabaseViewPluginRegistry {
         registry.register(PostgreSqlDatabaseViewPlugin::new());
         registry.register(MsSqlDatabaseViewPlugin::new());
         registry.register(OracleDatabaseViewPlugin::new());
+        registry.register(ClickHouseDatabaseViewPlugin::new());
+        registry.register(SqliteDatabaseViewPlugin::new());
 
         registry
     }

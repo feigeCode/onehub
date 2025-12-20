@@ -45,10 +45,22 @@ pub enum DatabaseType {
     PostgreSQL,
     SQLite,
     MSSQL,
-    Oracle
+    Oracle,
+    ClickHouse,
 }
 
 impl DatabaseType {
+    pub fn all() -> &'static [DatabaseType] {
+        &[
+            DatabaseType::MySQL,
+            DatabaseType::PostgreSQL,
+            DatabaseType::SQLite,
+            DatabaseType::MSSQL,
+            DatabaseType::Oracle,
+            DatabaseType::ClickHouse,
+        ]
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             DatabaseType::MySQL => "MySQL",
@@ -56,6 +68,7 @@ impl DatabaseType {
             DatabaseType::SQLite => "SQLite",
             DatabaseType::MSSQL => "MSSQL",
             DatabaseType::Oracle => "Oracle",
+            DatabaseType::ClickHouse => "ClickHouse",
         }
     }
 
@@ -66,6 +79,7 @@ impl DatabaseType {
             "SQLite" => Some(DatabaseType::SQLite),
             "MSSQL" => Some(DatabaseType::MSSQL),
             "Oracle" => Some(DatabaseType::Oracle),
+            "ClickHouse" => Some(DatabaseType::ClickHouse),
             _ => None,
         }
     }
@@ -77,6 +91,7 @@ impl DatabaseType {
             DatabaseType::SQLite => IconName::SQLiteColor.color().with_size(Large),
             DatabaseType::MSSQL => IconName::MSSQLColor.color().with_size(Large),
             DatabaseType::Oracle => IconName::OracleColor.color().with_size(Large),
+            DatabaseType::ClickHouse => IconName::ClickHouseColor.color().with_size(Large),
         }
     }
     pub fn as_node_icon(&self) -> Icon {
@@ -84,8 +99,9 @@ impl DatabaseType {
             DatabaseType::MySQL => IconName::MySQLLineColor.color().with_size(Large),
             DatabaseType::PostgreSQL => IconName::PostgreSQLLineColor.color().with_size(Large),
             DatabaseType::SQLite => IconName::SQLiteLineColor.color().with_size(Large),
-            DatabaseType::MSSQL => IconName::MySQLLineColor.color().with_size(Large),
-            DatabaseType::Oracle => IconName::MySQLLineColor.color().with_size(Large),
+            DatabaseType::MSSQL => IconName::MSSQLLineColor.color().with_size(Large),
+            DatabaseType::Oracle => IconName::OracleLineColor.color().with_size(Large),
+            DatabaseType::ClickHouse => IconName::ClickHouseLineColor.color().with_size(Large),
         }
     }
 }
