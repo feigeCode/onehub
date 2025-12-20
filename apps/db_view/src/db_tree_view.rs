@@ -24,6 +24,7 @@ use tracing::log::{error, info, trace};
 // 3. 当前 crate 导入（按模块分组）
 use db::{GlobalDbState, DbNode, DbNodeType};
 use gpui_component::label::Label;
+use crate::database_view_plugin::DatabaseViewPluginRegistry;
 use one_core::{
     storage::{GlobalStorageState, StoredConnection},
 };
@@ -1454,11 +1455,20 @@ impl Render for DbTreeView {
                                                                 DbNodeType::Database => {
                                                                     let node_id_for_menu = node_id_clone.clone();
 
+                                                                    let capabilities = {
+                                                                        let registry = cx.global::<DatabaseViewPluginRegistry>();
+                                                                        registry.get(&node.database_type)
+                                                                            .map(|p| p.get_node_menu_capabilities())
+                                                                            .unwrap_or_default()
+                                                                    };
+
                                                                     menu = menu
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "新建查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateNewQuery { node_id: n.clone() }))
                                                                         .separator()
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "运行SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::RunSqlFile { node_id: n.clone() }))
-                                                                        .submenu("转储SQL文件", window, cx, {
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "运行SQL文件".to_string(), &view_clone, window, |n| DbTreeViewEvent::RunSqlFile { node_id: n.clone() }));
+
+                                                                    if capabilities.supports_dump_database {
+                                                                        menu = menu.submenu("转储SQL文件", window, cx, {
                                                                             let view_submenu = view_clone.clone();
                                                                             let node_id_submenu = node_id_for_menu.clone();
                                                                             move |menu, window, _cx| {
@@ -1500,12 +1510,20 @@ impl Render for DbTreeView {
                                                                                             }))
                                                                                     )
                                                                             }
-                                                                        })
-                                                                        .separator()
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "编辑数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditDatabase { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "关闭数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseDatabase { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "删除数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteDatabase { node_id: n.clone() }))
-                                                                        .separator()
+                                                                        });
+                                                                    }
+
+                                                                    menu = menu.separator();
+
+                                                                    if capabilities.supports_edit_database {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "编辑数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditDatabase { node_id: n.clone() }));
+                                                                    }
+                                                                    menu = menu.item(Self::create_menu_item(&node_id_for_menu, "关闭数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseDatabase { node_id: n.clone() }));
+                                                                    if capabilities.supports_drop_database {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "删除数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteDatabase { node_id: n.clone() }));
+                                                                    }
+
+                                                                    menu = menu.separator()
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "导入数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::ImportData { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "导出数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::ExportData { node_id: n }))
                                                                         .separator();
@@ -1513,18 +1531,35 @@ impl Render for DbTreeView {
                                                                 DbNodeType::Table => {
                                                                     let node_id_for_menu = node_id_clone.clone();
 
+                                                                    let capabilities = {
+                                                                        let registry = cx.global::<DatabaseViewPluginRegistry>();
+                                                                        registry.get(&node.database_type)
+                                                                            .map(|p| p.get_node_menu_capabilities())
+                                                                            .unwrap_or_default()
+                                                                    };
+
                                                                     menu = menu
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "查看表数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableData { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "编辑表结构".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableStructure { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "设计表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DesignTable { node_id: n.clone() }))
-                                                                        .separator()
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "重命名表".to_string(), &view_clone, window, |n| DbTreeViewEvent::RenameTable { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "清空表".to_string(), &view_clone, window, |n| DbTreeViewEvent::TruncateTable { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "删除表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteTable { node_id: n.clone() }))
-                                                                        .separator()
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "导入数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::ImportData { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "导出表".to_string(), &view_clone, window, |n| DbTreeViewEvent::ExportData { node_id: n }))
                                                                         .separator();
+
+                                                                    if capabilities.supports_rename_table {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "重命名表".to_string(), &view_clone, window, |n| DbTreeViewEvent::RenameTable { node_id: n.clone() }));
+                                                                    }
+                                                                    if capabilities.supports_truncate_table {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "清空表".to_string(), &view_clone, window, |n| DbTreeViewEvent::TruncateTable { node_id: n.clone() }));
+                                                                    }
+                                                                    menu = menu.item(Self::create_menu_item(&node_id_for_menu, "删除表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteTable { node_id: n.clone() }))
+                                                                        .separator();
+
+                                                                    if capabilities.supports_table_import {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "导入数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::ImportData { node_id: n.clone() }));
+                                                                    }
+                                                                    if capabilities.supports_table_export {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "导出表".to_string(), &view_clone, window, |n| DbTreeViewEvent::ExportData { node_id: n }));
+                                                                    }
+                                                                    menu = menu.separator();
                                                                 }
                                                                 DbNodeType::View => {
                                                                     let node_id_for_menu = node_id_clone.clone();

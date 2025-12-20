@@ -22,6 +22,7 @@ use db::types::{
     IndexInfo, TableDesign, TableOptions,
 };
 use db::GlobalDbState;
+use crate::database_view_plugin::DatabaseViewPluginRegistry;
 use one_core::storage::DatabaseType;
 use one_core::tab_container::{TabContent, TabContentType};
 
@@ -99,13 +100,24 @@ impl TableDesigner {
             InputState::new(window, cx).placeholder("自增起始值")
         });
 
-        let engines = vec![
-            EngineSelectItem { name: "InnoDB".to_string() },
-            EngineSelectItem { name: "MyISAM".to_string() },
-            EngineSelectItem { name: "MEMORY".to_string() },
-        ];
+        let engines: Vec<EngineSelectItem> = {
+            let registry = cx.global::<DatabaseViewPluginRegistry>();
+            if let Some(view_plugin) = registry.get(&config.database_type) {
+                view_plugin.get_engines()
+                    .into_iter()
+                    .map(|name| EngineSelectItem { name })
+                    .collect()
+            } else {
+                vec![]
+            }
+        };
+
         let engine_select = cx.new(|cx| {
-            SelectState::new(engines, Some(IndexPath::new(0)), window, cx)
+            if engines.is_empty() {
+                SelectState::new(vec![], None, window, cx)
+            } else {
+                SelectState::new(engines, Some(IndexPath::new(0)), window, cx)
+            }
         });
 
         let charsets = Self::get_charsets(&config.database_type, cx);
@@ -545,38 +557,52 @@ impl TableDesigner {
     }
 
     fn render_options(&self, cx: &Context<Self>) -> AnyElement {
+        let registry = cx.global::<DatabaseViewPluginRegistry>();
+        let capabilities = registry
+            .get(&self.config.database_type)
+            .map(|plugin| plugin.get_table_designer_capabilities())
+            .unwrap_or_default();
+
         v_flex()
             .size_full()
             .p_4()
             .gap_4()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("引擎"))
-                    .child(Select::new(&self.engine_select).w(px(200.)).small())
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("字符集"))
-                    .child(Select::new(&self.charset_select).w(px(200.)).small())
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("排序规则"))
-                    .child(Select::new(&self.collation_select).w(px(200.)).small())
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("自增起始值"))
-                    .child(Input::new(&self.auto_increment_input).w(px(200.)).small())
-            )
+            .when(capabilities.supports_engine, |this| {
+                this.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("引擎"))
+                        .child(Select::new(&self.engine_select).w(px(200.)).small())
+                )
+            })
+            .when(capabilities.supports_charset, |this| {
+                this.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("字符集"))
+                        .child(Select::new(&self.charset_select).w(px(200.)).small())
+                )
+            })
+            .when(capabilities.supports_collation, |this| {
+                this.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("排序规则"))
+                        .child(Select::new(&self.collation_select).w(px(200.)).small())
+                )
+            })
+            .when(capabilities.supports_auto_increment, |this| {
+                this.child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("自增起始值"))
+                        .child(Input::new(&self.auto_increment_input).w(px(200.)).small())
+                )
+            })
             .into_any_element()
     }
 

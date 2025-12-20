@@ -3,24 +3,23 @@ use one_core::storage::DatabaseType;
 use crate::common::DatabaseEditorView;
 use crate::database_view_plugin::{DatabaseViewPlugin, TableDesignerCapabilities, NodeMenuCapabilities};
 use crate::db_connection_form::{DbConnectionForm, DbFormConfig};
-use crate::mysql::database_form::MySqlDatabaseForm;
+use crate::postgresql::database_form::PostgreSqlDatabaseForm;
 
-/// MySQL 数据库视图插件
-pub struct MySqlDatabaseViewPlugin;
+pub struct PostgreSqlDatabaseViewPlugin;
 
-impl MySqlDatabaseViewPlugin {
+impl PostgreSqlDatabaseViewPlugin {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl DatabaseViewPlugin for MySqlDatabaseViewPlugin {
+impl DatabaseViewPlugin for PostgreSqlDatabaseViewPlugin {
     fn database_type(&self) -> DatabaseType {
-        DatabaseType::MySQL
+        DatabaseType::PostgreSQL
     }
 
     fn create_connection_form(&self, window: &mut Window, cx: &mut App) -> Entity<DbConnectionForm> {
-        cx.new(|cx| DbConnectionForm::new(DbFormConfig::mysql(), window, cx))
+        cx.new(|cx| DbConnectionForm::new(DbFormConfig::postgres(), window, cx))
     }
 
     fn create_database_editor_view(
@@ -30,8 +29,8 @@ impl DatabaseViewPlugin for MySqlDatabaseViewPlugin {
         cx: &mut App,
     ) -> Entity<DatabaseEditorView> {
         cx.new(|cx| {
-            let form = cx.new(|cx| MySqlDatabaseForm::new(window, cx));
-            DatabaseEditorView::new(form, DatabaseType::MySQL, false, window, cx)
+            let form = cx.new(|cx| PostgreSqlDatabaseForm::new(window, cx));
+            DatabaseEditorView::new(form, DatabaseType::PostgreSQL, false, window, cx)
         })
     }
 
@@ -43,31 +42,23 @@ impl DatabaseViewPlugin for MySqlDatabaseViewPlugin {
         cx: &mut App,
     ) -> Entity<DatabaseEditorView> {
         cx.new(|cx| {
-            let form = cx.new(|cx| MySqlDatabaseForm::new_for_edit(&database_name, window, cx));
-            DatabaseEditorView::new(form, DatabaseType::MySQL, true, window, cx)
+            let form = cx.new(|cx| PostgreSqlDatabaseForm::new_for_edit(&database_name, window, cx));
+            DatabaseEditorView::new(form, DatabaseType::PostgreSQL, true, window, cx)
         })
     }
 
     fn get_table_designer_capabilities(&self) -> TableDesignerCapabilities {
         TableDesignerCapabilities {
-            supports_engine: true,
+            supports_engine: false,
             supports_charset: true,
             supports_collation: true,
-            supports_auto_increment: true,
-            supports_tablespace: false,
+            supports_auto_increment: false,
+            supports_tablespace: true,
         }
     }
 
     fn get_engines(&self) -> Vec<String> {
-        vec![
-            "InnoDB".to_string(),
-            "MyISAM".to_string(),
-            "MEMORY".to_string(),
-            "CSV".to_string(),
-            "ARCHIVE".to_string(),
-            "BLACKHOLE".to_string(),
-            "FEDERATED".to_string(),
-        ]
+        vec![]
     }
 
     fn get_node_menu_capabilities(&self) -> NodeMenuCapabilities {
@@ -82,7 +73,7 @@ impl DatabaseViewPlugin for MySqlDatabaseViewPlugin {
             supports_dump_database: true,
             supports_create_view: true,
             supports_edit_view: true,
-            supports_sequences: false,
+            supports_sequences: true,
             supports_triggers: true,
             supports_stored_procedures: true,
             supports_functions: true,

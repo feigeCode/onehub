@@ -6,6 +6,95 @@ use one_core::storage::DatabaseType;
 use crate::common::DatabaseEditorView;
 use crate::db_connection_form::DbConnectionForm;
 use crate::mysql::mysql_view_plugin::MySqlDatabaseViewPlugin;
+use crate::postgresql::postgresql_view_plugin::PostgreSqlDatabaseViewPlugin;
+
+/// 表设计器 UI 配置能力
+#[derive(Clone, Debug)]
+pub struct TableDesignerCapabilities {
+    /// 是否支持存储引擎选择（MySQL: InnoDB/MyISAM）
+    pub supports_engine: bool,
+    /// 是否支持字符集选择
+    pub supports_charset: bool,
+    /// 是否支持排序规则选择
+    pub supports_collation: bool,
+    /// 是否支持自增起始值设置
+    pub supports_auto_increment: bool,
+    /// 是否支持表空间（PostgreSQL）
+    pub supports_tablespace: bool,
+}
+
+impl Default for TableDesignerCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_engine: false,
+            supports_charset: false,
+            supports_collation: false,
+            supports_auto_increment: false,
+            supports_tablespace: false,
+        }
+    }
+}
+
+/// 节点右键菜单能力配置
+#[derive(Clone, Debug)]
+pub struct NodeMenuCapabilities {
+    // === Table 节点菜单项 ===
+    /// 是否支持 TRUNCATE TABLE（清空表）
+    pub supports_truncate_table: bool,
+    /// 是否支持重命名表
+    pub supports_rename_table: bool,
+    /// 是否支持导入数据
+    pub supports_table_import: bool,
+    /// 是否支持导出数据
+    pub supports_table_export: bool,
+
+    // === Database 节点菜单项 ===
+    /// 是否支持新建数据库
+    pub supports_create_database: bool,
+    /// 是否支持编辑数据库属性
+    pub supports_edit_database: bool,
+    /// 是否支持删除数据库
+    pub supports_drop_database: bool,
+    /// 是否支持转储数据库（导出 SQL）
+    pub supports_dump_database: bool,
+
+    // === View 节点菜单项 ===
+    /// 是否支持新建视图
+    pub supports_create_view: bool,
+    /// 是否支持编辑视图
+    pub supports_edit_view: bool,
+
+    // === 其他功能 ===
+    /// 是否支持序列（PostgreSQL 特有）
+    pub supports_sequences: bool,
+    /// 是否支持触发器
+    pub supports_triggers: bool,
+    /// 是否支持存储过程
+    pub supports_stored_procedures: bool,
+    /// 是否支持函数
+    pub supports_functions: bool,
+}
+
+impl Default for NodeMenuCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_truncate_table: false,
+            supports_rename_table: false,
+            supports_table_import: false,
+            supports_table_export: false,
+            supports_create_database: false,
+            supports_edit_database: false,
+            supports_drop_database: false,
+            supports_dump_database: false,
+            supports_create_view: false,
+            supports_edit_view: false,
+            supports_sequences: false,
+            supports_triggers: false,
+            supports_stored_procedures: false,
+            supports_functions: false,
+        }
+    }
+}
 
 /// 数据库视图插件接口
 /// 每种数据库类型实现此 trait 来提供特定的 UI 组件
@@ -31,6 +120,21 @@ pub trait DatabaseViewPlugin: Send + Sync {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<DatabaseEditorView>;
+
+    /// 获取表设计器 UI 配置能力
+    fn get_table_designer_capabilities(&self) -> TableDesignerCapabilities {
+        TableDesignerCapabilities::default()
+    }
+
+    /// 获取存储引擎列表（用于表设计器下拉框）
+    fn get_engines(&self) -> Vec<String> {
+        vec![]
+    }
+
+    /// 获取节点右键菜单能力配置
+    fn get_node_menu_capabilities(&self) -> NodeMenuCapabilities {
+        NodeMenuCapabilities::default()
+    }
 }
 
 pub type DatabaseViewPluginRef = Arc<dyn DatabaseViewPlugin>;
@@ -47,6 +151,7 @@ impl DatabaseViewPluginRegistry {
         };
 
         registry.register(MySqlDatabaseViewPlugin::new());
+        registry.register(PostgreSqlDatabaseViewPlugin::new());
 
         registry
     }
