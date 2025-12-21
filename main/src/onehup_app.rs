@@ -21,11 +21,11 @@ pub fn init(cx: &mut App) {
         .with(tracing_subscriber::fmt::layer())
         .with(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("gpui_component=trace".parse().unwrap()),
+                .add_directive("gpui_component=trace".parse().expect("固定的日志指令解析不应失败")),
         )
         .init();
     let http_client = std::sync::Arc::new(
-        ReqwestClient::user_agent("one-hub").unwrap(),
+        ReqwestClient::user_agent("one-hub").expect("HTTP 客户端初始化失败"),
     );
     cx.set_http_client(http_client);
     gpui_component::init(cx);

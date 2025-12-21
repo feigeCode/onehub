@@ -21,7 +21,7 @@ fn get_registry() -> &'static StdRwLock<HashMap<ProviderType, ProviderFactoryFn>
 /// Register a provider factory
 pub fn register_provider(provider_type: ProviderType, factory: ProviderFactoryFn) {
     let registry = get_registry();
-    let mut map = registry.write().unwrap();
+    let mut map = registry.write().expect("Provider registry lock poisoned");
     map.insert(provider_type, factory);
 }
 
@@ -31,7 +31,7 @@ pub struct ProviderFactory;
 impl ProviderFactory {
     pub fn create_provider(config: ProviderConfig, client: Arc<dyn HttpClient>) -> Result<Box<dyn LlmProvider>> {
         let registry = get_registry();
-        let map = registry.read().unwrap();
+        let map = registry.read().expect("Provider registry lock poisoned");
 
         if let Some(factory) = map.get(&config.provider_type) {
             Ok(factory(config, client))
@@ -43,14 +43,14 @@ impl ProviderFactory {
     /// Check if a provider type is registered
     pub fn is_registered(provider_type: ProviderType) -> bool {
         let registry = get_registry();
-        let map = registry.read().unwrap();
+        let map = registry.read().expect("Provider registry lock poisoned");
         map.contains_key(&provider_type)
     }
 
     /// List all registered provider types
     pub fn registered_types() -> Vec<ProviderType> {
         let registry = get_registry();
-        let map = registry.read().unwrap();
+        let map = registry.read().expect("Provider registry lock poisoned");
         map.keys().cloned().collect()
     }
 }
