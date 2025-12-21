@@ -5,14 +5,13 @@ use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, Context, ElementId, E
 use gpui::prelude::FluentBuilder;
 use gpui_component::{button::{Button, ButtonVariants as _}, h_flex, input::{Input, InputEvent, InputState}, menu::PopupMenuItem, v_flex, ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt, Sizable, Size, ThemeMode, WindowExt};
 
-use one_core::storage::{ConnectionRepository, ConnectionType, DatabaseType, DbConnectionConfig, GlobalStorageState, StoredConnection, Workspace, WorkspaceRepository};
+use one_core::storage::{ConnectionRepository, ConnectionType, DatabaseType, GlobalStorageState, StoredConnection, Workspace, WorkspaceRepository};
 use one_core::storage::traits::Repository;
 use one_core::tab_container::{TabContainer, TabContent, TabContentType, TabItem};
 use one_core::themes::SwitchThemeMode;
 use db_view::ai_chat_panel::AiChatPanel;
 use db_view::database_tab::DatabaseTabContent;
 use db_view::database_view_plugin::DatabaseViewPluginRegistry;
-use db_view::db_connection_form::DbConnectionForm;
 use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::DropdownMenu;
