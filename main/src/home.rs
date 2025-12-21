@@ -12,7 +12,7 @@ use one_core::themes::SwitchThemeMode;
 use db_view::ai_chat_panel::AiChatPanel;
 use db_view::database_tab::DatabaseTabContent;
 use db_view::database_view_plugin::DatabaseViewPluginRegistry;
-use db_view::db_connection_form::{DbConnectionForm, DbConnectionFormEvent};
+use db_view::db_connection_form::DbConnectionForm;
 use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::DropdownMenu;
@@ -285,12 +285,10 @@ impl HomePage {
 
         let form = plugin.create_connection_form(window, cx);
 
-        // 设置工作区列表
         form.update(cx, |f, cx| {
             f.set_workspaces(self.workspaces.clone(), window, cx);
         });
 
-        // 如果是编辑模式，加载现有连接数据
         if let Some(editing_id) = self.editing_connection_id {
             if let Some(conn) = self.connections.iter().find(|c| c.id == Some(editing_id)) {
                 form.update(cx, |f, cx| {
@@ -305,40 +303,19 @@ impl HomePage {
         } else {
             format!("新建 {} 连接", db_type.as_str())
         };
-        
+
         let form_clone = form.clone();
         let view = cx.entity().clone();
-
-        // 订阅表单事件
-        cx.subscribe_in(&form, window, move |this, form, event, window, cx| {
-            match event {
-                DbConnectionFormEvent::TestConnection(db_type, config) => {
-                    this.handle_test_connection(form.clone(), *db_type, config.clone(), window, cx);
-                }
-                DbConnectionFormEvent::Save(db_type, config, remark) => {
-                    this.handle_save_connection(*db_type, config.clone(), remark.clone(), window, cx);
-                    window.close_dialog(cx);
-                }
-                DbConnectionFormEvent::Cancel => {
-                    this.editing_connection_id = None;
-                    window.close_dialog(cx);
-                    cx.notify();
-                }
-            }
-        }).detach();
-        
         let title_shared: SharedString = title.into();
         let view_clone = view.clone();
-        let form_for_footer = form.clone();
-        let form_for_test = form.clone();
-        let form_for_save = form.clone();
-        
+
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let view_for_cancel = view_clone.clone();
-            let form_footer = form_for_footer.clone();
-            let form_test = form_for_test.clone();
-            let form_save = form_for_save.clone();
-            
+            let view_for_ok = view_clone.clone();
+            let form_footer = form_clone.clone();
+            let form_test = form_clone.clone();
+            let form_save = form_clone.clone();
+            let form_cancel = form_clone.clone();
             dialog
                 .title(title_shared.clone())
                 .w(px(600.0))
@@ -365,135 +342,80 @@ impl HomePage {
                         ok_btn(window, cx)
                     ]
                 })
-                .on_ok(move |_, _, cx| {
-                    form_save.update(cx, |this, cx| {
-                        this.trigger_save(cx);
-                        cx.notify()
-                    });
-                    true
+                .on_ok(move |_, _window, cx| {
+                    let (stored, is_update) = match form_save.read(cx).build_stored_connection(cx) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            form_save.update(cx, |f, cx| {
+                                f.set_save_error(e, cx);
+                            });
+                            return false;
+                        }
+                    };
+
+                    let storage = cx.global::<GlobalStorageState>().storage.clone();
+                    let view = view_for_ok.clone();
+                    let form = form_save.clone();
+
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let task_result = Tokio::spawn(cx, async move {
+                            let repo = storage.get::<ConnectionRepository>().await
+                                .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
+
+                            let mut stored = stored;
+                            if is_update {
+                                repo.update(&stored).await?;
+                            } else {
+                                repo.insert(&mut stored).await?;
+                            }
+
+                            Ok::<StoredConnection, Error>(stored)
+                        });
+
+                        let task = match task_result {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let _ = form.update(cx, |f, cx| {
+                                    f.set_save_error(format!("启动保存任务失败: {}", e), cx);
+                                });
+                                return;
+                            }
+                        };
+
+                        match task.await {
+                            Ok(_saved_conn) => {
+                                if let Some(window_id) = cx.update(|cx| cx.active_window()).ok().flatten() {
+                                    let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                        window.close_dialog(cx);
+                                        view.update(cx, |v, cx| {
+                                            v.editing_connection_id = None;
+                                            v.load_connections(cx);
+                                            cx.notify();
+                                        });
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = form.update(cx, |f, cx| {
+                                    f.set_save_error(format!("保存连接失败: {}", e), cx);
+                                });
+                            }
+                        }
+                    }).detach();
+
+                    false
                 })
                 .on_cancel(move |_, _, cx| {
                     let _ = view_for_cancel.update(cx, |this, cx| {
                         this.editing_connection_id = None;
                         cx.notify();
                     });
+                    form_cancel.update(cx, |this, cx| {
+                        this.trigger_cancel(cx);
+                    });
                     true
                 })
         });
-    }
-
-    fn handle_test_connection(
-        &mut self,
-        form: Entity<DbConnectionForm>,
-        db_type: DatabaseType,
-        config: DbConnectionConfig,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let global_state = cx.global::<db::GlobalDbState>().clone();
-        cx.spawn(async move |_, cx| {
-            let manager = global_state.db_manager;
-
-            // Test connection and collect result
-            let test_result = async {
-                let db_plugin = manager.get_plugin(&db_type)?;
-                let conn = db_plugin.create_connection(config).await?;
-                conn.ping().await?;
-                Ok::<bool, Error>(true)
-            }.await;
-
-            match test_result {
-                Ok(_) => {
-                    form.update(cx, |form, cx1| {
-                        form.set_test_result(Ok(true), cx1)
-                    })
-                }
-                Err(_) => {
-                    form.update(cx, |form, cx1| {
-                        form.set_test_result(Err("测试连接失败".to_string()), cx1)
-                    })
-                }
-            }
-        }).detach();
-    }
-
-    fn handle_save_connection(
-        &mut self,
-        _db_type: DatabaseType,
-        config: DbConnectionConfig,
-        remark: Option<String>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let editing_id = self.editing_connection_id;
-        let mut stored = if let Some(id) = editing_id {
-            let mut conn = self.connections.iter()
-                .find(|c| c.id == Some(id))
-                .cloned()
-                .unwrap_or_else(|| StoredConnection::from_db_connection(config.clone()));
-            conn.name = config.name.clone();
-            conn.workspace_id = config.workspace_id;
-            conn.remark = remark.clone();
-            conn.params = serde_json::to_string(&DbConnectionConfig {
-                id: "".to_string(),
-                database_type: config.database_type,
-                name: "".to_string(),
-                host: config.host.clone(),
-                port: config.port,
-                username: config.username.clone(),
-                password: config.password.clone(),
-                database: config.database.clone(),
-                workspace_id: config.workspace_id,
-            }).unwrap();
-            conn
-        } else {
-            let mut conn = StoredConnection::from_db_connection(config.clone());
-            conn.remark = remark.clone();
-            conn
-        };
-
-        let storage = cx.global::<GlobalStorageState>().storage.clone();
-
-        let task = Tokio::spawn(cx, async move {
-            let repo = storage.get::<ConnectionRepository>().await
-                .ok_or_else(|| anyhow::anyhow!("ConnectionRepository not found"))?;
-
-            if editing_id.is_some() {
-                repo.update(&mut stored).await?;
-            } else {
-                repo.insert(&mut stored).await?;
-            }
-
-            let result: anyhow::Result<StoredConnection> = Ok(stored);
-            result
-        });
-
-        cx.spawn(async move |this, cx| {
-            let task_result = task.await;
-            match task_result {
-                Ok(result) => match result {
-                    Ok(saved_conn) => {
-                        _ = this.update(cx, |this, cx| {
-                            if let Some(editing_id) = editing_id {
-                                if let Some(pos) = this.connections.iter().position(|c| c.id == Some(editing_id)) {
-                                    this.connections[pos] = saved_conn;
-                                }
-                            } else {
-                                this.connections.push(saved_conn);
-                            }
-                            this.editing_connection_id = None;
-                            cx.notify();
-                        });
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to save connection: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Task join error: {}", e);
-                }
-            }
-        }).detach();
     }
 
     pub fn add_settings_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {

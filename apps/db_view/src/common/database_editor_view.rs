@@ -18,6 +18,7 @@ pub struct DatabaseEditorView {
     sql_preview: Entity<InputState>,
     current_tab: EditorTab,
     is_edit_mode: bool,
+    error_message: Entity<Option<String>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -44,6 +45,7 @@ impl DatabaseEditorView {
                 .multi_line(true)
         });
         let focus_handle = cx.focus_handle();
+        let error_message = cx.new(|_| None);
 
         let is_edit = is_edit_mode;
 
@@ -61,6 +63,7 @@ impl DatabaseEditorView {
             sql_preview,
             current_tab: EditorTab::Form,
             is_edit_mode,
+            error_message,
             _subscriptions: vec![form_subscription],
         }
     }
@@ -86,63 +89,22 @@ impl DatabaseEditorView {
         }
     }
 
-    pub fn trigger_save(
-        &self,
-        connection_id: String,
-        global_state: GlobalDbState,
-        tree_view: Entity<DbTreeView>,
-        cx: &mut Context<Self>,
-    ) {
-        let sql = self.sql_preview.read(cx).text().to_string();
-        let is_edit = self.is_edit_mode;
+    pub fn get_sql(&self, cx: &App) -> String {
+        self.sql_preview.read(cx).text().to_string()
+    }
 
-        cx.spawn(async move |_this, cx: &mut AsyncApp| {
-            let result = global_state.execute_single(
-                cx,
-                connection_id.clone(),
-                sql,
-                None,
-                None,
-            ).await;
+    pub fn set_save_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.error_message.update(cx, |msg, cx| {
+            *msg = Some(error);
+            cx.notify();
+        });
+    }
 
-            match result {
-                Ok(sql_result) => {
-                    let _ = cx.update(|cx| {
-                        match sql_result {
-                            SqlResult::Query(_) => {}
-                            SqlResult::Exec(_) => {
-                                tree_view.update(cx, |tree, cx| {
-                                    tree.refresh_tree(connection_id.clone(), cx);
-                                });
-                                if is_edit {
-                                    Self::show_success_async(cx, "数据库修改成功");
-                                } else {
-                                    Self::show_success_async(cx, "数据库创建成功");
-                                }
-                            }
-                            SqlResult::Error(err) => {
-                                let msg = if is_edit {
-                                    format!("修改数据库失败: {}", err.message)
-                                } else {
-                                    format!("创建数据库失败: {}", err.message)
-                                };
-                                Self::show_error_async(cx, msg);
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    let _ = cx.update(|cx| {
-                        let msg = if is_edit {
-                            format!("修改数据库失败: {}", e)
-                        } else {
-                            format!("创建数据库失败: {}", e)
-                        };
-                        Self::show_error_async(cx, msg);
-                    });
-                }
-            }
-        }).detach();
+    pub fn clear_error(&mut self, cx: &mut Context<Self>) {
+        self.error_message.update(cx, |msg, cx| {
+            *msg = None;
+            cx.notify();
+        });
     }
 
     fn show_success_async(cx: &mut App, message: impl Into<String>) {
@@ -218,7 +180,9 @@ impl Render for DatabaseEditorView {
                 )
         };
 
-        v_flex()
+        let error_msg = self.error_message.read(cx).clone();
+
+        let mut container = v_flex()
             .size_full()
             .child(
                 h_flex()
@@ -239,6 +203,22 @@ impl Render for DatabaseEditorView {
                         }))
                     )
             )
-            .child(main_content)
+            .child(main_content);
+
+        if let Some(msg) = error_msg {
+            container = container.child(
+                div()
+                    .mx_4()
+                    .mb_4()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(gpui::rgb(0xfee2e2))
+                    .text_color(gpui::rgb(0x991b1b))
+                    .child(format!("✗ {}", msg))
+            );
+        }
+
+        container
     }
 }

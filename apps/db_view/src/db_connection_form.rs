@@ -1,4 +1,6 @@
-use gpui::{div, prelude::*, px, App, AppContext, Axis, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, PathPromptOptions, Render, SharedString, Styled, Window};
+use anyhow::Error;
+use db::GlobalDbState;
+use gpui::{div, prelude::*, px, App, AsyncApp, Axis, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, PathPromptOptions, Render, SharedString, Styled, Window};
 use gpui_component::{
     button::{Button, ButtonVariants as _},
     form::{field, v_form},
@@ -8,6 +10,7 @@ use gpui_component::{
     tab::{Tab, TabBar},
     v_flex, ActiveTheme, IconName, Sizable, Size,
 };
+use one_core::gpui_tokio::Tokio;
 use one_core::storage::{get_config_dir, DatabaseType, DbConnectionConfig, StoredConnection, Workspace};
 
 /// Workspace select item for dropdown
@@ -357,25 +360,19 @@ impl DbFormConfig {
     }
 }
 
-pub enum DbConnectionFormEvent {
-    TestConnection(DatabaseType, DbConnectionConfig),
-    Save(DatabaseType, DbConnectionConfig, Option<String>),
-    Cancel,
-}
-
 /// Database connection form modal
 pub struct DbConnectionForm {
     config: DbFormConfig,
     current_db_type: Entity<DatabaseType>,
     focus_handle: FocusHandle,
     active_tab: usize,
-    // Field values stored as Entity<String> for reactivity
     field_values: Vec<(String, Entity<String>)>,
     field_inputs: Vec<Entity<InputState>>,
     is_testing: Entity<bool>,
     test_result: Entity<Option<Result<bool, String>>>,
     workspace_select: Entity<SelectState<Vec<WorkspaceSelectItem>>>,
     pending_file_path: Entity<Option<String>>,
+    editing_connection: Option<StoredConnection>,
 }
 
 impl DbConnectionForm {
@@ -446,6 +443,7 @@ impl DbConnectionForm {
             test_result,
             workspace_select,
             pending_file_path,
+            editing_connection: None,
         }
     }
 
@@ -460,6 +458,7 @@ impl DbConnectionForm {
     }
 
     pub fn load_connection(&mut self, connection: &StoredConnection, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_connection = Some(connection.clone());
         self.set_field_value("name", &connection.name, window, cx);
 
         if let Ok(params) = connection.to_db_connection() {
@@ -567,27 +566,71 @@ impl DbConnectionForm {
             cx.notify();
         });
 
-        cx.emit(DbConnectionFormEvent::TestConnection(db_type, connection));
+        let global_state = cx.global::<GlobalDbState>().clone();
+        let test_result_handle = self.test_result.clone();
+        let is_testing_handle = self.is_testing.clone();
+
+        cx.spawn(async move |_, cx: &mut AsyncApp| {
+            let manager = global_state.db_manager;
+
+            let test_result = Tokio::spawn_result(cx, async move {
+                let db_plugin = manager.get_plugin(&db_type)?;
+                let conn = db_plugin.create_connection(connection).await?;
+                conn.ping().await?;
+                Ok::<bool, Error>(true)
+            });
+
+            let result_msg = match test_result {
+                Ok(_) => Ok(true),
+                Err(_) => Err("测试连接失败".to_string()),
+            };
+
+            let _ = cx.update(|cx| {
+                is_testing_handle.update(cx, |testing, cx| {
+                    *testing = false;
+                    cx.notify();
+                });
+                test_result_handle.update(cx, |result, cx| {
+                    *result = Some(result_msg);
+                    cx.notify();
+                });
+            });
+        }).detach();
     }
 
-    pub fn trigger_save(&mut self, cx: &mut Context<Self>) {
-        if let Err(e) = self.validate(cx) {
-            self.test_result.update(cx, |result, cx| {
-                *result = Some(Err(e));
-                cx.notify();
-            });
-            return;
-        }
+    pub fn build_stored_connection(&self, cx: &App) -> Result<(StoredConnection, bool), String> {
+        self.validate(cx)?;
 
         let connection = self.build_connection(cx);
-        let db_type = *self.current_db_type.read(cx);
         let remark = self.get_field_value("remark", cx);
         let remark_opt = if remark.is_empty() { None } else { Some(remark) };
-        cx.emit(DbConnectionFormEvent::Save(db_type, connection, remark_opt));
+        let is_update = self.editing_connection.is_some();
+
+        let mut stored = match &self.editing_connection {
+            Some(conn) => {
+                let mut c = conn.clone();
+                c.name = connection.name.clone();
+                c.workspace_id = connection.workspace_id;
+                c.params = serde_json::to_string(&connection)
+                    .map_err(|e| format!("序列化连接参数失败: {}", e))?;
+                c
+            }
+            None => StoredConnection::from_db_connection(connection),
+        };
+
+        stored.remark = remark_opt;
+        Ok((stored, is_update))
     }
 
-    pub fn trigger_cancel(&mut self, cx: &mut Context<Self>) {
-        cx.emit(DbConnectionFormEvent::Cancel);
+    pub fn set_save_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.test_result.update(cx, |result, cx| {
+            *result = Some(Err(error));
+            cx.notify();
+        });
+    }
+
+    pub fn trigger_cancel(&mut self, _cx: &mut Context<Self>) {
+        self.editing_connection = None;
     }
 
     pub fn is_testing(&self, cx: &App) -> bool {
@@ -644,8 +687,6 @@ impl DbConnectionForm {
         None
     }
 }
-
-impl EventEmitter<DbConnectionFormEvent> for DbConnectionForm {}
 
 impl Focusable for DbConnectionForm {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {

@@ -2,7 +2,7 @@
 // (无需标准库导入)
 
 // 2. 外部 crate 导入（按字母顺序）
-use db::{DbNode, DbNodeType, GlobalDbState};
+use db::{DbNode, DbNodeType, GlobalDbState, SqlResult};
 use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
 use tracing::log::{error, warn};
 use gpui_component::{
@@ -941,14 +941,62 @@ impl DatabaseEventHandler {
                     vec![cancel(window, cx), ok(window, cx)]
                 })
                 .on_ok(move |_, _window, cx| {
+                    let sql = editor_view_ok.read(cx).get_sql(cx);
+                    if sql.trim().is_empty() {
+                        editor_view_ok.update(cx, |view, cx| {
+                            view.set_save_error("SQL 语句不能为空".to_string(), cx);
+                        });
+                        return false;
+                    }
+
                     let connection_id = connection_id_for_ok.clone();
                     let global_state = global_state_for_ok.clone();
                     let tree_view = tree_view_for_ok.clone();
+                    let editor_view = editor_view_ok.clone();
 
-                    editor_view_ok.update(cx, |view, cx| {
-                        view.trigger_save(connection_id, global_state, tree_view, cx);
-                    });
-                    true
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = global_state.execute_single(
+                            cx,
+                            connection_id.clone(),
+                            sql,
+                            None,
+                            None,
+                        ).await;
+
+                        match result {
+                            Ok(sql_result) => {
+                                match sql_result {
+                                    SqlResult::Query(_) => {}
+                                    SqlResult::Exec(_) => {
+                                        if let Some(window_id) = cx.update(|cx| cx.active_window()).ok().flatten() {
+                                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                                window.close_dialog(cx);
+                                                tree_view.update(cx, |tree, cx| {
+                                                    tree.refresh_tree(connection_id.clone(), cx);
+                                                });
+                                                window.push_notification(
+                                                    Notification::success("数据库创建成功").autohide(true),
+                                                    cx
+                                                );
+                                            });
+                                        }
+                                    }
+                                    SqlResult::Error(err) => {
+                                        let _ = editor_view.update(cx, |view, cx| {
+                                            view.set_save_error(format!("创建数据库失败: {}", err.message), cx);
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = editor_view.update(cx, |view, cx| {
+                                    view.set_save_error(format!("创建数据库失败: {}", e), cx);
+                                });
+                            }
+                        }
+                    }).detach();
+
+                    false
                 })
                 .on_cancel(|_, _window, _cx| true)
         });
@@ -1001,14 +1049,62 @@ impl DatabaseEventHandler {
                     vec![cancel(window, cx), ok(window, cx)]
                 })
                 .on_ok(move |_, _window, cx| {
+                    let sql = editor_view_ok.read(cx).get_sql(cx);
+                    if sql.trim().is_empty() {
+                        editor_view_ok.update(cx, |view, cx| {
+                            view.set_save_error("SQL 语句不能为空".to_string(), cx);
+                        });
+                        return false;
+                    }
+
                     let connection_id = connection_id_for_ok.clone();
                     let global_state = global_state_for_ok.clone();
                     let tree_view = tree_view_for_ok.clone();
+                    let editor_view = editor_view_ok.clone();
 
-                    editor_view_ok.update(cx, |view, cx| {
-                        view.trigger_save(connection_id, global_state, tree_view, cx);
-                    });
-                    true
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = global_state.execute_single(
+                            cx,
+                            connection_id.clone(),
+                            sql,
+                            None,
+                            None,
+                        ).await;
+
+                        match result {
+                            Ok(sql_result) => {
+                                match sql_result {
+                                    SqlResult::Query(_) => {}
+                                    SqlResult::Exec(_) => {
+                                        if let Some(window_id) = cx.update(|cx| cx.active_window()).ok().flatten() {
+                                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                                window.close_dialog(cx);
+                                                tree_view.update(cx, |tree, cx| {
+                                                    tree.refresh_tree(connection_id.clone(), cx);
+                                                });
+                                                window.push_notification(
+                                                    Notification::success("数据库修改成功").autohide(true),
+                                                    cx
+                                                );
+                                            });
+                                        }
+                                    }
+                                    SqlResult::Error(err) => {
+                                        let _ = editor_view.update(cx, |view, cx| {
+                                            view.set_save_error(format!("修改数据库失败: {}", err.message), cx);
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = editor_view.update(cx, |view, cx| {
+                                    view.set_save_error(format!("修改数据库失败: {}", e), cx);
+                                });
+                            }
+                        }
+                    }).detach();
+
+                    false
                 })
                 .on_cancel(|_, _window, _cx| true)
         });
