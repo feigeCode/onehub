@@ -324,16 +324,16 @@ impl RenderOnce for Field {
                                                 }
                                             })
                                             .gap_1()
-                                            .child(
-                                                div()
-                                                    .overflow_x_hidden()
-                                                    .child(builder.render(window, cx)),
-                                            )
                                             .when(self.required, |this| {
                                                 this.child(
                                                     div().text_color(cx.theme().danger).child("*"),
                                                 )
-                                            }),
+                                            })
+                                            .child(
+                                                div()
+                                                    .overflow_x_hidden()
+                                                    .child(builder.render(window, cx)),
+                                            ),
                                     )
                                 }),
                         )

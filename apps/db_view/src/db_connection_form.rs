@@ -89,6 +89,7 @@ pub enum FormFieldType {
     Text,
     Number,
     Password,
+    TextArea,
 }
 
 impl FormField {
@@ -162,7 +163,12 @@ impl DbFormConfig {
                 TabGroup::new("advanced", "高级"),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
-                TabGroup::new("notes", "备注"),
+                TabGroup::new("notes", "备注").fields(vec![
+                    FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .optional()
+                        .placeholder("输入连接备注信息...")
+                        .default(""),
+                ]),
             ],
         }
     }
@@ -195,7 +201,12 @@ impl DbFormConfig {
                 TabGroup::new("advanced", "高级"),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
-                TabGroup::new("notes", "备注"),
+                TabGroup::new("notes", "备注").fields(vec![
+                    FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .optional()
+                        .placeholder("输入连接备注信息...")
+                        .default(""),
+                ]),
             ],
         }
     }
@@ -228,7 +239,12 @@ impl DbFormConfig {
                 TabGroup::new("advanced", "高级"),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
-                TabGroup::new("notes", "备注"),
+                TabGroup::new("notes", "备注").fields(vec![
+                    FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .optional()
+                        .placeholder("输入连接备注信息...")
+                        .default(""),
+                ]),
             ],
         }
     }
@@ -264,7 +280,12 @@ impl DbFormConfig {
                 TabGroup::new("advanced", "高级"),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
-                TabGroup::new("notes", "备注"),
+                TabGroup::new("notes", "备注").fields(vec![
+                    FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .optional()
+                        .placeholder("输入连接备注信息...")
+                        .default(""),
+                ]),
             ],
         }
     }
@@ -297,14 +318,18 @@ impl DbFormConfig {
                 TabGroup::new("advanced", "高级"),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
-                TabGroup::new("notes", "备注"),
+                TabGroup::new("notes", "备注").fields(vec![
+                    FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .optional()
+                        .placeholder("输入连接备注信息...")
+                        .default(""),
+                ]),
             ],
         }
     }
 
     /// SQLite form configuration
     pub fn sqlite() -> Self {
-        // Get default database path in user's home directory
         let default_db_path = get_config_dir()
             .map(|p| p.join("onehub_default.db").to_string_lossy().to_string())
             .unwrap_or_else(|_| "onehub_default.db".to_string());
@@ -321,7 +346,12 @@ impl DbFormConfig {
                         .placeholder("/path/to/database.db")
                         .default(default_db_path),
                 ]),
-                TabGroup::new("notes", "备注"),
+                TabGroup::new("notes", "备注").fields(vec![
+                    FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .optional()
+                        .placeholder("输入连接备注信息...")
+                        .default(""),
+                ]),
             ],
         }
     }
@@ -329,7 +359,7 @@ impl DbFormConfig {
 
 pub enum DbConnectionFormEvent {
     TestConnection(DatabaseType, DbConnectionConfig),
-    Save(DatabaseType, DbConnectionConfig),
+    Save(DatabaseType, DbConnectionConfig, Option<String>),
     Cancel,
 }
 
@@ -366,9 +396,12 @@ impl DbConnectionForm {
                     let mut input_state = InputState::new(window, cx)
                         .placeholder(&field.placeholder);
 
-                    // Set password mode if needed
                     if field.field_type == FormFieldType::Password {
                         input_state = input_state.masked(true);
+                    }
+
+                    if field.field_type == FormFieldType::TextArea {
+                        input_state = input_state.auto_grow(5, 15);
                     }
 
                     input_state.set_value(field.default_value.clone(), window, cx);
@@ -427,10 +460,8 @@ impl DbConnectionForm {
     }
 
     pub fn load_connection(&mut self, connection: &StoredConnection, window: &mut Window, cx: &mut Context<Self>) {
-        // Update form values from connection
         self.set_field_value("name", &connection.name, window, cx);
-        
-        // Parse database params
+
         if let Ok(params) = connection.to_db_connection() {
             self.set_field_value("host", &params.host, window, cx);
             self.set_field_value("port", &params.port.to_string(), window, cx);
@@ -440,7 +471,11 @@ impl DbConnectionForm {
                 self.set_field_value("database", db, window, cx);
             }
         }
-        
+
+        if let Some(remark) = &connection.remark {
+            self.set_field_value("remark", remark, window, cx);
+        }
+
         if let Some(ws_id) = connection.workspace_id {
             self.workspace_select.update(cx, |select, cx| {
                 select.set_selected_value(&Some(ws_id), window, cx);
@@ -546,7 +581,9 @@ impl DbConnectionForm {
 
         let connection = self.build_connection(cx);
         let db_type = *self.current_db_type.read(cx);
-        cx.emit(DbConnectionFormEvent::Save(db_type, connection));
+        let remark = self.get_field_value("remark", cx);
+        let remark_opt = if remark.is_empty() { None } else { Some(remark) };
+        cx.emit(DbConnectionFormEvent::Save(db_type, connection, remark_opt));
     }
 
     pub fn trigger_cancel(&mut self, cx: &mut Context<Self>) {
@@ -681,7 +718,7 @@ impl Render for DbConnectionForm {
                         this.child(
                             v_form()
                                 .layout(Axis::Horizontal)
-                                .with_size(Size::Small)
+                                .with_size(Size::Medium)
                                 .columns(1)
                                 .label_width(px(100.))
                                 .children(
@@ -691,11 +728,13 @@ impl Render for DbConnectionForm {
                                         .map(|(i, field_info)| {
                                             let input_idx = field_input_offset + i;
                                             let is_sqlite_path = db_type == DatabaseType::SQLite && field_info.name == "host";
+                                            let is_textarea = field_info.field_type == FormFieldType::TextArea;
 
                                             field()
                                                 .label(field_info.label.clone())
                                                 .required(field_info.required)
-                                                .items_center()
+                                                .when(!is_textarea, |f| f.items_center())
+                                                .when(is_textarea, |f| f.items_start())
                                                 .label_justify_end()
                                                 .child(
                                                     h_flex()

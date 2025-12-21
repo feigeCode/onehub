@@ -164,7 +164,7 @@ impl ConnectionType {
 
     pub fn icon(&self) -> IconName {
         match self {
-            ConnectionType::All => IconName::All,
+            ConnectionType::All => IconName::AppsColor,
             ConnectionType::Database => IconName::Database,
             ConnectionType::SshSftp => IconName::Terminal,
             ConnectionType::Redis => IconName::Redis,
@@ -230,6 +230,8 @@ pub struct StoredConnection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected_databases: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub remark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<i64>,
@@ -258,6 +260,7 @@ impl StoredConnection {
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
             selected_databases: None,
+            remark: None,
             created_at: None,
             updated_at: None,
         }
@@ -271,6 +274,7 @@ impl StoredConnection {
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
             selected_databases: None,
+            remark: None,
             created_at: None,
             updated_at: None,
         }
@@ -284,6 +288,7 @@ impl StoredConnection {
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
             selected_databases: None,
+            remark: None,
             created_at: None,
             updated_at: None,
         }
@@ -297,6 +302,7 @@ impl StoredConnection {
             params: serde_json::to_string(&params).unwrap(),
             workspace_id,
             selected_databases: None,
+            remark: None,
             created_at: None,
             updated_at: None,
         }

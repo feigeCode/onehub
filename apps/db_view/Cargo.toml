@@ -10,6 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+chrono.workspace = true
 once_cell = "1.21"
 tracing.workspace = true
 hex = "0.4"

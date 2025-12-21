@@ -315,8 +315,8 @@ impl HomePage {
                 DbConnectionFormEvent::TestConnection(db_type, config) => {
                     this.handle_test_connection(form.clone(), *db_type, config.clone(), window, cx);
                 }
-                DbConnectionFormEvent::Save(db_type, config) => {
-                    this.handle_save_connection(*db_type, config.clone(), window, cx);
+                DbConnectionFormEvent::Save(db_type, config, remark) => {
+                    this.handle_save_connection(*db_type, config.clone(), remark.clone(), window, cx);
                     window.close_dialog(cx);
                 }
                 DbConnectionFormEvent::Cancel => {
@@ -421,18 +421,19 @@ impl HomePage {
         &mut self,
         _db_type: DatabaseType,
         config: DbConnectionConfig,
+        remark: Option<String>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let editing_id = self.editing_connection_id;
         let mut stored = if let Some(id) = editing_id {
-            // 编辑模式：从现有连接更新
             let mut conn = self.connections.iter()
                 .find(|c| c.id == Some(id))
                 .cloned()
-                .unwrap_or_else(|| StoredConnection::from_db_connection(config.clone(), ));
+                .unwrap_or_else(|| StoredConnection::from_db_connection(config.clone()));
             conn.name = config.name.clone();
             conn.workspace_id = config.workspace_id;
+            conn.remark = remark.clone();
             conn.params = serde_json::to_string(&DbConnectionConfig {
                 id: "".to_string(),
                 database_type: config.database_type,
@@ -446,8 +447,9 @@ impl HomePage {
             }).unwrap();
             conn
         } else {
-            // 新建模式
-            StoredConnection::from_db_connection(config.clone())
+            let mut conn = StoredConnection::from_db_connection(config.clone());
+            conn.remark = remark.clone();
+            conn
         };
 
         let storage = cx.global::<GlobalStorageState>().storage.clone();

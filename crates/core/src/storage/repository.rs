@@ -16,6 +16,7 @@ struct ConnectionRow {
     params: String,
     workspace_id: Option<i64>,
     selected_databases: Option<String>,
+    remark: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -29,6 +30,7 @@ impl From<ConnectionRow> for StoredConnection {
             params: row.params,
             workspace_id: row.workspace_id,
             selected_databases: row.selected_databases,
+            remark: row.remark,
             created_at: Some(row.created_at),
             updated_at: Some(row.updated_at),
         }
@@ -82,8 +84,8 @@ impl Repository for ConnectionRepository {
         let connection_type = item.connection_type.to_string();
         let result = sqlx::query(
             r#"
-            INSERT INTO connections (name, connection_type, params, workspace_id, selected_databases, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO connections (name, connection_type, params, workspace_id, selected_databases, remark, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&item.name)
@@ -91,6 +93,7 @@ impl Repository for ConnectionRepository {
         .bind(&item.params)
         .bind(item.workspace_id)
         .bind(&item.selected_databases)
+        .bind(&item.remark)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -111,7 +114,7 @@ impl Repository for ConnectionRepository {
         sqlx::query(
             r#"
             UPDATE connections
-            SET name = ?, connection_type = ?, params = ?, workspace_id = ?, selected_databases = ?, updated_at = ?
+            SET name = ?, connection_type = ?, params = ?, workspace_id = ?, selected_databases = ?, remark = ?, updated_at = ?
             WHERE id = ?
             "#,
         )
@@ -120,6 +123,7 @@ impl Repository for ConnectionRepository {
         .bind(&item.params)
         .bind(item.workspace_id)
         .bind(&item.selected_databases)
+        .bind(&item.remark)
         .bind(now)
         .bind(id)
         .execute(&self.pool)
@@ -140,7 +144,7 @@ impl Repository for ConnectionRepository {
     async fn get(&self, id: i64) -> Result<Option<Self::Entity>> {
         let row: Option<ConnectionRow> = sqlx::query_as(
             r#"
-            SELECT id, name, connection_type, params, workspace_id, selected_databases, created_at, updated_at
+            SELECT id, name, connection_type, params, workspace_id, selected_databases, remark, created_at, updated_at
             FROM connections
             WHERE id = ?
             "#,
@@ -155,7 +159,7 @@ impl Repository for ConnectionRepository {
     async fn list(&self) -> Result<Vec<Self::Entity>> {
         let rows: Vec<ConnectionRow> = sqlx::query_as(
             r#"
-            SELECT id, name, connection_type, params, workspace_id, selected_databases, created_at, updated_at
+            SELECT id, name, connection_type, params, workspace_id, selected_databases, remark, created_at, updated_at
             FROM connections
             ORDER BY updated_at DESC
             "#,
@@ -188,7 +192,7 @@ impl ConnectionRepository {
     pub async fn list_by_workspace(&self, workspace_id: Option<i64>) -> Result<Vec<StoredConnection>> {
         let rows: Vec<ConnectionRow> = sqlx::query_as(
             r#"
-            SELECT id, name, connection_type, params, workspace_id, selected_databases, created_at, updated_at
+            SELECT id, name, connection_type, params, workspace_id, selected_databases, remark, created_at, updated_at
             FROM connections
             WHERE workspace_id IS ? OR (? IS NULL AND workspace_id IS NULL)
             ORDER BY updated_at DESC

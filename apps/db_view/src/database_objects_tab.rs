@@ -9,14 +9,19 @@ use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
 use one_core::gpui_tokio::Tokio;
-use one_core::storage::{ConnectionRepository, DbConnectionConfig, GlobalStorageState, Workspace};
+use one_core::storage::{ConnectionRepository, DatabaseType, DbConnectionConfig, GlobalStorageState, Workspace};
 use one_core::tab_container::{TabContent, TabContentType};
 use one_core::utils::debouncer::Debouncer;
 use crate::db_tree_view::{DbTreeViewEvent, get_icon_for_node_type};
 
 fn format_timestamp(ts: i64) -> String {
-    let _secs = ts / 1000;
-    format!("{}", ts)
+    use chrono::{DateTime, Local};
+    if let Some(dt) = DateTime::from_timestamp_millis(ts) {
+        let local: DateTime<Local> = dt.into();
+        local.format("%Y-%m-%d %H:%M:%S").to_string()
+    } else {
+        "".to_string()
+    }
 }
 
 /// 数据库对象面板事件 - 统一的表格交互事件
@@ -200,11 +205,17 @@ impl DatabaseObjects {
                                             let updated = stored_conn.updated_at
                                                 .map(|ts| format_timestamp(ts))
                                                 .unwrap_or_default();
+                                            let remark = stored_conn.remark.clone().unwrap_or_default();
+                                            let mut db_type = DatabaseType::MySQL;
+                                            if let Some(db_config) = stored_conn.to_db_connection().ok() {
+                                               db_type = db_config.database_type;
+                                            }
                                             vec![
                                                 stored_conn.name.clone(),
-                                                format!("{:?}", stored_conn.connection_type),
+                                                db_type.as_str().into(),
                                                 created,
                                                 updated,
+                                                remark,
                                             ]
                                         }).collect::<Vec<_>>()
                                     })
@@ -213,10 +224,11 @@ impl DatabaseObjects {
                                 Some(ObjectView {
                                     db_node_type: DbNodeType::Connection,
                                     columns: vec![
-                                        Column::new("name", "连接名称"),
+                                        Column::new("name", "连接名称").width(200.0),
                                         Column::new("type", "连接类型"),
-                                        Column::new("created_at", "创建日期"),
-                                        Column::new("updated_at", "访问日期"),
+                                        Column::new("created_at", "创建日期").width(200.0),
+                                        Column::new("updated_at", "访问日期").width(200.0),
+                                        Column::new("remark", "备注").width(200.0),
                                     ],
                                     rows,
                                     title: "连接列表".to_string()
