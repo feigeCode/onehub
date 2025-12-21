@@ -9,7 +9,6 @@ use one_core::storage::{ConnectionRepository, ConnectionType, DatabaseType, Glob
 use one_core::storage::traits::Repository;
 use one_core::tab_container::{TabContainer, TabContent, TabContentType, TabItem};
 use one_core::themes::SwitchThemeMode;
-use db_view::ai_chat_panel::AiChatPanel;
 use db_view::database_tab::DatabaseTabContent;
 use db_view::database_view_plugin::DatabaseViewPluginRegistry;
 use gpui_component::button::{ButtonCustomVariant, ButtonVariant};
@@ -33,8 +32,6 @@ pub struct HomePage {
     editing_connection_id: Option<i64>,
     selected_connection_id: Option<i64>,
     editing_workspace_id: Option<i64>,
-    ai_chat_panel: Entity<AiChatPanel>,
-    ai_panel_visible: bool,
 }
 
 impl HomePage {
@@ -57,9 +54,6 @@ impl HomePage {
         })
         .detach();
 
-        // 创建 AI 聊天面板
-        let ai_chat_panel = cx.new(|cx| AiChatPanel::new(window, cx));
-
         let mut page = Self {
             selected_filter: ConnectionType::All,
             workspaces: Vec::new(),
@@ -71,19 +65,12 @@ impl HomePage {
             editing_connection_id: None,
             selected_connection_id: None,
             editing_workspace_id: None,
-            ai_chat_panel,
-            ai_panel_visible: false,
         };
 
         // 异步加载工作区和连接列表
         page.load_workspaces(cx);
         page.load_connections(cx);
         page
-    }
-
-    fn toggle_ai_panel(&mut self, cx: &mut Context<Self>) {
-        self.ai_panel_visible = !self.ai_panel_visible;
-        cx.notify();
     }
 
     fn load_workspaces(&mut self, cx: &mut Context<Self>) {
@@ -1029,7 +1016,6 @@ impl Render for HomePage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .relative()
             .child(
                 h_flex()
                     .size_full()
@@ -1048,32 +1034,6 @@ impl Render for HomePage {
                                     .bg(cx.theme().muted)
                                     .child(self.render_content_area(cx))
                             )
-                    )
-                    .when(self.ai_panel_visible, |this| {
-                        this.child(
-                            div()
-                                .w(px(400.0))
-                                .h_full()
-                                .border_l_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().background)
-                                .child(self.ai_chat_panel.clone())
-                        )
-                    })
-            )
-            // 悬浮的 AI 按钮
-            .child(
-                div()
-                    .absolute()
-                    .right_4()
-                    .bottom_4()
-                    .child(
-                        Button::new("toggle-ai-chat")
-                            .icon(IconName::Bot)
-                            .tooltip("AI Assistant")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_ai_panel(cx);
-                            }))
                     )
             )
     }

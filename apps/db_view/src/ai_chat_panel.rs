@@ -1,11 +1,11 @@
 //! AI Chat Panel - 数据库 AI 助手对话面板
 
 use futures::StreamExt;
-use gpui::{div, px, prelude::FluentBuilder, AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, InteractiveElement, MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, AsyncApp};
+use gpui::{div, px, prelude::FluentBuilder, AnyElement, App, AppContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, InteractiveElement, MouseButton, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, AsyncApp};
 use gpui_component::{
     button::{Button, ButtonVariants},
     clipboard::Clipboard,
-    h_flex, popover::Popover, text::TextView, v_flex, ActiveTheme, Icon, IconName, Sizable, Size,
+    h_flex, list::{List, ListDelegate, ListState}, popover::Popover, text::TextView, v_flex, ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable, Size,
 };
 use uuid::Uuid;
 
@@ -122,6 +122,180 @@ pub enum AiChatPanelEvent {
     ExecuteSql { sql: String },
 }
 
+// ============================================================================
+// SessionListItem - 历史会话列表项
+// ============================================================================
+
+#[derive(IntoElement)]
+pub struct SessionListItem {
+    session_id: i64,
+    name: SharedString,
+    updated_at: i64,
+    selected: bool,
+    panel: Entity<AiChatPanel>,
+}
+
+impl SessionListItem {
+    pub fn new(
+        session_id: i64,
+        name: SharedString,
+        updated_at: i64,
+        panel: Entity<AiChatPanel>,
+    ) -> Self {
+        Self {
+            session_id,
+            name,
+            updated_at,
+            selected: false,
+            panel,
+        }
+    }
+}
+
+impl Selectable for SessionListItem {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl RenderOnce for SessionListItem {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let panel = self.panel.clone();
+        let session_id = self.session_id;
+        let is_current = panel.read(cx).session_id == Some(session_id);
+
+        h_flex()
+            .w_full()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .when(self.selected, |this| this.bg(cx.theme().list_active))
+            .when(is_current, |this| {
+                this.bg(cx.theme().accent)
+                    .text_color(cx.theme().accent_foreground)
+            })
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.name.clone())
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if is_current {
+                                cx.theme().accent_foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(format_timestamp(self.updated_at))
+                    )
+            )
+            .child(
+                Button::new(SharedString::from(format!("delete-{}", session_id)))
+                    .icon(IconName::Delete)
+                    .ghost()
+                    .xsmall()
+                    .on_click({
+                        let panel = panel.clone();
+                        move |_, window, cx| {
+                            panel.update(cx, |this, cx| {
+                                this.delete_session(session_id, cx);
+                            });
+                            window.refresh();
+                        }
+                    })
+            )
+    }
+}
+
+// ============================================================================
+// SessionListDelegate - 历史会话列表代理
+// ============================================================================
+
+pub struct SessionListDelegate {
+    panel: Entity<AiChatPanel>,
+    sessions: Vec<(i64, SharedString, i64)>,
+    filtered_sessions: Vec<(i64, SharedString, i64)>,
+    selected_index: Option<IndexPath>,
+}
+
+impl ListDelegate for SessionListDelegate {
+    type Item = SessionListItem;
+
+    fn perform_search(&mut self, query: &str, _window: &mut Window, cx: &mut Context<ListState<Self>>) -> Task<()> {
+        if query.is_empty() {
+            self.filtered_sessions = self.sessions.clone();
+        } else {
+            let query_lower = query.to_lowercase();
+            self.filtered_sessions = self.sessions
+                .iter()
+                .filter(|(_, name, _)| name.to_lowercase().contains(&query_lower))
+                .cloned()
+                .collect();
+        }
+        cx.notify();
+        Task::ready(())
+    }
+
+    fn items_count(&self, _section: usize, _cx: &App) -> usize {
+        self.filtered_sessions.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let (session_id, name, updated_at) = self.filtered_sessions.get(ix.row)?.clone();
+        Some(SessionListItem::new(session_id, name, updated_at, self.panel.clone()))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        ix: Option<IndexPath>,
+        _window: &mut Window,
+        _cx: &mut Context<ListState<Self>>,
+    ) {
+        self.selected_index = ix;
+    }
+
+    fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        if let Some(ix) = self.selected_index {
+            if let Some((session_id, _, _)) = self.filtered_sessions.get(ix.row) {
+                let session_id = *session_id;
+                self.panel.update(cx, |this, cx| {
+                    this.history_popover_open = false;
+                    this.load_session(session_id, cx);
+                });
+                window.refresh();
+            }
+        }
+    }
+
+    fn cancel(&mut self, _window: &mut Window, cx: &mut Context<ListState<Self>>) {
+        self.panel.update(cx, |this, cx| {
+            this.history_popover_open = false;
+            cx.notify();
+        });
+    }
+}
+
 /// AI 聊天面板
 pub struct AiChatPanel {
     focus_handle: FocusHandle,
@@ -136,8 +310,9 @@ pub struct AiChatPanel {
     storage_manager: one_core::storage::StorageManager,
     scroll_handle: gpui::ScrollHandle,
     history_sessions: Vec<ChatSession>,
-    show_history: bool,
     auto_scroll_enabled: bool,
+    history_popover_open: bool,
+    session_list: Option<Entity<ListState<SessionListDelegate>>>,
 }
 
 
@@ -175,8 +350,9 @@ impl AiChatPanel {
             storage_manager,
             scroll_handle: gpui::ScrollHandle::new(),
             history_sessions: Vec::new(),
-            show_history: false,
             auto_scroll_enabled: true,
+            history_popover_open: false,
+            session_list: None,
         };
 
         // 加载 providers
@@ -252,10 +428,49 @@ impl AiChatPanel {
     }
 
     // 创建新会话 - 同步返回，异步保存
-    fn start_new_session(&mut self, cx: &mut Context<Self>) {
+    pub fn start_new_session(&mut self, cx: &mut Context<Self>) {
         self.session_id = None;
         self.messages.clear();
         cx.notify();
+    }
+
+    pub fn toggle_history_popover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.history_popover_open = !self.history_popover_open;
+        if self.history_popover_open {
+            // 先用现有数据更新列表，然后异步加载最新数据
+            self.update_session_list(window, cx);
+            self.load_history_sessions(cx);
+        }
+        cx.notify();
+    }
+
+    fn update_session_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let sessions_data: Vec<(i64, SharedString, i64)> = self.history_sessions
+            .iter()
+            .map(|s| (s.id, SharedString::from(s.name.clone()), s.updated_at))
+            .collect();
+        let panel = cx.entity();
+
+        if let Some(session_list) = &self.session_list {
+            session_list.update(cx, |state, _| {
+                let delegate = state.delegate_mut();
+                delegate.sessions = sessions_data.clone();
+                delegate.filtered_sessions = sessions_data;
+            });
+        } else {
+            self.session_list = Some(cx.new(|cx| {
+                ListState::new(
+                    SessionListDelegate {
+                        panel,
+                        sessions: sessions_data.clone(),
+                        filtered_sessions: sessions_data,
+                        selected_index: None,
+                    },
+                    window,
+                    cx,
+                ).searchable(true)
+            }));
+        }
     }
 
     fn load_history_sessions(&mut self, cx: &mut Context<Self>) {
@@ -274,10 +489,15 @@ impl AiChatPanel {
                 if let Ok(Ok(sessions)) = task.await {
                     if let Some(entity) = this.upgrade() {
                         let _ = cx.update(|cx| {
-                            entity.update(cx, |this, cx| {
-                                this.history_sessions = sessions;
-                                cx.notify();
-                            });
+                            if let Some(window_id) = cx.active_window() {
+                                let _ = cx.update_window(window_id, |_, window, cx| {
+                                    entity.update(cx, |this, cx| {
+                                        this.history_sessions = sessions;
+                                        this.update_session_list(window, cx);
+                                        cx.notify();
+                                    });
+                                });
+                            }
                         });
                     }
                 }
@@ -389,7 +609,7 @@ impl AiChatPanel {
                                         is_expanded: true,
                                     })
                                     .collect();
-                                this.show_history = false;
+                                this.history_popover_open = false;
                                 cx.notify();
                             });
                         });
@@ -704,204 +924,6 @@ impl AiChatPanel {
         }).detach();
     }
 
-    fn render_header(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = if let Some(conn) = &self.connection_name {
-            format!("Chat with @{}", conn)
-        } else {
-            "AI Chat".to_string()
-        };
-
-        let sessions = self.history_sessions.clone();
-        let current_session_id = self.session_id;
-        let panel_entity = cx.entity();
-
-        h_flex()
-            .w_full()
-            .h(px(48.0))
-            .px_4()
-            .items_center()
-            .justify_between()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                div()
-                    .text_base()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(title)
-            )
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Popover::new("history-popover")
-                            .trigger(
-                                Button::new("history")
-                                    .icon(IconName::Menu)
-                                    .with_size(Size::Small)
-                                    .tooltip("Chat History")
-                            )
-                            .anchor(gpui::Corner::BottomRight)
-                            .content(move |_state, _window, cx| {
-                                // 加载历史会话
-                                panel_entity.update(cx, |this, cx| {
-                                    if this.history_sessions.is_empty() {
-                                        this.load_history_sessions(cx);
-                                    }
-                                });
-
-                                let sessions = sessions.clone();
-                                let current_session_id = current_session_id;
-
-                                v_flex()
-                                    .w(px(300.0))
-                                    .max_h(px(500.0))
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .px_3()
-                                            .py_2()
-                                            .border_b_1()
-                                            .border_color(cx.theme().border)
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                                    .child("Chat History")
-                                            )
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .max_h(px(350.0))
-                                            .child(
-                                                div()
-                                                    .id("history-scroll")
-                                                    .size_full()
-                                                    .overflow_y_scroll()
-                                                    .child(
-                                                        v_flex()
-                                                            .gap_1()
-                                                            .p_2()
-                                                            .when(sessions.is_empty(), |this| {
-                                                                this.child(
-                                                                    div()
-                                                                        .px_3()
-                                                                        .py_4()
-                                                                        .text_sm()
-                                                                        .text_color(cx.theme().muted_foreground)
-                                                                        .child("No chat history")
-                                                                )
-                                                            })
-                                                            .children(
-                                                                sessions.iter().map(|session| {
-                                                                    let session_id = session.id;
-                                                                    let is_current = current_session_id == Some(session_id);
-                                                                    
-                                                                    h_flex()
-                                                                        .w_full()
-                                                                        .gap_2()
-                                                                        .items_center()
-                                                                        .child(
-                                                                            div()
-                                                                                .flex_1()
-                                                                                .px_3()
-                                                                                .py_2()
-                                                                                .rounded_md()
-                                                                                .cursor_pointer()
-                                                                                .when(is_current, |this| {
-                                                                                    this.bg(cx.theme().accent)
-                                                                                        .text_color(cx.theme().accent_foreground)
-                                                                                })
-                                                                                .when(!is_current, |this| {
-                                                                                    this.hover(|style| {
-                                                                                        style.bg(cx.theme().muted)
-                                                                                    })
-                                                                                })
-                                                                                .on_mouse_down(MouseButton::Left, {
-                                                                                    let panel_entity = panel_entity.clone();
-                                                                                    move |_, window, cx| {
-                                                                                        panel_entity.update(cx, |this, cx| {
-                                                                                            this.load_session(session_id, cx);
-                                                                                        });
-                                                                                        window.refresh();
-                                                                                    }
-                                                                                })
-                                                                                .child(
-                                                                                    v_flex()
-                                                                                        .gap_1()
-                                                                                        .child(
-                                                                                            div()
-                                                                                                .text_sm()
-                                                                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                                                                .child(session.name.clone())
-                                                                                        )
-                                                                                        .child(
-                                                                                            div()
-                                                                                                .text_xs()
-                                                                                                .text_color(if is_current {
-                                                                                                    cx.theme().accent_foreground
-                                                                                                } else {
-                                                                                                    cx.theme().muted_foreground
-                                                                                                })
-                                                                                                .child(format_timestamp(session.updated_at))
-                                                                                        )
-                                                                                )
-                                                                        )
-                                                                        .child(
-                                                                            Button::new(SharedString::from(format!("delete-{}", session_id)))
-                                                                                .icon(IconName::Delete)
-                                                                                .ghost()
-                                                                                .xsmall()
-                                                                                .on_click({
-                                                                                    let panel_entity = panel_entity.clone();
-                                                                                    move |_, window, cx| {
-                                                                                        panel_entity.update(cx, |this, cx| {
-                                                                                            this.delete_session(session_id, cx);
-                                                                                        });
-                                                                                        window.refresh();
-                                                                                    }
-                                                                                })
-                                                                        )
-                                                                })
-                                                            )
-                                                    )
-                                            )
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_2()
-                                            .border_t_1()
-                                            .border_color(cx.theme().border)
-                                            .child(
-                                                Button::new("new-chat")
-                                                    .label("New Chat")
-                                                    .icon(IconName::Plus)
-                                                    .with_size(Size::Small)
-                                                    .on_click({
-                                                        let panel_entity = panel_entity.clone();
-                                                        move |_, window, cx| {
-                                                            panel_entity.update(cx, |this, cx| {
-                                                                this.start_new_session(cx);
-                                                            });
-                                                            window.refresh();
-                                                        }
-                                                    })
-                                            )
-                                    )
-                            })
-                    )
-                    .child(
-                        Button::new("close")
-                            .icon(IconName::Close)
-                            .with_size(Size::Small)
-                            .on_click(cx.listener(|_this, _, _window, cx| {
-                                cx.emit(AiChatPanelEvent::Close);
-                            }))
-                    )
-            )
-    }
-
     fn render_messages(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
 
@@ -1111,11 +1133,41 @@ impl Focusable for AiChatPanel {
 
 impl Render for AiChatPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        let session_list = self.session_list.clone();
+
+        div()
             .size_full()
-            .bg(cx.theme().background)
-            .child(self.render_header(window, cx))
-            .child(self.render_messages(window, cx))
-            .child(self.render_input(window, cx))
+            .relative()
+            .child(
+                v_flex()
+                    .size_full()
+                    .bg(cx.theme().background)
+                    .child(self.render_messages(window, cx))
+                    .child(self.render_input(window, cx))
+            )
+            // 历史记录 Popover（悬浮在右上角）
+            .when(self.history_popover_open, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_2()
+                        .right_2()
+                        .child(
+                            v_flex()
+                                .bg(cx.theme().background)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded(cx.theme().radius)
+                                .shadow_lg()
+                                .when_some(session_list, |container, list| {
+                                    container.child(
+                                        List::new(&list)
+                                            .w(px(280.0))
+                                            .max_h(px(350.0))
+                                    )
+                                })
+                        )
+                )
+            })
     }
 }

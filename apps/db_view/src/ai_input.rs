@@ -4,6 +4,7 @@ use gpui::{
     div, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, Window,
 };
+use gpui::prelude::FluentBuilder;
 use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants},
     h_flex,
@@ -80,6 +81,8 @@ pub struct AIInput {
     providers: Vec<ProviderItem>,
     selected_provider: Option<String>,
     is_loading: bool,
+    connection_name: Option<String>,
+    database: Option<String>,
 }
 
 impl AIInput {
@@ -87,7 +90,7 @@ impl AIInput {
         let focus_handle = cx.focus_handle();
         let input_state = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("向数据库提问，回车提交。Shift+Enter 换行")
+                .placeholder("向数据库提问... (Enter 发送 · Shift+Enter 换行)")
                 .auto_grow(2, 6)
                 .default_value("")
         });
@@ -135,7 +138,20 @@ impl AIInput {
             providers,
             selected_provider: None,
             is_loading: false,
+            connection_name: None,
+            database: None,
         }
+    }
+
+    pub fn set_context(
+        &mut self,
+        connection_name: Option<String>,
+        database: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.connection_name = connection_name;
+        self.database = database;
+        cx.notify();
     }
 
     pub fn update_providers(
@@ -229,42 +245,81 @@ impl Render for AIInput {
             .border_1()
             .border_color(cx.theme().border)
             .shadow_sm()
+            // 数据库连接和表信息
             .child(
                 h_flex()
                     .w_full()
-                    .items_center()
-                    .justify_between()
                     .px_3()
-                    .pt_3()
+                    .py_2()
+                    .items_center()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().muted.opacity(0.3))
                     .child(
-                        Select::new(&self.provider_select)
-                            .with_size(Size::Small)
-                            .placeholder("选择模型")
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("连接:")
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(self.connection_name.clone().unwrap_or_else(|| "未选择".to_string()))
+                            )
                     )
-                    .child(
-                        Button::new("toggle-history")
-                            .icon(IconName::Settings)
-                            .with_variant(ButtonVariant::Ghost)
-                            .tooltip("Cmd+H 查看历史")
-                    ),
+                    .when_some(self.database.clone(), |this, db| {
+                        this
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("/")
+                            )
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("库:")
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .child(db)
+                                    )
+                            )
+                    })
             )
+            // 输入框
             .child(
                 div()
                     .w_full()
                     .px_3()
-                    .pt_1()
-                    .pb_3()
+                    .pt_3()
+                    .pb_2()
                     .child(
                         Input::new(&self.input_state)
+                            .w_full()
                             .with_size(Size::Large)
                             .bordered(false)
                             .appearance(false)
                             .bg(cx.theme().muted)
                             .rounded(cx.theme().radius)
-                            .px_3()
-                            .py_3()
+                            // .px_3()
+                            // .py_3()
                     )
             )
+            // 底部：模型选择和发送按钮
             .child(
                 h_flex()
                     .w_full()
@@ -275,9 +330,14 @@ impl Render for AIInput {
                     .gap_2()
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Enter 发送 · Shift+Enter 换行")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .child(
+                                Select::new(&self.provider_select)
+                                    .with_size(Size::Small)
+                                    .placeholder("选择模型")
+                            )
                     )
                     .child(
                         Button::new("send")
