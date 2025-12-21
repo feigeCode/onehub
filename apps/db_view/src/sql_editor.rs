@@ -1066,7 +1066,8 @@ impl CodeActionProvider for SqlActionsProvider {
         _cx: &mut App,
     ) -> Task<Result<Vec<lsp_types::CodeAction>>> {
         let state_read = state.read(_cx);
-        let document_uri = Uri::from_str("file://one-hub").unwrap();
+        // 使用固定的 URI，不会失败
+        let document_uri = Uri::from_str("file://one-hub").expect("固定 URI 解析不应失败");
         let mut actions = vec![];
 
         if !range.is_empty() {

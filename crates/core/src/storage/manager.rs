@@ -118,7 +118,7 @@ pub fn get_config_dir() -> Result<PathBuf> {
 pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("系统时间不应早于 UNIX 纪元")
         .as_secs() as i64
 }
 

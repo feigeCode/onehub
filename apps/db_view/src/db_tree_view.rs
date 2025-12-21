@@ -364,7 +364,14 @@ impl DbTreeView {
             for conn in connections {
                 workspace_id = conn.workspace_id;
                 let id = conn.id.unwrap_or(0).to_string();
-                let conn_config = conn.to_db_connection().unwrap();
+
+                let conn_config = match conn.to_db_connection() {
+                    Ok(config) => config,
+                    Err(e) => {
+                        tracing::error!("无法解析连接配置 {}: {}", id, e);
+                        continue;
+                    }
+                };
 
                 // 读取已选中的数据库列表
                 if let Some(selected_dbs) = conn.get_selected_databases() {

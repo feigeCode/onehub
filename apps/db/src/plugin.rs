@@ -479,8 +479,12 @@ pub trait DatabasePlugin: Send + Sync {
                 }
             }
             DbNodeType::Table => {
-                let metadata = node.metadata.as_ref().unwrap();
-                let db = metadata.get("database").unwrap();
+                let Some(ref metadata) = node.metadata else {
+                    return Err(anyhow::anyhow!("表节点缺少 metadata"));
+                };
+                let Some(db) = metadata.get("database") else {
+                    return Err(anyhow::anyhow!("表节点缺少 database 字段"));
+                };
                 let table = &node.name;
                 let mut folder_metadata = HashMap::new();
                 folder_metadata.insert("table".to_string(), table.clone());

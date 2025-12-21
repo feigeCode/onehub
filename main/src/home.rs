@@ -959,8 +959,10 @@ impl HomePage {
                                             .child(
                                                 match conn.connection_type {
                                                     ConnectionType::Database => {
-                                                        conn.to_db_connection().unwrap().database_type.as_icon()
-                                                            .with_size(px(40.0))
+                                                        let icon = conn.to_db_connection()
+                                                            .map(|c| c.database_type.as_icon())
+                                                            .unwrap_or_else(|_| IconName::Database.color());
+                                                        icon.with_size(px(40.0))
                                                             .text_color(gpui::white())
                                                     },
                                                     _ => {

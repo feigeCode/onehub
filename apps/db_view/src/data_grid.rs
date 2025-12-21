@@ -544,12 +544,11 @@ impl DataGrid {
 
     fn show_large_text_editor(&self, window: &mut Window, cx: &mut App) {
         let table = self.table.read(cx);
-        let cell = table.selected_cell();
-        if cell.is_none() {
+        let Some((row_ix, col_ix)) = table.selected_cell() else {
             window.push_notification("请选择一个单元格".to_string(), cx);
             return;
-        }
-        let (row_ix, col_ix) = cell.unwrap();
+        };
+
         let delegate = table.delegate();
         let Some(actual_row_ix) = delegate.resolve_display_row(row_ix) else {
             return;

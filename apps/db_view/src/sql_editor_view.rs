@@ -187,13 +187,19 @@ impl SqlEditorTab {
         let tables = match global_state.list_tables(cx, connection_id.clone(), db.clone()).await {
             Ok(result) => result,
             Err(e) => {
-                eprintln!("Failed to get connection: {}", e);
+                eprintln!("Failed to get tables: {}", e);
                 return;
             }
         };
 
         // Get database-specific completion info
-        let db_completion_info = global_state.get_completion_info(cx, connection_id.clone()).await.unwrap();
+        let db_completion_info = match global_state.get_completion_info(cx, connection_id.clone()).await {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("Failed to get completion info: {}", e);
+                return;
+            }
+        };
 
         let mut schema = SqlSchema::default();
 

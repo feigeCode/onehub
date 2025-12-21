@@ -355,15 +355,23 @@ impl DatabaseEventHandler {
         node: DbNode,
         global_state: GlobalDbState,
         tab_container: Entity<TabContainer>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) {
         use crate::table_data_tab::TableDataTabContent;
 
         let connection_id = node.connection_id.clone();
         let table = node.name.clone();
-        let metadata = &node.metadata.unwrap();
-        let database = metadata.get("database").unwrap();
+
+        let Some(ref metadata) = node.metadata else {
+            Self::show_error(window, "无效的节点数据", cx);
+            return;
+        };
+        let Some(database) = metadata.get("database") else {
+            Self::show_error(window, "无法获取数据库名称", cx);
+            return;
+        };
+
         let tab_id = format!("table-data-{}.{}", database, table);
 
         let connection_id_for_error = connection_id.clone();
@@ -427,15 +435,23 @@ impl DatabaseEventHandler {
         node: DbNode,
         global_state: GlobalDbState,
         tab_container: Entity<TabContainer>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) {
         use crate::table_data_tab::TableDataTabContent;
 
         let connection_id = node.connection_id.clone();
         let view = node.name.clone();
-        let metadata = &node.metadata.unwrap();
-        let database = metadata.get("database").unwrap();
+
+        let Some(ref metadata) = node.metadata else {
+            Self::show_error(window, "无效的节点数据", cx);
+            return;
+        };
+        let Some(database) = metadata.get("database") else {
+            Self::show_error(window, "无法获取数据库名称", cx);
+            return;
+        };
+
         let tab_id = format!("view-data-{}.{}", database, view);
 
         let connection_id_for_error = connection_id.clone();
@@ -499,14 +515,22 @@ impl DatabaseEventHandler {
         node: DbNode,
         global_state: GlobalDbState,
         _tab_container: Entity<TabContainer>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) {
 
         let connection_id = node.connection_id.clone();
         let table = node.name.clone();
-        let metadata = &node.metadata.unwrap();
-        let database = metadata.get("database").unwrap();
+
+        let Some(ref metadata) = node.metadata else {
+            Self::show_error(window, "无效的节点数据", cx);
+            return;
+        };
+        let Some(database) = metadata.get("database") else {
+            Self::show_error(window, "无法获取数据库名称", cx);
+            return;
+        };
+
         let _tab_id = format!("table-designer-{}.{}", database, table);
 
         let connection_id_for_error = connection_id.clone();
@@ -1149,11 +1173,23 @@ impl DatabaseEventHandler {
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         // 执行数据库关闭逻辑
-                        let result = Tokio::spawn_result(cx, async move {
+                        let task_result = Tokio::spawn_result(cx, async move {
                             // 这里可以添加实际的数据库关闭逻辑
                             // 比如执行 USE mysql 切换到系统数据库
                             Ok(())
-                        }).unwrap().await;
+                        });
+
+                        let task = match task_result {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("启动关闭任务失败: {}", e));
+                                });
+                                return;
+                            }
+                        };
+
+                        let result = task.await;
 
                         match result {
                             Ok(_) => {
@@ -1672,10 +1708,13 @@ impl DatabaseEventHandler {
                                 _ = cx.update(|cx| {
                                     Self::show_error_async(cx, e.to_string());
                                 })
-                            }else {
-                                _ = db_tree.update(cx, |db, cx| {
-                                    db.refresh_tree(node_id,cx);
-                                })
+                            } else {
+                                _ = cx.update(|cx| {
+                                    db_tree.update(cx, |db, cx| {
+                                        db.refresh_tree(node_id, cx);
+                                    });
+                                    Self::show_success_async(cx, "查询已重命名");
+                                });
                             }
                         }).detach();
                         true

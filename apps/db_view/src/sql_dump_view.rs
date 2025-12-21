@@ -69,14 +69,18 @@ impl SqlDumpView {
 
         cx.spawn(async move |cx| {
             if let Ok(Ok(Some(paths))) = future.await {
-                let path = paths.first().unwrap().to_string_lossy().to_string();
+                let Some(path) = paths.first() else {
+                    return;
+                };
+                let path_str = path.to_string_lossy().to_string();
+
                 let _ = cx.update(|cx| {
                     pending.update(cx, |p, cx| {
-                        *p = Some(path.clone());
+                        *p = Some(path_str.clone());
                         cx.notify();
                     });
                     status.update(cx, |s, cx| {
-                        *s = format!("已选择: {}", path);
+                        *s = format!("已选择: {}", path_str);
                         cx.notify();
                     });
                 });

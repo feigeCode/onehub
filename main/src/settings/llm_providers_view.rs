@@ -110,13 +110,12 @@ impl LlmProvidersView {
                     let config_opt = form_clone.update(cx, |form, cx| {
                         form.get_config(cx)
                     });
-                    
-                    if config_opt.is_none() {
+
+                    let Some(mut config) = config_opt else {
                         window.push_notification("Please fill in all required fields", cx);
                         return false;
-                    }
-                    
-                    let mut config = config_opt.unwrap();
+                    };
+
                     let storage_manager_clone = storage_clone.clone();
                     let view_for_spawn = view_clone.clone();
                     
@@ -356,7 +355,7 @@ impl LlmProvidersView {
                                         .text_color(cx.theme().muted_foreground)
                                         .child(format!(
                                             "API Base: {}",
-                                            provider.api_base.as_ref().unwrap()
+                                            provider.api_base.as_deref().unwrap_or("Default")
                                         )),
                                 )
                             }),

@@ -195,11 +195,11 @@ impl Entity for Workspace {
     }
 
     fn created_at(&self) -> i64 {
-        self.created_at.unwrap()
+        self.created_at.expect("created_at 在从数据库读取后应该存在")
     }
 
     fn updated_at(&self) -> i64 {
-        self.updated_at.unwrap()
+        self.updated_at.expect("updated_at 在从数据库读取后应该存在")
     }
 }
 
@@ -243,11 +243,11 @@ impl Entity for StoredConnection {
     }
 
     fn created_at(&self) -> i64 {
-        self.created_at.unwrap()
+        self.created_at.expect("created_at 在从数据库读取后应该存在")
     }
 
     fn updated_at(&self) -> i64 {
-        self.updated_at.unwrap()
+        self.updated_at.expect("updated_at 在从数据库读取后应该存在")
     }
 }
 
@@ -257,7 +257,7 @@ impl StoredConnection {
             id: None,
             name,
             connection_type: ConnectionType::Database,
-            params: serde_json::to_string(&params).unwrap(),
+            params: serde_json::to_string(&params).expect("DbConnectionConfig 序列化不应失败"),
             workspace_id,
             selected_databases: None,
             remark: None,
@@ -271,7 +271,7 @@ impl StoredConnection {
             id: None,
             name,
             connection_type: ConnectionType::SshSftp,
-            params: serde_json::to_string(&params).unwrap(),
+            params: serde_json::to_string(&params).expect("SshParams 序列化不应失败"),
             workspace_id,
             selected_databases: None,
             remark: None,
@@ -285,7 +285,7 @@ impl StoredConnection {
             id: None,
             name,
             connection_type: ConnectionType::Redis,
-            params: serde_json::to_string(&params).unwrap(),
+            params: serde_json::to_string(&params).expect("RedisParams 序列化不应失败"),
             workspace_id,
             selected_databases: None,
             remark: None,
@@ -299,7 +299,7 @@ impl StoredConnection {
             id: None,
             name,
             connection_type: ConnectionType::MongoDB,
-            params: serde_json::to_string(&params).unwrap(),
+            params: serde_json::to_string(&params).expect("MongoDBParams 序列化不应失败"),
             workspace_id,
             selected_databases: None,
             remark: None,
