@@ -798,6 +798,16 @@ impl InputState {
         &self.text
     }
 
+    /// Get the currently selected text as a String.
+    /// Returns an empty string if no text is selected.
+    pub fn selected_text_string(&self) -> String {
+        if self.selected_range.is_empty() {
+            String::new()
+        } else {
+            self.text.slice(self.selected_range).to_string()
+        }
+    }
+
     /// Return the (0-based) [`Position`] of the cursor.
     pub fn cursor_position(&self) -> Position {
         let offset = self.cursor();

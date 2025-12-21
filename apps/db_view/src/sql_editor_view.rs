@@ -251,7 +251,13 @@ impl SqlEditorTab {
     }
 
     fn handle_run_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let sql = self.get_sql_text(cx);
+        let selected_text = self.editor.read(cx).get_selected_text_from_app(cx);
+        let sql = if selected_text.trim().is_empty() {
+            self.get_sql_text(cx)
+        } else {
+            selected_text
+        };
+
         let connection_id = self.connection_id.clone();
         let sql_result_tab_container = self.sql_result_tab_container.clone();
 
@@ -275,12 +281,89 @@ impl SqlEditorTab {
 
     fn handle_format_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.get_sql_text(cx);
-        let formatted = text
-            .split('\n')
-            .map(|l| l.trim().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
+        if text.trim().is_empty() {
+            window.push_notification("No SQL to format", cx);
+            return;
+        }
+
+        let formatted = Self::format_sql(&text);
         self.editor.update(cx, |s, cx| s.set_value(formatted, window, cx));
+    }
+
+    /// Format SQL with proper indentation and line breaks
+    fn format_sql(sql: &str) -> String {
+        let mut formatted = String::new();
+        let mut indent_level: usize = 0;
+        let lines: Vec<&str> = sql.lines().collect();
+
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // Decrease indent for closing parentheses
+            if trimmed.starts_with(')') {
+                indent_level = indent_level.saturating_sub(1);
+            }
+
+            // Keywords that should be on new line at base level
+            let is_major_keyword = trimmed.starts_with("SELECT")
+                || trimmed.starts_with("FROM")
+                || trimmed.starts_with("WHERE")
+                || trimmed.starts_with("GROUP BY")
+                || trimmed.starts_with("HAVING")
+                || trimmed.starts_with("ORDER BY")
+                || trimmed.starts_with("LIMIT")
+                || trimmed.starts_with("UNION")
+                || trimmed.starts_with("INSERT")
+                || trimmed.starts_with("UPDATE")
+                || trimmed.starts_with("DELETE")
+                || trimmed.starts_with("CREATE")
+                || trimmed.starts_with("ALTER")
+                || trimmed.starts_with("DROP");
+
+            let is_join = trimmed.starts_with("INNER JOIN")
+                || trimmed.starts_with("LEFT JOIN")
+                || trimmed.starts_with("RIGHT JOIN")
+                || trimmed.starts_with("FULL JOIN")
+                || trimmed.starts_with("CROSS JOIN")
+                || trimmed.starts_with("JOIN");
+
+            // Set indent level for major keywords
+            if is_major_keyword && indent_level > 0 {
+                indent_level = 0;
+            }
+
+            // Add indentation
+            if !formatted.is_empty() && !formatted.ends_with('\n') {
+                formatted.push('\n');
+            }
+            formatted.push_str(&"  ".repeat(indent_level));
+            formatted.push_str(trimmed);
+
+            // Increase indent after SELECT or other keywords
+            if trimmed.ends_with("SELECT") || trimmed.starts_with("SELECT") {
+                if !trimmed.ends_with(';') {
+                    indent_level = 1;
+                }
+            }
+
+            // JOIN at same level as FROM
+            if is_join {
+                indent_level = 0;
+            }
+
+            // Handle opening parentheses
+            if trimmed.ends_with('(') {
+                indent_level += 1;
+            }
+
+            // Add newline
+            formatted.push('\n');
+        }
+
+        formatted.trim().to_string()
     }
 
     fn handle_compress_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -383,6 +466,134 @@ impl SqlEditorTab {
             container.show(cx);
         });
     }
+
+    fn handle_export_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui::ClipboardItem;
+
+        let selected_text = self.editor.read(cx).get_selected_text_from_app(cx);
+        let sql = if selected_text.trim().is_empty() {
+            self.get_sql_text(cx)
+        } else {
+            selected_text
+        };
+
+        if sql.trim().is_empty() {
+            window.push_notification("No SQL to export", cx);
+            return;
+        }
+
+        // Copy SQL to clipboard
+        cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
+        window.push_notification("SQL copied to clipboard", cx);
+    }
+
+    fn handle_clear_editor(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |e, cx| e.set_value(String::new(), window, cx));
+        window.push_notification("Editor cleared", cx);
+    }
+
+    fn handle_copy_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui::ClipboardItem;
+
+        let selected_text = self.editor.read(cx).get_selected_text_from_app(cx);
+        let sql = if selected_text.trim().is_empty() {
+            self.get_sql_text(cx)
+        } else {
+            selected_text
+        };
+
+        if sql.trim().is_empty() {
+            window.push_notification("No SQL to copy", cx);
+            return;
+        }
+
+        cx.write_to_clipboard(ClipboardItem::new_string(sql));
+        window.push_notification("SQL copied to clipboard", cx);
+    }
+
+    fn handle_uppercase_keywords(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.get_sql_text(cx);
+        if text.trim().is_empty() {
+            window.push_notification("No SQL to process", cx);
+            return;
+        }
+
+        let uppercased = Self::uppercase_keywords(&text);
+        self.editor.update(cx, |e, cx| e.set_value(uppercased, window, cx));
+    }
+
+    /// Convert SQL keywords to uppercase while preserving string literals
+    fn uppercase_keywords(sql: &str) -> String {
+        let keywords = [
+            "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE",
+            "IS", "NULL", "AS", "DISTINCT", "ALL", "JOIN", "INNER", "LEFT", "RIGHT", "FULL",
+            "CROSS", "ON", "USING", "GROUP", "BY", "HAVING", "ORDER", "ASC", "DESC", "LIMIT",
+            "OFFSET", "UNION", "INTERSECT", "EXCEPT", "INSERT", "INTO", "VALUES", "UPDATE",
+            "SET", "DELETE", "CREATE", "TABLE", "INDEX", "VIEW", "ALTER", "DROP", "TRUNCATE",
+            "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "UNIQUE", "CHECK", "DEFAULT", "CASE",
+            "WHEN", "THEN", "ELSE", "END", "WITH", "RECURSIVE",
+        ];
+
+        let mut result = String::new();
+        let mut current_word = String::new();
+        let mut in_string = false;
+        let mut string_char = ' ';
+
+        for ch in sql.chars() {
+            // Handle string literals
+            if (ch == '\'' || ch == '"') && !in_string {
+                if !current_word.is_empty() {
+                    let upper = current_word.to_uppercase();
+                    if keywords.contains(&upper.as_str()) {
+                        result.push_str(&upper);
+                    } else {
+                        result.push_str(&current_word);
+                    }
+                    current_word.clear();
+                }
+                in_string = true;
+                string_char = ch;
+                result.push(ch);
+                continue;
+            } else if in_string && ch == string_char {
+                in_string = false;
+                result.push(ch);
+                continue;
+            }
+
+            if in_string {
+                result.push(ch);
+                continue;
+            }
+
+            // Build words
+            if ch.is_alphanumeric() || ch == '_' {
+                current_word.push(ch);
+            } else {
+                if !current_word.is_empty() {
+                    let upper = current_word.to_uppercase();
+                    if keywords.contains(&upper.as_str()) {
+                        result.push_str(&upper);
+                    } else {
+                        result.push_str(&current_word);
+                    }
+                    current_word.clear();
+                }
+                result.push(ch);
+            }
+        }
+
+        if !current_word.is_empty() {
+            let upper = current_word.to_uppercase();
+            if keywords.contains(&upper.as_str()) {
+                result.push_str(&upper);
+            } else {
+                result.push_str(&current_word);
+            }
+        }
+
+        result
+    }
 }
 
 
@@ -394,6 +605,9 @@ impl Render for SqlEditorTab {
         // Check if there are any results and if the panel is visible
         let has_results = self.sql_result_tab_container.read(cx).has_results(cx);
         let results_visible = self.sql_result_tab_container.read(cx).is_visible(cx);
+
+        // Check if there is selected text in the editor
+        let has_selection = !self.editor.read(cx).get_selected_text_from_app(cx).trim().is_empty();
 
         // Build the main layout with conditional resizable panels
         v_flex()
@@ -426,7 +640,11 @@ impl Render for SqlEditorTab {
                                         Button::new("run-query")
                                             .with_size(Size::Small)
                                             .primary()
-                                            .label("Run (⌘+Enter)")
+                                            .label(if has_selection {
+                                                "运行已选择的 (⌘+Enter)"
+                                            } else {
+                                                "运行 (⌘+Enter)"
+                                            })
                                             .icon(IconName::ArrowRight)
                                             .on_click(cx.listener(Self::handle_run_query)),
                                     )
@@ -434,15 +652,22 @@ impl Render for SqlEditorTab {
                                         Button::new("format-query")
                                             .with_size(Size::Small)
                                             .ghost()
-                                            .label("Format")
+                                            .label("格式化")
                                             .icon(IconName::Star)
                                             .on_click(cx.listener(Self::handle_format_query)),
+                                    )
+                                    .child(
+                                        Button::new("uppercase-keywords")
+                                            .with_size(Size::Small)
+                                            .ghost()
+                                            .label("大写关键字")
+                                            .on_click(cx.listener(Self::handle_uppercase_keywords)),
                                     )
                                     .child(
                                         Button::new("save-query")
                                             .with_size(Size::Small)
                                             .ghost()
-                                            .label("Save Query")
+                                            .label("保存查询")
                                             .icon(IconName::Plus)
                                             .on_click(cx.listener(Self::handle_save_query)),
                                     )
@@ -450,19 +675,24 @@ impl Render for SqlEditorTab {
                                         Button::new("compress-query")
                                             .with_size(Size::Small)
                                             .ghost()
-                                            .label("Compress")
+                                            .label("压缩")
                                             .on_click(cx.listener(Self::handle_compress_query)),
                                     )
                                     .child(
-                                        Button::new("export-query")
+                                        Button::new("copy-query")
                                             .with_size(Size::Small)
                                             .ghost()
-                                            .label("Export")
-                                            .on_click({
-                                                move |_, _, _| {
-                                                    // TODO: Implement export functionality
-                                                }
-                                            }),
+                                            .label("复制")
+                                            .icon(IconName::Copy)
+                                            .on_click(cx.listener(Self::handle_copy_query)),
+                                    )
+                                    .child(
+                                        Button::new("clear-editor")
+                                            .with_size(Size::Small)
+                                            .ghost()
+                                            .label("清空")
+                                            .icon(IconName::Delete)
+                                            .on_click(cx.listener(Self::handle_clear_editor)),
                                     )
                                     .when(has_results && !results_visible, |this| {
                                         this.child(

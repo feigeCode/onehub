@@ -950,20 +950,31 @@ impl HoverProvider for DefaultSqlHoverProvider {
 
 #[derive(Clone)]
 struct SqlActionsProvider {
-    /// Callback for executing SQL.
     on_execute: Option<Rc<dyn Fn(String, &mut Window, &mut App) + 'static>>,
+    on_ask_ai: Option<Rc<dyn Fn(String, &str, &mut Window, &mut App) + 'static>>,
 }
 
 impl SqlActionsProvider {
     fn new() -> Self {
-        Self { on_execute: None }
+        Self {
+            on_execute: None,
+            on_ask_ai: None,
+        }
     }
-    #[allow(dead_code)]
+
     fn with_execute(
         mut self,
         f: Rc<dyn Fn(String, &mut Window, &mut App) + 'static>,
     ) -> Self {
         self.on_execute = Some(f);
+        self
+    }
+
+    fn with_ask_ai(
+        mut self,
+        f: Rc<dyn Fn(String, &str, &mut Window, &mut App) + 'static>,
+    ) -> Self {
+        self.on_ask_ai = Some(f);
         self
     }
 
@@ -1076,10 +1087,71 @@ impl CodeActionProvider for SqlActionsProvider {
             let end = state_read.text().offset_to_position(range.end);
             let lsp_range = lsp_types::Range { start, end };
 
-            // Uppercase
+            // Execute Selected SQL
+            if self.on_execute.is_some() {
+                actions.push(lsp_types::CodeAction {
+                    title: "执行选中的 SQL".into(),
+                    kind: Some(lsp_types::CodeActionKind::EMPTY),
+                    command: Some(lsp_types::Command {
+                        title: "Execute".into(),
+                        command: "sql.execute".into(),
+                        arguments: None,
+                    }),
+                    ..Default::default()
+                });
+            }
+
+            // AI Actions
+            if self.on_ask_ai.is_some() {
+                actions.push(lsp_types::CodeAction {
+                    title: "询问 AI: 解释这段 SQL".into(),
+                    kind: Some(lsp_types::CodeActionKind::EMPTY),
+                    command: Some(lsp_types::Command {
+                        title: "Explain".into(),
+                        command: "sql.explain".into(),
+                        arguments: None,
+                    }),
+                    ..Default::default()
+                });
+
+                actions.push(lsp_types::CodeAction {
+                    title: "询问 AI: 优化这段 SQL".into(),
+                    kind: Some(lsp_types::CodeActionKind::EMPTY),
+                    command: Some(lsp_types::Command {
+                        title: "Optimize".into(),
+                        command: "sql.optimize".into(),
+                        arguments: None,
+                    }),
+                    ..Default::default()
+                });
+
+                actions.push(lsp_types::CodeAction {
+                    title: "询问 AI: 添加注释".into(),
+                    kind: Some(lsp_types::CodeActionKind::EMPTY),
+                    command: Some(lsp_types::Command {
+                        title: "Comment".into(),
+                        command: "sql.comment".into(),
+                        arguments: None,
+                    }),
+                    ..Default::default()
+                });
+
+                actions.push(lsp_types::CodeAction {
+                    title: "询问 AI: 查找潜在问题".into(),
+                    kind: Some(lsp_types::CodeActionKind::EMPTY),
+                    command: Some(lsp_types::Command {
+                        title: "Find Issues".into(),
+                        command: "sql.findissues".into(),
+                        arguments: None,
+                    }),
+                    ..Default::default()
+                });
+            }
+
+            // Uppercase Keywords
             let new_text = Self::uppercase_keywords(&old_text);
             actions.push(lsp_types::CodeAction {
-                title: "Uppercase Keywords".into(),
+                title: "大写关键字".into(),
                 kind: Some(lsp_types::CodeActionKind::REFACTOR),
                 edit: Some(WorkspaceEdit {
                     changes: Some(
@@ -1095,10 +1167,10 @@ impl CodeActionProvider for SqlActionsProvider {
                 ..Default::default()
             });
 
-            // Minify
+            // Minify SQL
             let new_text = Self::minify_sql(&old_text);
             actions.push(lsp_types::CodeAction {
-                title: "Minify SQL".into(),
+                title: "压缩 SQL".into(),
                 kind: Some(lsp_types::CodeActionKind::REFACTOR),
                 edit: Some(WorkspaceEdit {
                     changes: Some(
@@ -1149,7 +1221,43 @@ impl CodeActionProvider for SqlActionsProvider {
         window: &mut Window,
         cx: &mut App,
     ) -> Task<Result<()>> {
-        let _ = (state, action, window, cx);
+        if let Some(command) = action.command {
+            let selected_text = state.read(cx).selected_text_string();
+
+            match command.command.as_str() {
+                "sql.execute" => {
+                    if let Some(ref on_execute) = self.on_execute {
+                        on_execute(selected_text, window, cx);
+                    }
+                }
+                "sql.explain" => {
+                    if let Some(ref on_ask_ai) = self.on_ask_ai {
+                        let prompt = "请详细解释这段 SQL 语句的作用、执行流程和涉及的数据表。";
+                        on_ask_ai(selected_text, prompt, window, cx);
+                    }
+                }
+                "sql.optimize" => {
+                    if let Some(ref on_ask_ai) = self.on_ask_ai {
+                        let prompt = "请分析这段 SQL 的性能，并提供优化建议。考虑索引使用、查询效率、JOIN 优化等方面。";
+                        on_ask_ai(selected_text, prompt, window, cx);
+                    }
+                }
+                "sql.comment" => {
+                    if let Some(ref on_ask_ai) = self.on_ask_ai {
+                        let prompt = "请为这段 SQL 添加清晰的注释，说明每个部分的作用。";
+                        on_ask_ai(selected_text, prompt, window, cx);
+                    }
+                }
+                "sql.findissues" => {
+                    if let Some(ref on_ask_ai) = self.on_ask_ai {
+                        let prompt = "请检查这段 SQL 是否存在以下问题：SQL 注入风险、性能问题、逻辑错误、最佳实践违反等。";
+                        on_ask_ai(selected_text, prompt, window, cx);
+                    }
+                }
+                _ => {}
+            }
+        }
+
         Task::ready(Ok(()))
     }
 }
@@ -1265,6 +1373,65 @@ impl SqlEditor {
             .update(cx, |state, _| state.lsp.code_action_providers.push(provider));
     }
 
+    /// Set callback for executing SQL from code actions.
+    pub fn set_execute_callback(
+        &mut self,
+        callback: Rc<dyn Fn(String, &mut Window, &mut App) + 'static>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |state, _| {
+            state.lsp.code_action_providers.retain(|provider| {
+                provider.id() != "SqlActionsProvider"
+            });
+
+            let provider = SqlActionsProvider::new().with_execute(callback);
+            state.lsp.code_action_providers.push(Rc::new(provider));
+        });
+    }
+
+    /// Set callback for asking AI about SQL from code actions.
+    pub fn set_ask_ai_callback(
+        &mut self,
+        callback: Rc<dyn Fn(String, &str, &mut Window, &mut App) + 'static>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |state, _| {
+            state.lsp.code_action_providers.retain(|provider| {
+                provider.id() != "SqlActionsProvider"
+            });
+
+            let provider = SqlActionsProvider::new().with_ask_ai(callback);
+            state.lsp.code_action_providers.push(Rc::new(provider));
+        });
+    }
+
+    /// Set both execute and AI callbacks for SQL code actions.
+    pub fn set_sql_action_callbacks(
+        &mut self,
+        on_execute: Option<Rc<dyn Fn(String, &mut Window, &mut App) + 'static>>,
+        on_ask_ai: Option<Rc<dyn Fn(String, &str, &mut Window, &mut App) + 'static>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |state, _| {
+            state.lsp.code_action_providers.retain(|provider| {
+                provider.id() != "SqlActionsProvider"
+            });
+
+            let mut provider = SqlActionsProvider::new();
+            if let Some(cb) = on_execute {
+                provider = provider.with_execute(cb);
+            }
+            if let Some(cb) = on_ask_ai {
+                provider = provider.with_ask_ai(cb);
+            }
+
+            state.lsp.code_action_providers.push(Rc::new(provider));
+        });
+    }
+
     /// Convenient toggles for consumers
     pub fn set_line_number(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.editor
@@ -1291,6 +1458,19 @@ impl SqlEditor {
     /// Get the current text content using App context.
     pub fn get_text_from_app(&self, cx: &App) -> String {
         self.editor.read(cx).text().to_string()
+    }
+
+    /// Get the currently selected text.
+    /// Returns an empty string if no text is selected.
+    pub fn get_selected_text<T>(&self, cx: &Context<T>) -> String {
+        use std::ops::Deref;
+        self.editor.read(cx.deref()).selected_text_string()
+    }
+
+    /// Get the currently selected text using App context.
+    /// Returns an empty string if no text is selected.
+    pub fn get_selected_text_from_app(&self, cx: &App) -> String {
+        self.editor.read(cx).selected_text_string()
     }
 }
 
