@@ -1,11 +1,14 @@
 //! AI Chat Panel - 数据库 AI 助手对话面板
 
+use std::rc::Rc;
 use futures::StreamExt;
-use gpui::{div, px, prelude::FluentBuilder, AnyElement, App, AppContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, InteractiveElement, MouseButton, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, AsyncApp};
+use gpui::{div, px, prelude::FluentBuilder, AnyElement, App, AppContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, InteractiveElement, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, AsyncApp};
 use gpui_component::{
     button::{Button, ButtonVariants},
     clipboard::Clipboard,
-    h_flex, list::{List, ListDelegate, ListState}, popover::Popover, text::TextView, v_flex, ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable, Size,
+    h_flex, list::{List, ListDelegate, ListState}, popover::Popover, text::TextView, v_flex,
+    v_virtual_list, VirtualListScrollHandle,
+    ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable, Size,
 };
 use uuid::Uuid;
 
@@ -170,16 +173,28 @@ impl RenderOnce for SessionListItem {
         let is_current = panel.read(cx).session_id == Some(session_id);
 
         h_flex()
+            .id(SharedString::from(format!("session-item-{}", session_id)))
             .w_full()
             .gap_2()
             .items_center()
             .px_2()
             .py_1()
             .rounded_md()
+            .cursor_pointer()
             .when(self.selected, |this| this.bg(cx.theme().list_active))
             .when(is_current, |this| {
                 this.bg(cx.theme().accent)
                     .text_color(cx.theme().accent_foreground)
+            })
+            .on_click({
+                let panel = panel.clone();
+                move |_, window, cx| {
+                    panel.update(cx, |this, cx| {
+                        this.history_popover_open = false;
+                        this.load_session(session_id, cx);
+                    });
+                    window.refresh();
+                }
             })
             .child(
                 v_flex()
@@ -308,7 +323,7 @@ pub struct AiChatPanel {
     database: Option<String>,
     is_loading: bool,
     storage_manager: one_core::storage::StorageManager,
-    scroll_handle: gpui::ScrollHandle,
+    scroll_handle: VirtualListScrollHandle,
     history_sessions: Vec<ChatSession>,
     auto_scroll_enabled: bool,
     history_popover_open: bool,
@@ -348,7 +363,7 @@ impl AiChatPanel {
             database: None,
             is_loading: false,
             storage_manager,
-            scroll_handle: gpui::ScrollHandle::new(),
+            scroll_handle: VirtualListScrollHandle::new(),
             history_sessions: Vec::new(),
             auto_scroll_enabled: true,
             history_popover_open: false,
@@ -924,45 +939,58 @@ impl AiChatPanel {
         }).detach();
     }
 
-    fn render_messages(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_messages(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+
+        // 计算每条消息的估算高度
+        let item_sizes: Rc<Vec<gpui::Size<gpui::Pixels>>> = Rc::new(
+            self.messages
+                .iter()
+                .map(|msg| {
+                    // 估算消息高度：基础高度 + 内容行数 * 行高
+                    let line_height = px(24.0);
+                    let base_height = px(48.0); // padding + margin
+                    let content_lines = (msg.content.len() as f32 / 60.0).ceil().max(1.0);
+                    let estimated_height = base_height + line_height * content_lines;
+                    gpui::size(px(0.0), estimated_height) // width will be measured
+                })
+                .collect(),
+        );
 
         div()
             .flex_1()
             .w_full()
             .overflow_hidden()
+            .p_4()
             .child(
-                div()
-                    .id("chat-messages")
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .p_4()
-                    .gap_4()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll_handle)
-                    .on_scroll_wheel(move |_, window, cx| {
-                        // 用户手动滚动时，检查是否在底部
-                        entity.update(cx, |this, cx| {
-                            this.check_scroll_position();
-                            cx.notify();
-                        });
-                        window.refresh();
-                    })
-                    .children(
-                        self.messages.iter().map(|msg| {
-                            self.render_message(msg, window, cx)
-                        })
-                    )
+                v_virtual_list(
+                    entity.clone(),
+                    "chat-messages-list",
+                    item_sizes,
+                    |this, range, window, cx| {
+                        range
+                            .into_iter()
+                            .filter_map(|ix| {
+                                this.messages.get(ix).map(|msg| {
+                                    this.render_message(msg, window, cx)
+                                })
+                            })
+                            .collect()
+                    },
+                )
+                .track_scroll(&self.scroll_handle)
+                .gap_4()
             )
     }
 
     fn check_scroll_position(&mut self) {
+        use gpui_component::scroll::ScrollbarHandle;
         let offset = self.scroll_handle.offset();
-        let max_offset = self.scroll_handle.max_offset();
-        
-        // 检查是否在底部（允许 5px 的误差）
-        let is_at_bottom = (offset.y.abs() - max_offset.height.abs()).abs() < px(5.0);
+        let content_size = self.scroll_handle.content_size();
+
+        // 检查是否在底部（允许 50px 的误差）
+        let scroll_bottom = offset.y.abs() + px(500.0); // 假设可见区域约 500px
+        let is_at_bottom = scroll_bottom >= content_size.height - px(50.0);
         self.auto_scroll_enabled = is_at_bottom;
     }
 
@@ -1091,7 +1119,8 @@ impl AiChatPanel {
     fn render_input(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w_full()
-            .p_4()
+            .px_2()
+            .py_2()
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
