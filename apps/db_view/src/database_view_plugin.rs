@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use gpui::{App, Entity, Global, Window};
 use one_core::storage::DatabaseType;
 
-use crate::common::DatabaseEditorView;
+use crate::common::{DatabaseEditorView, SchemaEditorView};
 use crate::db_connection_form::DbConnectionForm;
 use crate::mysql::mysql_view_plugin::MySqlDatabaseViewPlugin;
 use crate::postgresql::postgresql_view_plugin::PostgreSqlDatabaseViewPlugin;
@@ -130,6 +130,17 @@ pub trait DatabaseViewPlugin: Send + Sync {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<DatabaseEditorView>;
+
+    /// 创建模式编辑器视图（用于新建模式）
+    fn create_schema_editor_view(
+        &self,
+        _connection_id: String,
+        _database_name: String,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<Entity<SchemaEditorView>> {
+        None
+    }
 
     /// 获取表设计器 UI 配置能力
     fn get_table_designer_capabilities(&self) -> TableDesignerCapabilities {

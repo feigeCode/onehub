@@ -1,24 +1,21 @@
-use db::{GlobalDbState, plugin::DatabaseOperationRequest, SqlResult};
-use gpui::{div, AnyView, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window};
+use db::GlobalDbState;
+use gpui::{div, AnyView, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window};
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex, v_flex,
     highlighter::Language,
     input::{Input, InputState},
-    notification::Notification,
-    WindowExt,
 };
 use one_core::storage::DatabaseType;
-use crate::db_tree_view::DbTreeView;
-use super::DatabaseFormEvent;
+use super::{SchemaFormEvent, SchemaOperationRequest};
 
-pub struct DatabaseEditorView {
+pub struct SchemaEditorView {
     focus_handle: FocusHandle,
     form: AnyView,
     sql_preview: Entity<InputState>,
     current_tab: EditorTab,
-    is_edit_mode: bool,
     error_message: Entity<Option<String>>,
+    database_type: DatabaseType,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -28,16 +25,15 @@ enum EditorTab {
     SqlPreview,
 }
 
-impl DatabaseEditorView {
+impl SchemaEditorView {
     pub fn new<F>(
         form: Entity<F>,
         database_type: DatabaseType,
-        is_edit_mode: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self
     where
-        F: Render + EventEmitter<DatabaseFormEvent> + 'static,
+        F: Render + EventEmitter<SchemaFormEvent> + 'static,
     {
         let sql_preview = cx.new(|cx| {
             InputState::new(window, cx)
@@ -48,12 +44,12 @@ impl DatabaseEditorView {
         let focus_handle = cx.focus_handle();
         let error_message = cx.new(|_| None);
 
-        let is_edit = is_edit_mode;
+        let db_type = database_type;
 
         let form_subscription = cx.subscribe_in(&form, window, move |this, _form, event, window, cx| {
             match event {
-                DatabaseFormEvent::FormChanged(request) => {
-                    this.update_sql_preview(request, database_type, is_edit, window, cx);
+                SchemaFormEvent::FormChanged(request) => {
+                    this.update_sql_preview(request, db_type, window, cx);
                 }
             }
         });
@@ -63,27 +59,29 @@ impl DatabaseEditorView {
             form: form.into(),
             sql_preview,
             current_tab: EditorTab::Form,
-            is_edit_mode,
             error_message,
+            database_type,
             _subscriptions: vec![form_subscription],
         }
     }
 
     fn update_sql_preview(
         &mut self,
-        request: &DatabaseOperationRequest,
+        request: &SchemaOperationRequest,
         database_type: DatabaseType,
-        is_edit_mode: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let global_db_state = cx.global::<GlobalDbState>();
         if let Ok(plugin) = global_db_state.get_plugin(&database_type) {
-            let sql = if is_edit_mode {
-                plugin.build_modify_database_sql(request)
-            } else {
-                plugin.build_create_database_sql(request)
-            };
+            let mut sql = plugin.build_create_schema_sql(&request.schema_name);
+            if let Some(comment) = &request.comment {
+                if !comment.is_empty() {
+                    if let Some(comment_sql) = plugin.build_comment_schema_sql(&request.schema_name, comment) {
+                        sql = format!("{}\n{}", sql, comment_sql);
+                    }
+                }
+            }
             self.sql_preview.update(cx, |state, cx| {
                 state.set_value(sql, window, cx);
             });
@@ -108,18 +106,18 @@ impl DatabaseEditorView {
         });
     }
 
-    pub fn is_edit_mode(&self) -> bool {
-        self.is_edit_mode
+    pub fn database_type(&self) -> DatabaseType {
+        self.database_type
     }
 }
 
-impl Focusable for DatabaseEditorView {
+impl Focusable for SchemaEditorView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Render for DatabaseEditorView {
+impl Render for SchemaEditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let form_button = if self.current_tab == EditorTab::Form {
             Button::new("tab_form")

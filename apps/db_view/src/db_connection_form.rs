@@ -111,6 +111,7 @@ pub struct FormField {
     pub label: String,
     pub placeholder: String,
     pub field_type: FormFieldType,
+    pub rows: usize,
     pub required: bool,
     pub default_value: String,
     pub options: Vec<(String, String)>,
@@ -137,6 +138,7 @@ impl FormField {
             name,
             label: label.into(),
             field_type,
+            rows: 5,
             required: true,
             default_value: String::new(),
             options: Vec::new(),
@@ -161,6 +163,10 @@ impl FormField {
     pub fn options(mut self, options: Vec<(String, String)>) -> Self {
         self.options = options;
         self
+    }
+    pub fn rows(mut self, rows: usize) -> Self {
+        self.rows = rows;
+         self
     }
 }
 
@@ -212,6 +218,7 @@ impl DbFormConfig {
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
                     FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .rows(14)
                         .optional()
                         .placeholder("输入连接备注信息...")
                         .default(""),
@@ -258,6 +265,7 @@ impl DbFormConfig {
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
                     FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .rows(14)
                         .optional()
                         .placeholder("输入连接备注信息...")
                         .default(""),
@@ -319,6 +327,7 @@ impl DbFormConfig {
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
                     FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .rows(14)
                         .optional()
                         .placeholder("输入连接备注信息...")
                         .default(""),
@@ -365,6 +374,7 @@ impl DbFormConfig {
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
                     FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .rows(14)
                         .optional()
                         .placeholder("输入连接备注信息...")
                         .default(""),
@@ -415,6 +425,7 @@ impl DbFormConfig {
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
                     FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .rows(14)
                         .optional()
                         .placeholder("输入连接备注信息...")
                         .default(""),
@@ -443,6 +454,7 @@ impl DbFormConfig {
                 ]),
                 TabGroup::new("notes", "备注").fields(vec![
                     FormField::new("remark", "备注", FormFieldType::TextArea)
+                        .rows(14)
                         .optional()
                         .placeholder("输入连接备注信息...")
                         .default(""),
@@ -524,7 +536,11 @@ impl DbConnectionForm {
                         }
 
                         if field.field_type == FormFieldType::TextArea {
-                            input_state = input_state.auto_grow(5, 15);
+                            if field.rows == 14 {
+                                input_state = input_state.rows(14);
+                            }else {
+                                input_state = input_state.auto_grow(5, 14);
+                            }
                         }
 
                         input_state.set_value(field.default_value.clone(), window, cx);
@@ -577,7 +593,7 @@ impl DbConnectionForm {
     pub fn set_workspaces(&mut self, workspaces: Vec<Workspace>, window: &mut Window, cx: &mut Context<Self>) {
         let mut items = vec![WorkspaceSelectItem::none()];
         items.extend(workspaces.iter().map(WorkspaceSelectItem::from_workspace));
-        
+
         self.workspace_select.update(cx, |select, cx| {
             select.set_items(items, window, cx);
         });
@@ -900,6 +916,7 @@ impl Render for DbConnectionForm {
                 div()
                     .flex_1()
                     .min_h(px(250.))
+                    .overflow_hidden()
                     .when(!current_tab_fields.is_empty(), |this| {
                         let is_general_tab = self.active_tab == 0;
                         let db_type = self.config.db_type;

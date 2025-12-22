@@ -262,7 +262,6 @@ pub trait DatabasePlugin: Send + Sync {
                     node.connection_id.clone(),
                     node.database_type
                 )
-                .with_children_flag(true)
                 .with_parent_context(id)
                 .with_metadata(metadata);
 
@@ -320,14 +319,11 @@ pub trait DatabasePlugin: Send + Sync {
                         node.connection_id.clone(),
                         node.database_type
                     )
-                    .with_children_flag(true)
                     .with_parent_context(format!("{}:table_folder", id))
                     .with_metadata(meta)
                 })
                 .collect();
-            table_folder.children = children;
-            table_folder.has_children = true;
-            table_folder.children_loaded = true;
+            table_folder.set_children(children)
         }
         nodes.push(table_folder);
 
@@ -338,15 +334,14 @@ pub trait DatabasePlugin: Send + Sync {
             views
         };
         let view_count = filtered_views.len();
+        let mut views_folder = DbNode::new(
+            format!("{}:views_folder", id),
+            format!("Views ({})", view_count),
+            DbNodeType::ViewsFolder,
+            node.connection_id.clone(),
+            node.database_type
+        ).with_parent_context(id).with_metadata(metadata.clone());
         if view_count > 0 {
-            let mut views_folder = DbNode::new(
-                format!("{}:views_folder", id),
-                format!("Views ({})", view_count),
-                DbNodeType::ViewsFolder,
-                node.connection_id.clone(),
-                node.database_type
-            ).with_parent_context(id).with_metadata(metadata.clone());
-
             let children: Vec<DbNode> = filtered_views
                 .into_iter()
                 .map(|view| {
@@ -369,16 +364,12 @@ pub trait DatabasePlugin: Send + Sync {
                     vnode
                 })
                 .collect();
-
-            views_folder.children = children;
-            views_folder.has_children = true;
-            views_folder.children_loaded = true;
-            nodes.push(views_folder);
+            views_folder.set_children( children);
+            
         }
-
+        nodes.push(views_folder);
         let queries_folder = self.load_queries(node, global_storage_state).await?;
         nodes.push(queries_folder);
-
         Ok(nodes)
     }
 
@@ -399,7 +390,7 @@ pub trait DatabasePlugin: Send + Sync {
             let mut metadata = HashMap::new();
             metadata.insert("database".to_string(), database_name.clone());
 
-            let queries_folder_node = DbNode::new(
+            let mut queries_folder_node = DbNode::new(
                 format!("{}:queries_folder", &node_id_for_queries),
                 format!("Queries ({})", query_count),
                 DbNodeType::QueriesFolder,
@@ -435,10 +426,7 @@ pub trait DatabasePlugin: Send + Sync {
                     query_nodes.push(query_node);
                 }
 
-                let mut queries_folder_node = queries_folder_node;
-                queries_folder_node.children = query_nodes;
-                queries_folder_node.has_children = true;
-                queries_folder_node.children_loaded = true;
+                queries_folder_node.set_children(query_nodes);
                 return Ok(queries_folder_node);
             } else {
                 // Add empty QueriesFolder node
@@ -471,7 +459,6 @@ pub trait DatabasePlugin: Send + Sync {
                     .into_iter()
                     .map(|db| {
                         DbNode::new(format!("{}:{}", &node.id, db), db.clone(), DbNodeType::Database, node.id.clone(), node.database_type)
-                            .with_children_flag(false)
                             .with_parent_context(id)
                     })
                     .collect())
@@ -544,10 +531,7 @@ pub trait DatabasePlugin: Send + Sync {
                             .with_parent_context(format!("{}:columns_folder", id))
                         })
                         .collect();
-
-                    columns_folder.children = column_nodes;
-                    columns_folder.has_children = true;
-                    columns_folder.children_loaded = true;
+                    columns_folder.set_children(column_nodes);
                 }
                 children.push(columns_folder);
 
@@ -584,10 +568,7 @@ pub trait DatabasePlugin: Send + Sync {
                             .with_parent_context(format!("{}:indexes_folder", id))
                         })
                         .collect();
-
-                    indexes_folder.children = index_nodes;
-                    indexes_folder.has_children = true;
-                    indexes_folder.children_loaded = true;
+                    indexes_folder.set_children(index_nodes);
                 }
                 children.push(indexes_folder);
 
@@ -1314,11 +1295,11 @@ pub trait DatabasePlugin: Send + Sync {
         }
 
         // Compare indexes
-        let original_indexes: std::collections::HashMap<&str, &IndexDefinition> = original.indexes
+        let original_indexes: HashMap<&str, &IndexDefinition> = original.indexes
             .iter()
             .map(|i| (i.name.as_str(), i))
             .collect();
-        let new_indexes: std::collections::HashMap<&str, &IndexDefinition> = new.indexes
+        let new_indexes: HashMap<&str, &IndexDefinition> = new.indexes
             .iter()
             .map(|i| (i.name.as_str(), i))
             .collect();

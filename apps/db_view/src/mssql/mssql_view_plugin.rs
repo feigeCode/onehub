@@ -1,9 +1,10 @@
 use gpui::{App, AppContext, Entity, Window};
 use one_core::storage::DatabaseType;
-use crate::common::DatabaseEditorView;
+use crate::common::{DatabaseEditorView, SchemaEditorView};
 use crate::database_view_plugin::{DatabaseViewPlugin, TableDesignerCapabilities, NodeMenuCapabilities};
 use crate::db_connection_form::{DbConnectionForm, DbFormConfig};
 use crate::mssql::database_form::MsSqlDatabaseForm;
+use crate::mssql::schema_form::MsSqlSchemaForm;
 
 pub struct MsSqlDatabaseViewPlugin;
 
@@ -45,6 +46,19 @@ impl DatabaseViewPlugin for MsSqlDatabaseViewPlugin {
             let form = cx.new(|cx| MsSqlDatabaseForm::new_for_edit(&database_name, window, cx));
             DatabaseEditorView::new(form, DatabaseType::MSSQL, true, window, cx)
         })
+    }
+
+    fn create_schema_editor_view(
+        &self,
+        _connection_id: String,
+        _database_name: String,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Entity<SchemaEditorView>> {
+        Some(cx.new(|cx| {
+            let form = cx.new(|cx| MsSqlSchemaForm::new(window, cx));
+            SchemaEditorView::new(form, DatabaseType::MSSQL, window, cx)
+        }))
     }
 
     fn get_table_designer_capabilities(&self) -> TableDesignerCapabilities {

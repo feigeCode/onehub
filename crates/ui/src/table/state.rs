@@ -31,8 +31,8 @@ enum SelectionState {
 pub enum TableEvent {
     /// Single click or move to selected row.
     SelectRow(usize),
-    /// Double click on the row.
-    DoubleClickedRow(usize),
+    /// Double click on the cell.
+    DoubleClickedCell(usize, usize),
     /// Selected column.
     SelectColumn(usize),
     /// Selected cell (row_ix, col_ix).
@@ -652,6 +652,7 @@ where
             if !is_row_number_col {
                 self.start_editing(row_ix, col_ix, window, cx);
             }
+            cx.emit(TableEvent::DoubleClickedCell(row_ix, col_ix))
         } else {
             // Single click
             if !is_row_number_col {

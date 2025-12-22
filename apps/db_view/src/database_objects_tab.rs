@@ -1,18 +1,18 @@
-use std::any::Any;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::db_tree_view::{get_icon_for_node_type, DbTreeViewEvent};
 use anyhow::anyhow;
 use db::{DbNode, DbNodeType, GlobalDbState, ObjectView};
 use gpui::{div, AnyElement, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Window};
-use gpui_component::{h_flex, table::{Column, Table, TableDelegate, TableEvent, TableState}, v_flex, ActiveTheme, Icon, IconName, Sizable, Size};
 use gpui_component::button::Button;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::label::Label;
+use gpui_component::{h_flex, table::{Column, Table, TableDelegate, TableEvent, TableState}, v_flex, ActiveTheme, Icon, IconName, Sizable, Size};
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{ConnectionRepository, DatabaseType, DbConnectionConfig, GlobalStorageState, Workspace};
 use one_core::tab_container::{TabContent, TabContentType};
 use one_core::utils::debouncer::Debouncer;
-use crate::db_tree_view::{DbTreeViewEvent, get_icon_for_node_type};
+use std::any::Any;
+use std::sync::Arc;
+use std::time::Duration;
 
 fn format_timestamp(ts: i64) -> String {
     use chrono::{DateTime, Local};
@@ -84,8 +84,8 @@ impl DatabaseObjects {
         });
 
         let table_sub = cx.subscribe_in(&table_state, window, |this: &mut Self, _table: &Entity<TableState<ResultsDelegate>>, event: &TableEvent, _window, cx: &mut Context<Self>| {
-            if let TableEvent::DoubleClickedRow(row) = event {
-                this.handle_row_double_click(*row, cx);
+            if let TableEvent::DoubleClickedCell(row, col) = event {
+                this.handle_row_double_click(*row, *col, cx);
             }
         });
 
@@ -103,7 +103,13 @@ impl DatabaseObjects {
         }
     }
 
-    fn handle_row_double_click(&self, row: usize, cx: &mut Context<Self>) {
+
+    fn handle_row_double_click(&self, row: usize, col: usize, cx: &mut Context<Self>) {
+        // 只有双击第一列才触发打开操作
+        if col != 0 {
+            return;
+        }
+
         let Some(current_node) = &self.current_node else {
             return;
         };
@@ -121,7 +127,12 @@ impl DatabaseObjects {
             return;
         };
 
-        let first_col_value = row_values.first().cloned().unwrap_or_default();
+        // 获取双击的第一列值（名称）
+        let cell_value = row_values.first().cloned().unwrap_or_default();
+        if cell_value.is_empty() {
+            return;
+        }
+
         let connection_id = &current_node.connection_id;
         let database = current_node.metadata.as_ref()
             .and_then(|m| m.get("database"))
@@ -130,13 +141,13 @@ impl DatabaseObjects {
 
         let node_id = match db_node_type {
             DbNodeType::Database | DbNodeType::TablesFolder => {
-                format!("{}:{}:tables:{}", connection_id, database, first_col_value)
+                format!("{}:{}:tables:{}", connection_id, database, cell_value)
             }
             DbNodeType::ViewsFolder => {
-                format!("{}:{}:views:{}", connection_id, database, first_col_value)
+                format!("{}:{}:views:{}", connection_id, database, cell_value)
             }
             DbNodeType::QueriesFolder => {
-                format!("{}:queries:{}", connection_id, first_col_value)
+                format!("{}:queries:{}", connection_id, cell_value)
             }
             _ => return,
         };
@@ -338,258 +349,220 @@ impl DatabaseObjects {
             .detach();
     }
 
-    fn render_toolbar_buttons(&self, node_type: DbNodeType, _cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_toolbar_buttons(&self, node_type: DbNodeType, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut buttons: Vec<AnyElement> = vec![];
+        let current_node = self.current_node.clone();
 
-        buttons.push(
-            Button::new("refresh-data")
+        let create_button = |id: &'static str, icon: IconName, tooltip: &'static str, event_fn: fn(&DbNode) -> Option<DbTreeViewEvent>, window: &Window, cx: &Context<Self>| -> AnyElement {
+            let node = current_node.clone();
+            Button::new(id)
                 .with_size(Size::Medium)
-                .icon(IconName::Refresh)
-                .tooltip("刷新")
+                .icon(icon)
+                .tooltip(tooltip)
+                .on_click(window.listener_for(&cx.entity(), move |_this, _, _, cx| {
+                    if let Some(ref node) = node {
+                        if let Some(event) = event_fn(node) {
+                            cx.emit(event);
+                        }
+                    }
+                }))
                 .into_any_element()
-        );
+        };
+
+        buttons.push(create_button(
+            "refresh-data",
+            IconName::Refresh,
+            "刷新",
+            |node| Some(DbTreeViewEvent::NodeSelected { node_id: node.id.clone() }),
+            window,
+            cx,
+        ));
 
         match node_type {
             DbNodeType::Connection => {
-                buttons.push(
-                    Button::new("add-connection")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建连接")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("delete-connection")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除连接")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-connection")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑连接")
-                        .into_any_element()
-                );
+                buttons.push(create_button(
+                    "create-database",
+                    IconName::Plus,
+                    "新建数据库",
+                    |node| Some(DbTreeViewEvent::CreateDatabase { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "delete-connection",
+                    IconName::Minus,
+                    "删除连接",
+                    |node| Some(DbTreeViewEvent::DeleteConnection { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "close-connection",
+                    IconName::CircleX,
+                    "关闭连接",
+                    |node| Some(DbTreeViewEvent::CloseConnection { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
             }
             DbNodeType::Database => {
-                buttons.push(
-                    Button::new("create-database")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建数据库")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-database")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除数据库")
-                        .into_any_element()
-                );
+                buttons.push(create_button(
+                    "create-query",
+                    IconName::Plus,
+                    "新建数据库",
+                    |node| Some(DbTreeViewEvent::CreateDatabase { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "drop-database",
+                    IconName::Minus,
+                    "删除数据库",
+                    |node| Some(DbTreeViewEvent::DeleteDatabase { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "close-database",
+                    IconName::CircleX,
+                    "关闭数据库",
+                    |node| Some(DbTreeViewEvent::CloseDatabase { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
             }
-            DbNodeType::TablesFolder | DbNodeType::Table => {
-                buttons.push(
-                    Button::new("create-table")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建表")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-table")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除表")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("design-table")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("设计表")
-                        .into_any_element()
-                );
+            DbNodeType::TablesFolder => {
+                buttons.push(create_button(
+                    "create-table",
+                    IconName::Plus,
+                    "新建表",
+                    |node| Some(DbTreeViewEvent::DesignTable { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+            }
+            DbNodeType::Table => {
+                buttons.push(create_button(
+                    "open-table",
+                    IconName::Eye,
+                    "查看表数据",
+                    |node| Some(DbTreeViewEvent::OpenTableData { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "design-table",
+                    IconName::Edit,
+                    "设计表",
+                    |node| Some(DbTreeViewEvent::DesignTable { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "drop-table",
+                    IconName::Minus,
+                    "删除表",
+                    |node| Some(DbTreeViewEvent::DeleteTable { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
             }
             DbNodeType::ColumnsFolder | DbNodeType::Column => {
-                buttons.push(
-                    Button::new("add-column")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新增列")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-column")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除列")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-column")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑列")
-                        .into_any_element()
-                );
+                // 列操作需要设计表来实现
+                buttons.push(create_button(
+                    "design-table",
+                    IconName::Edit,
+                    "设计表",
+                    |node| {
+                        let table_node_id = node.parent_context.clone()?;
+                        Some(DbTreeViewEvent::DesignTable { node_id: table_node_id })
+                    },
+                    window,
+                    cx,
+                ));
             }
-            DbNodeType::ViewsFolder | DbNodeType::View => {
-                buttons.push(
-                    Button::new("create-view")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建视图")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-view")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除视图")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-view")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑视图")
-                        .into_any_element()
-                );
+            DbNodeType::ViewsFolder => {
+                // 视图文件夹暂无特殊操作
             }
-            DbNodeType::FunctionsFolder | DbNodeType::Function => {
-                buttons.push(
-                    Button::new("create-function")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建函数")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-function")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除函数")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-function")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑函数")
-                        .into_any_element()
-                );
+            DbNodeType::View => {
+                buttons.push(create_button(
+                    "open-view",
+                    IconName::Eye,
+                    "查看视图数据",
+                    |node| Some(DbTreeViewEvent::OpenViewData { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "drop-view",
+                    IconName::Minus,
+                    "删除视图",
+                    |node| Some(DbTreeViewEvent::DeleteView { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
             }
-            DbNodeType::ProceduresFolder | DbNodeType::Procedure => {
-                buttons.push(
-                    Button::new("create-procedure")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建存储过程")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-procedure")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除存储过程")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-procedure")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑存储过程")
-                        .into_any_element()
-                );
-            }
-            DbNodeType::TriggersFolder | DbNodeType::Trigger => {
-                buttons.push(
-                    Button::new("create-trigger")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建触发器")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-trigger")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除触发器")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-trigger")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑触发器")
-                        .into_any_element()
-                );
-            }
-            DbNodeType::SequencesFolder | DbNodeType::Sequence => {
-                buttons.push(
-                    Button::new("create-sequence")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建序列")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-sequence")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除序列")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-sequence")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑序列")
-                        .into_any_element()
-                );
-            }
+            DbNodeType::FunctionsFolder | DbNodeType::Function |
+            DbNodeType::ProceduresFolder | DbNodeType::Procedure |
+            DbNodeType::TriggersFolder | DbNodeType::Trigger |
+            DbNodeType::SequencesFolder | DbNodeType::Sequence |
             DbNodeType::IndexesFolder | DbNodeType::Index => {
-                buttons.push(
-                    Button::new("create-index")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建索引")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("drop-index")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除索引")
-                        .into_any_element()
-                );
+                // 这些对象的创建/删除/编辑暂未实现
             }
-            DbNodeType::QueriesFolder | DbNodeType::NamedQuery => {
-                buttons.push(
-                    Button::new("create-query")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Plus)
-                        .tooltip("新建查询")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("delete-query")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Minus)
-                        .tooltip("删除查询")
-                        .into_any_element()
-                );
-                buttons.push(
-                    Button::new("edit-query")
-                        .with_size(Size::Medium)
-                        .icon(IconName::Edit)
-                        .tooltip("编辑查询")
-                        .into_any_element()
-                );
-            },
-            _ => {}
+            DbNodeType::QueriesFolder => {
+                buttons.push(create_button(
+                    "create-query",
+                    IconName::Plus,
+                    "新建查询",
+                    |node| Some(DbTreeViewEvent::CreateNewQuery { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+            }
+            DbNodeType::NamedQuery => {
+                buttons.push(create_button(
+                    "open-query",
+                    IconName::Eye,
+                    "打开查询",
+                    |node| Some(DbTreeViewEvent::OpenNamedQuery { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "rename-query",
+                    IconName::Edit,
+                    "重命名查询",
+                    |node| Some(DbTreeViewEvent::RenameQuery { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "delete-query",
+                    IconName::Minus,
+                    "删除查询",
+                    |node| Some(DbTreeViewEvent::DeleteQuery { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+            }
+            DbNodeType::Schema => {
+                buttons.push(create_button(
+                    "create-query",
+                    IconName::Plus,
+                    "新建查询",
+                    |node| Some(DbTreeViewEvent::CreateNewQuery { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+                buttons.push(create_button(
+                    "delete-schema",
+                    IconName::Minus,
+                    "删除模式",
+                    |node| Some(DbTreeViewEvent::DeleteSchema { node_id: node.id.clone() }),
+                    window,
+                    cx,
+                ));
+            }
         }
 
         buttons
@@ -597,11 +570,11 @@ impl DatabaseObjects {
 }
 
 impl Render for DatabaseObjects {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded_data = self.loaded_data.read(cx);
         let title = loaded_data.title.clone();
         let node_type = loaded_data.db_node_type.clone();
-        let toolbar_buttons = self.render_toolbar_buttons(node_type, cx);
+        let toolbar_buttons = self.render_toolbar_buttons(node_type, window, cx);
 
         v_flex()
             .size_full()

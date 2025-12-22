@@ -277,7 +277,7 @@ impl StoredConnection {
             connection_type: ConnectionType::Database,
             params: serde_json::to_string(&params).expect("DbConnectionConfig 序列化不应失败"),
             workspace_id,
-            selected_databases: None,
+            selected_databases: if let Some(database) = &params.database { Some(format!("[\"{}\"]", database)) } else {None},
             remark: None,
             created_at: None,
             updated_at: None,

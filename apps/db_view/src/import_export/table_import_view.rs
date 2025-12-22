@@ -3,7 +3,6 @@ use gpui_component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
-    radio::Radio,
     select::{Select, SelectItem, SelectState},
     switch::Switch,
     v_flex, ActiveTheme, IndexPath, Sizable,
@@ -16,16 +15,33 @@ use db::{CsvImportConfig, DataFormat, DataImporter, GlobalDbState, ImportConfig}
 pub enum RecordSeparator {
     Lf,        // LF
     CrLf,      // CR+LF
-    Custom(String),
 }
 
 impl RecordSeparator {
-    fn to_string(&self) -> String {
+    fn to_separator_string(&self) -> String {
         match self {
             RecordSeparator::Lf => "\n".to_string(),
             RecordSeparator::CrLf => "\r\n".to_string(),
-            RecordSeparator::Custom(s) => s.clone(),
         }
+    }
+
+    fn all() -> Vec<Self> {
+        vec![RecordSeparator::Lf, RecordSeparator::CrLf]
+    }
+}
+
+impl SelectItem for RecordSeparator {
+    type Value = RecordSeparator;
+
+    fn title(&self) -> gpui::SharedString {
+        match self {
+            RecordSeparator::Lf => "LF (\\n)".into(),
+            RecordSeparator::CrLf => "CRLF (\\r\\n)".into(),
+        }
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
     }
 }
 
@@ -35,19 +51,43 @@ pub enum FieldSeparator {
     Comma,     // 逗号
     Tab,       // 制表符
     Semicolon, // 分号
-    Space,     // 空格
-    Custom(String),
+    Pipe,      // 管道符
 }
 
 impl FieldSeparator {
-    fn to_string(&self) -> String {
+    fn to_separator_char(&self) -> char {
         match self {
-            FieldSeparator::Comma => ",".to_string(),
-            FieldSeparator::Tab => "\t".to_string(),
-            FieldSeparator::Semicolon => ";".to_string(),
-            FieldSeparator::Space => " ".to_string(),
-            FieldSeparator::Custom(s) => s.clone(),
+            FieldSeparator::Comma => ',',
+            FieldSeparator::Tab => '\t',
+            FieldSeparator::Semicolon => ';',
+            FieldSeparator::Pipe => '|',
         }
+    }
+
+    fn all() -> Vec<Self> {
+        vec![
+            FieldSeparator::Comma,
+            FieldSeparator::Tab,
+            FieldSeparator::Semicolon,
+            FieldSeparator::Pipe,
+        ]
+    }
+}
+
+impl SelectItem for FieldSeparator {
+    type Value = FieldSeparator;
+
+    fn title(&self) -> gpui::SharedString {
+        match self {
+            FieldSeparator::Comma => "逗号 (,)".into(),
+            FieldSeparator::Tab => "制表符 (\\t)".into(),
+            FieldSeparator::Semicolon => "分号 (;)".into(),
+            FieldSeparator::Pipe => "管道符 (|)".into(),
+        }
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
     }
 }
 
@@ -85,24 +125,22 @@ pub struct TableImportView {
     pub table: Entity<InputState>,
     format: Entity<DataFormat>,
     format_display: Entity<String>, // "TXT", "CSV", "JSON"
-    
+
     // 文件选择
     file_path: Entity<InputState>,
     pending_file_path: Entity<Option<String>>,
-    
+
     // 分隔符配置
-    record_separator: Entity<RecordSeparator>,
-    record_separator_mode: Entity<String>, // "auto" 或 "fixed"
-    field_separator: Entity<FieldSeparator>,
-    field_separator_custom: Entity<InputState>,
+    record_separator: Entity<SelectState<Vec<RecordSeparator>>>,
+    field_separator: Entity<SelectState<Vec<FieldSeparator>>>,
     text_qualifier: Entity<SelectState<Vec<TextQualifierItem>>>,
-    
+
     // 导入选项
     has_header: Entity<bool>,
     stop_on_error: Entity<bool>,
     use_transaction: Entity<bool>,
     truncate_before: Entity<bool>,
-    
+
     status: Entity<String>,
     focus_handle: FocusHandle,
 }
@@ -137,7 +175,17 @@ impl TableImportView {
                 TextQualifierItem::new("单引号 (')", "'"),
             ];
             let text_qualifier = cx.new(|cx| {
-                SelectState::new(text_qualifier_items, Some(IndexPath::default()), window, cx)
+                SelectState::new(text_qualifier_items, Some(IndexPath::new(1)), window, cx)
+            });
+
+            // 创建记录分隔符选择器
+            let record_separator = cx.new(|cx| {
+                SelectState::new(RecordSeparator::all(), Some(IndexPath::default()), window, cx)
+            });
+
+            // 创建字段分隔符选择器
+            let field_separator = cx.new(|cx| {
+                SelectState::new(FieldSeparator::all(), Some(IndexPath::default()), window, cx)
             });
 
             Self {
@@ -145,22 +193,20 @@ impl TableImportView {
                 database: database_input,
                 table: table_input,
                 format: cx.new(|_| DataFormat::Csv),
-                format_display: cx.new(|_| "TXT".to_string()),
-                
+                format_display: cx.new(|_| "CSV".to_string()),
+
                 file_path: cx.new(|cx| InputState::new(window, cx)),
                 pending_file_path: cx.new(|_| None),
-                
-                record_separator: cx.new(|_| RecordSeparator::Lf),
-                record_separator_mode: cx.new(|_| "auto".to_string()),
-                field_separator: cx.new(|_| FieldSeparator::Comma),
-                field_separator_custom: cx.new(|cx| InputState::new(window, cx)),
+
+                record_separator,
+                field_separator,
                 text_qualifier,
-                
+
                 has_header: cx.new(|_| true),
                 stop_on_error: cx.new(|_| true),
                 use_transaction: cx.new(|_| true),
                 truncate_before: cx.new(|_| false),
-                
+
                 status: cx.new(|_| String::new()),
                 focus_handle: cx.focus_handle(),
             }
@@ -232,14 +278,15 @@ impl TableImportView {
         let truncate_before = *self.truncate_before.read(cx);
         let has_header = *self.has_header.read(cx);
 
-        let field_separator_str = self.field_separator_custom.read(cx).text().to_string();
-        let field_delimiter = if field_separator_str.is_empty() {
-            ','
-        } else if field_separator_str == "\\t" {
-            '\t'
-        } else {
-            field_separator_str.chars().next().unwrap_or(',')
-        };
+        let field_delimiter = self.field_separator.read(cx)
+            .selected_value()
+            .map(|v| v.to_separator_char())
+            .unwrap_or(',');
+
+        let record_terminator = self.record_separator.read(cx)
+            .selected_value()
+            .map(|v| v.to_separator_string())
+            .unwrap_or_else(|| "\n".to_string());
 
         let text_qualifier = self.text_qualifier.read(cx)
             .selected_value()
@@ -250,7 +297,7 @@ impl TableImportView {
                 field_delimiter,
                 text_qualifier,
                 has_header,
-                record_terminator: "\n".to_string(),
+                record_terminator,
             })
         } else {
             None
@@ -366,21 +413,19 @@ impl Clone for TableImportView {
             table: self.table.clone(),
             format: self.format.clone(),
             format_display: self.format_display.clone(),
-            
+
             file_path: self.file_path.clone(),
             pending_file_path: self.pending_file_path.clone(),
-            
+
             record_separator: self.record_separator.clone(),
-            record_separator_mode: self.record_separator_mode.clone(),
             field_separator: self.field_separator.clone(),
-            field_separator_custom: self.field_separator_custom.clone(),
             text_qualifier: self.text_qualifier.clone(),
-            
+
             has_header: self.has_header.clone(),
             stop_on_error: self.stop_on_error.clone(),
             use_transaction: self.use_transaction.clone(),
             truncate_before: self.truncate_before.clone(),
-            
+
             status: self.status.clone(),
             focus_handle: self.focus_handle.clone(),
         }
@@ -400,7 +445,6 @@ impl Render for TableImportView {
         let status_text = self.status.read(cx).clone();
         let _current_format = *self.format.read(cx);
         let current_format_display = self.format_display.read(cx).clone();
-        let record_sep_mode = self.record_separator_mode.read(cx).clone();
 
         v_flex()
             .gap_4()
@@ -505,67 +549,28 @@ impl Render for TableImportView {
                             div()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("你的字段要用什么分隔符来分隔？请选择合适的分隔符。")
+                                .child("分隔符配置")
                         )
                         .child(
-                            v_flex()
+                            h_flex()
                                 .gap_2()
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .child(div().w_24().child("记录分隔符:"))
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .child(
-                                                    Radio::new("record_sep_auto")
-                                                        .checked(record_sep_mode == "auto")
-                                                        .on_click(window.listener_for(&cx.entity(), |view, _, _, cx| {
-                                                            view.record_separator_mode.update(cx, |mode, cx| {
-                                                                *mode = "auto".to_string();
-                                                                cx.notify();
-                                                            });
-                                                        }))
-                                                )
-                                                .child("分隔符 - 字符识别适号制符号，用来界定每个字段")
-                                        )
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .child(div().w_24())
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .child(
-                                                    Radio::new("record_sep_fixed")
-                                                        .checked(record_sep_mode == "fixed")
-                                                        .on_click(window.listener_for(&cx.entity(), |view, _, _, cx| {
-                                                            view.record_separator_mode.update(cx, |mode, cx| {
-                                                                *mode = "fixed".to_string();
-                                                                cx.notify();
-                                                            });
-                                                        }))
-                                                )
-                                                .child("固定宽度 - 每个列内容段对齐，用空格分隔")
-                                        )
-                                )
+                                .items_center()
+                                .child(div().w_24().child("记录分隔符:"))
+                                .child(Select::new(&self.record_separator).w_40())
                         )
                         .child(
                             h_flex()
                                 .gap_2()
                                 .items_center()
                                 .child(div().w_24().child("字段分隔符:"))
-                                .child(Input::new(&self.field_separator_custom).w_32())
+                                .child(Select::new(&self.field_separator).w_40())
                         )
                         .child(
                             h_flex()
                                 .gap_2()
                                 .items_center()
                                 .child(div().w_24().child("文本识别符:"))
-                                .child(Select::new(&self.text_qualifier).w_32())
+                                .child(Select::new(&self.text_qualifier).w_40())
                         )
                         .into_any_element()
                 } else {

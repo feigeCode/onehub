@@ -78,7 +78,6 @@ pub struct DbNode {
     pub name: String,
     pub node_type: DbNodeType,
     pub database_type: DatabaseType,
-    pub has_children: bool,
     pub children_loaded: bool,
     pub children: Vec<DbNode>,
     pub metadata: Option<HashMap<String, String>>,
@@ -120,7 +119,6 @@ impl DbNode {
             id: id.into(),
             name: name.into(),
             node_type,
-            has_children: false,
             children_loaded: false,
             children: Vec::new(),
             metadata: None,
@@ -130,8 +128,8 @@ impl DbNode {
         }
     }
 
-    pub fn with_children_flag(mut self, has_children: bool) -> Self {
-        self.has_children = has_children;
+    pub fn with_children_loaded(mut self, children_loaded: bool) -> Self {
+        self.children_loaded = children_loaded;
         self
     }
 
@@ -147,6 +145,11 @@ impl DbNode {
 
     pub fn sort_children(&mut self) {
         self.children.sort();
+    }
+    
+    pub fn set_children(&mut self, children: Vec<DbNode>){
+        self.children = children;
+        self.children_loaded = true;
     }
 
     pub fn sort_children_recursive(&mut self) {

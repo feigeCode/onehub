@@ -18,6 +18,7 @@ use gpui_component::{
     checkbox::Checkbox,
     list::{List, ListDelegate, ListState},
     IndexPath, Selectable,
+    clipboard::Clipboard,
 };
 use tracing::log::{error, info, trace};
 
@@ -699,8 +700,8 @@ impl DbTreeView {
             }
         };
 
-        info!("DbTreeView lazy_load_children: attempting to load children for: {} (type: {:?}, has_children: {})",
-              node_id, node.node_type, node.has_children);
+        info!("DbTreeView lazy_load_children: attempting to load children for: {} (type: {:?})",
+              node_id, node.node_type);
 
         // 标记为正在加载
         self.loading_nodes.insert(node_id.clone());
@@ -874,14 +875,6 @@ impl DbTreeView {
                 // 如果有搜索关键字且有匹配的子节点，自动展开
                 should_expand = !query.is_empty();
             }
-        } else if node.has_children && !node.children_loaded && query.is_empty() {
-            // 未加载子节点但有子节点的节点：添加空占位符以显示展开箭头
-            // loading 状态会在节点本身上显示
-            let placeholder = TreeItem::new(
-                format!("{}:placeholder", node.id),
-                ""
-            );
-            item = item.children(vec![placeholder]);
         }
 
         // 设置展开状态
@@ -1078,6 +1071,9 @@ impl DbTreeView {
                     // 其他类型的节点暂不处理双击
                 }
             }
+            cx.emit(DbTreeViewEvent::NodeSelected {
+                node_id: node_id.clone()
+            })
         }
         cx.notify();
     }
@@ -1277,7 +1273,7 @@ impl Render for DbTreeView {
                                     &self.tree_state,
                                     move |ix, item, _depth, _selected, _window, cx| {
                                         let node_id = item.id.to_string();
-                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query, node_type, db_count) = view.update(cx, |this, cx| {
+                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query, db_count) = view.update(cx, |this, cx| {
                                             let icon = this.get_icon_for_node(&node_id, item.is_expanded(),cx).color();
 
                                             // 同步节点展开状态
@@ -1306,7 +1302,7 @@ impl Render for DbTreeView {
                                                 None
                                             };
 
-                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone(), node_type, db_count)
+                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone(), db_count)
                                         });
 
                                         // 在 update 之后触发懒加载
@@ -1431,17 +1427,47 @@ impl Render for DbTreeView {
                                                         )
                                                     })
                                                     .when_some(error_msg.clone(), |this, error_text| {
+                                                        let error_for_copy = error_text.clone();
                                                         this.child(
-                                                            div()
-                                                                .id(SharedString::from(format!("error-{}", ix)))
-                                                                .child(
-                                                                    Icon::new(IconName::TriangleAlert)
-                                                                        .with_size(Size::Small)
+                                                            Popover::new(SharedString::from(format!("error-popover-{}", ix)))
+                                                                .trigger(
+                                                                    Button::new(SharedString::from(format!("error-btn-{}", ix)))
+                                                                        .ghost()
+                                                                        .icon(IconName::TriangleAlert)
+                                                                        .xsmall()
                                                                         .text_color(cx.theme().warning)
-                                                                )
-                                                                .tooltip(move |window, cx| {
-                                                                    Tooltip::new(error_text.clone()).build(window, cx)
-                                                                })
+                                                                ).content(move |_state, _window, cx| {
+                                                                    let error_for_copy = error_for_copy.clone();
+                                                                    v_flex()
+                                                                        .gap_2()
+                                                                        .child(
+                                                                            h_flex()
+                                                                                .items_center()
+                                                                                .justify_between()
+                                                                                .child(
+                                                                                    h_flex()
+                                                                                        .items_center()
+                                                                                        .gap_1()
+                                                                                        .child(
+                                                                                            Icon::new(IconName::TriangleAlert)
+                                                                                                .with_size(Size::Small)
+                                                                                                .text_color(cx.theme().warning)
+                                                                                        )
+                                                                                        .child("错误信息")
+                                                                                )
+                                                                                .child(
+                                                                                    Clipboard::new(SharedString::from(format!("copy-error-{}", ix)))
+                                                                                        .value(error_for_copy)
+                                                                                )
+                                                                        )
+                                                                    .child(
+                                                                        div()
+                                                                            .text_sm()
+                                                                            .text_color(cx.theme().muted_foreground)
+                                                                            .child(error_text.clone())
+                                                                    )
+                                                            })
+                                                                .max_w(px(400.))
                                                         )
                                                     })
                                             );

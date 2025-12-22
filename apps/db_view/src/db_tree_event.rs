@@ -138,7 +138,9 @@ impl DatabaseEventHandler {
             match event {
                 DbTreeViewEvent::NodeSelected { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_node_selected(node, global_state, objects_panel, cx);
+                        if node.children_loaded {
+                            Self::handle_node_selected(node, global_state, objects_panel, cx);
+                        }
                     }
                 }
                 DbTreeViewEvent::CreateNewQuery { node_id } => {
@@ -267,12 +269,14 @@ impl DatabaseEventHandler {
         let tab_container_for_objects = tab_container.clone();
         let global_state_for_objects = cx.global::<GlobalDbState>().clone();
         let tree_view_for_objects = db_tree_view.clone();
+        let objects_panel_clone = objects_panel.clone();
 
         let database_objects = objects_panel.read(cx).database_objects().clone();
         let objects_subscription = cx.subscribe_in(&database_objects, window, move |_handler, _db_objects, event, window, cx| {
             let global_state = global_state_for_objects.clone();
             let tab_container = tab_container_for_objects.clone();
             let tree_view = tree_view_for_objects.clone();
+            let objects_panel = objects_panel_clone.clone();
 
             let get_node = |node_id: &str, cx: &mut Context<Self>| -> Option<DbNode> {
                 let node = tree_view.read(cx).get_node(node_id).cloned();
@@ -283,6 +287,11 @@ impl DatabaseEventHandler {
             };
 
             match event {
+                DbTreeViewEvent::NodeSelected { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_node_selected(node, global_state, objects_panel, cx);
+                    }
+                }
                 DbTreeViewEvent::OpenTableData { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_table_data(node, global_state, tab_container, window, cx);
@@ -296,6 +305,66 @@ impl DatabaseEventHandler {
                 DbTreeViewEvent::OpenNamedQuery { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_open_named_query(node, tab_container, window, cx);
+                    }
+                }
+                DbTreeViewEvent::CreateNewQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_create_new_query(node, tab_container, window, cx);
+                    }
+                }
+                DbTreeViewEvent::DesignTable { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_design_table(node, tab_container, window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteTable { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_table(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteView { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_view(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::RenameQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_rename_query(node, tree_view.clone(), global_state, window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteQuery { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_query(node, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::CreateDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_create_database(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_database(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::CloseDatabase { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_close_database(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::CloseConnection { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_close_connection(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteConnection { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_connection(node, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteSchema { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_schema(node, global_state, tree_view.clone(), window, cx);
                     }
                 }
                 _ => {}
@@ -1290,32 +1359,33 @@ impl DatabaseEventHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
-        use gpui_component::{input::{Input, InputState}, WindowExt};
+        use gpui_component::WindowExt;
 
         let connection_id = node.connection_id.clone();
         let database_name = node.name.clone();
         let database_type = node.database_type;
 
-        let name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("输入模式名称")
-        });
-
-        let comment_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("输入备注信息（可选）")
-                .multi_line(true)
-                .rows(3)
-        });
+        let plugin_registry = cx.global::<DatabaseViewPluginRegistry>();
+        let editor_view = if let Some(plugin) = plugin_registry.get(&database_type) {
+            if let Some(view) = plugin.create_schema_editor_view(connection_id.clone(), database_name.clone(), window, cx) {
+                view
+            } else {
+                Self::show_error(window, format!("该数据库类型不支持创建模式: {:?}", database_type), cx);
+                return;
+            }
+        } else {
+            Self::show_error(window, format!("不支持的数据库类型: {:?}", database_type), cx);
+            return;
+        };
 
         let global_state_clone = global_state.clone();
         let connection_id_clone = connection_id.clone();
         let tree_view_clone = tree_view.clone();
         let database_name_clone = database_name.clone();
 
+        let editor_view_for_ok = editor_view.clone();
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let name_input_for_ok = name_input.clone();
-            let comment_input_for_ok = comment_input.clone();
+            let editor_view_ok = editor_view_for_ok.clone();
             let connection_id_for_ok = connection_id_clone.clone();
             let global_state_for_ok = global_state_clone.clone();
             let tree_view_for_ok = tree_view_clone.clone();
@@ -1323,73 +1393,32 @@ impl DatabaseEventHandler {
 
             dialog
                 .title(format!("新建模式 - {}", database_name))
-                .child(
-                    v_flex()
-                        .gap_4()
-                        .p_4()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .w(px(80.))
-                                        .child("模式名称:")
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Input::new(&name_input))
-                                )
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_start()
-                                .child(
-                                    div()
-                                        .w(px(80.))
-                                        .child("备注:")
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Input::new(&comment_input))
-                                )
-                        )
-                )
-                .on_ok(move |_, _, cx| {
-                    let schema_name = name_input_for_ok.read(cx).text().to_string().trim().to_string();
-                    if schema_name.is_empty() {
+                .child(editor_view.clone())
+                .width(px(600.0))
+                .button_props(DialogButtonProps::default().ok_text("创建"))
+                .footer(|ok, cancel, window, cx| {
+                    vec![cancel(window, cx), ok(window, cx)]
+                })
+                .on_ok(move |_, _window, cx| {
+                    let sql = editor_view_ok.read(cx).get_sql(cx);
+                    if sql.trim().is_empty() {
+                        editor_view_ok.update(cx, |view, cx| {
+                            view.set_save_error("SQL 语句不能为空".to_string(), cx);
+                        });
                         return false;
                     }
-
-                    let comment = comment_input_for_ok.read(cx).text().to_string().trim().to_string();
-
-                    let (create_sql, comment_sql) = match global_state_for_ok.get_plugin(&database_type) {
-                        Ok(plugin) => {
-                            let create = plugin.build_create_schema_sql(&schema_name);
-                            let comment_sql = if !comment.is_empty() {
-                                plugin.build_comment_schema_sql(&schema_name, &comment)
-                            } else {
-                                None
-                            };
-                            (create, comment_sql)
-                        }
-                        Err(_) => (format!("CREATE SCHEMA \"{}\"", schema_name), None),
-                    };
 
                     let connection_id = connection_id_for_ok.clone();
                     let global_state = global_state_for_ok.clone();
                     let tree_view = tree_view_for_ok.clone();
                     let database = database_for_ok.clone();
-                    let schema_name_log = schema_name.clone();
+                    let editor_view = editor_view_ok.clone();
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let result = global_state.execute_single(
                             cx,
                             connection_id.clone(),
-                            create_sql,
+                            sql,
                             Some(database.clone()),
                             None,
                         ).await;
@@ -1399,16 +1428,6 @@ impl DatabaseEventHandler {
                                 match sql_result {
                                     SqlResult::Query(_) => {}
                                     SqlResult::Exec(_) => {
-                                        if let Some(comment_sql) = comment_sql {
-                                            let _ = global_state.execute_single(
-                                                cx,
-                                                connection_id.clone(),
-                                                comment_sql,
-                                                Some(database.clone()),
-                                                None,
-                                            ).await;
-                                        }
-
                                         let db_node_id = format!("{}:{}", connection_id, database);
                                         if let Some(window_id) = cx.update(|cx| cx.active_window()).ok().flatten() {
                                             let _ = cx.update_window(window_id, |_entity, window, cx| {
@@ -1417,22 +1436,22 @@ impl DatabaseEventHandler {
                                                     tree.refresh_tree(db_node_id, cx);
                                                 });
                                                 window.push_notification(
-                                                    Notification::success(format!("模式 {} 创建成功", schema_name_log)).autohide(true),
+                                                    Notification::success("模式创建成功").autohide(true),
                                                     cx
                                                 );
                                             });
                                         }
                                     }
                                     SqlResult::Error(err) => {
-                                        let _ = cx.update(|cx| {
-                                            Self::show_error_async(cx, format!("创建模式失败: {}", err.message));
+                                        let _ = editor_view.update(cx, |view, cx| {
+                                            view.set_save_error(format!("创建模式失败: {}", err.message), cx);
                                         });
                                     }
                                 }
                             }
                             Err(e) => {
-                                let _ = cx.update(|cx| {
-                                    Self::show_error_async(cx, format!("创建模式失败: {}", e));
+                                let _ = editor_view.update(cx, |view, cx| {
+                                    view.set_save_error(format!("创建模式失败: {}", e), cx);
                                 });
                             }
                         }

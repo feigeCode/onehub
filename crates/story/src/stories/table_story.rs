@@ -808,7 +808,7 @@ impl TableStory {
                 println!("Column widths changed: {:?}", col_widths)
             }
             TableEvent::SelectColumn(ix) => println!("Select col: {}", ix),
-            TableEvent::DoubleClickedRow(ix) => println!("Double clicked row: {}", ix),
+            TableEvent::DoubleClickedCell(ix,col) => println!("Double clicked cell: {:?}", (ix, col)),
             TableEvent::SelectRow(ix) => println!("Select row: {}", ix),
             TableEvent::MoveColumn(origin_idx, target_idx) => {
                 println!("Move col index: {} -> {}", origin_idx, target_idx);
