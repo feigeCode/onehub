@@ -7,7 +7,7 @@ use crate::clickhouse::ClickHousePlugin;
 use crate::mssql::MsSqlPlugin;
 use crate::oracle::OraclePlugin;
 use crate::import_export::{DataExporter, DataImporter, ExportConfig, ExportResult, ImportConfig, ImportResult};
-use crate::{DbNode, ExecOptions, SqlResult};
+use crate::{DbNode, DbNodeType, ExecOptions, SqlResult};
 use tokio::sync::mpsc;
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
@@ -238,7 +238,7 @@ impl ConnectionManager {
 
         // Connect to database
         connection.connect().await?;
-        info!("Created new session: {}", session_id);
+        info!("Created new session: {} (database: {:?})", session_id, config.database);
 
         // Store session
         let mut session = ConnectionSession::new(connection, session_id.clone());
@@ -283,8 +283,10 @@ impl ConnectionManager {
         let mut sessions = self.sessions.write().await;
 
         if let Some(session_list) = sessions.get_mut(&config.id) {
-            // Find an idle session (database already verified on release)
-            if let Some(session) = session_list.iter_mut().find(|s| !s.in_use) {
+            // Find an idle session with matching database
+            if let Some(session) = session_list.iter_mut().find(|s| {
+                !s.in_use && s.connection.config().database == config.database
+            }) {
                 session.mark_in_use();
 
                 info!(
@@ -1010,9 +1012,45 @@ impl GlobalDbState {
         storage_state: GlobalStorageState,
     ) -> anyhow::Result<Vec<DbNode>>
     {
-        with_plugin_session!(self, cx, connection_id, |plugin, conn| {
-            plugin.load_node_children(&*conn, &node, &storage_state).await
-        })
+        let mut config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
+        // For Database and Schema nodes, we need to connect to the specific database
+        // This is especially important for PostgreSQL which doesn't support database switching
+        let target_database = match node.node_type {
+            DbNodeType::Database => Some(node.name.clone()),
+            DbNodeType::Schema => node.metadata.as_ref()
+                .and_then(|m| m.get("database"))
+                .cloned(),
+            _ => node.metadata.as_ref()
+                .and_then(|m| m.get("database"))
+                .cloned(),
+        };
+
+        if let Some(db) = target_database {
+            config.database = Some(db);
+        }
+
+        let clone_self = self.clone();
+        Tokio::spawn_result(cx, async move {
+            let plugin = clone_self.get_plugin(&config.database_type)?;
+            let session_id = clone_self.connection_manager
+                .create_session(config.clone(), &clone_self.db_manager)
+                .await?;
+
+            let result = {
+                let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
+                let conn = guard.connection()
+                    .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+                plugin.load_node_children(&*conn, &node, &storage_state).await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            };
+
+            clone_self.connection_manager.release_session(&session_id).await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            result
+        })?.await
     }
 
     /// Apply table changes

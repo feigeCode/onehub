@@ -206,6 +206,16 @@ impl DatabaseEventHandler {
                         Self::handle_delete_database(node, global_state, tree_view.clone(), window, cx);
                     }
                 }
+                DbTreeViewEvent::CreateSchema { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_create_schema(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
+                DbTreeViewEvent::DeleteSchema { node_id } => {
+                    if let Some(node) = get_node(&node_id, cx) {
+                        Self::handle_delete_schema(node, global_state, tree_view.clone(), window, cx);
+                    }
+                }
                 DbTreeViewEvent::DeleteTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_delete_table(node, global_state, tree_view.clone(), window, cx);
@@ -1263,6 +1273,252 @@ impl DatabaseEventHandler {
                             Err(e) => {
                                 let _ = cx.update(|cx| {
                                     Self::show_error_async(cx, format!("删除数据库失败: {}", e));
+                                });
+                            }
+                        }
+                    }).detach();
+                    true
+                })
+        });
+    }
+
+    /// 处理新建模式事件
+    fn handle_create_schema(
+        node: DbNode,
+        global_state: GlobalDbState,
+        tree_view: Entity<DbTreeView>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        use gpui_component::{input::{Input, InputState}, WindowExt};
+
+        let connection_id = node.connection_id.clone();
+        let database_name = node.name.clone();
+        let database_type = node.database_type;
+
+        let name_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("输入模式名称")
+        });
+
+        let comment_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("输入备注信息（可选）")
+                .multi_line(true)
+                .rows(3)
+        });
+
+        let global_state_clone = global_state.clone();
+        let connection_id_clone = connection_id.clone();
+        let tree_view_clone = tree_view.clone();
+        let database_name_clone = database_name.clone();
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let name_input_for_ok = name_input.clone();
+            let comment_input_for_ok = comment_input.clone();
+            let connection_id_for_ok = connection_id_clone.clone();
+            let global_state_for_ok = global_state_clone.clone();
+            let tree_view_for_ok = tree_view_clone.clone();
+            let database_for_ok = database_name_clone.clone();
+
+            dialog
+                .title(format!("新建模式 - {}", database_name))
+                .child(
+                    v_flex()
+                        .gap_4()
+                        .p_4()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .w(px(80.))
+                                        .child("模式名称:")
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(Input::new(&name_input))
+                                )
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_start()
+                                .child(
+                                    div()
+                                        .w(px(80.))
+                                        .child("备注:")
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(Input::new(&comment_input))
+                                )
+                        )
+                )
+                .on_ok(move |_, _, cx| {
+                    let schema_name = name_input_for_ok.read(cx).text().to_string().trim().to_string();
+                    if schema_name.is_empty() {
+                        return false;
+                    }
+
+                    let comment = comment_input_for_ok.read(cx).text().to_string().trim().to_string();
+
+                    let (create_sql, comment_sql) = match global_state_for_ok.get_plugin(&database_type) {
+                        Ok(plugin) => {
+                            let create = plugin.build_create_schema_sql(&schema_name);
+                            let comment_sql = if !comment.is_empty() {
+                                plugin.build_comment_schema_sql(&schema_name, &comment)
+                            } else {
+                                None
+                            };
+                            (create, comment_sql)
+                        }
+                        Err(_) => (format!("CREATE SCHEMA \"{}\"", schema_name), None),
+                    };
+
+                    let connection_id = connection_id_for_ok.clone();
+                    let global_state = global_state_for_ok.clone();
+                    let tree_view = tree_view_for_ok.clone();
+                    let database = database_for_ok.clone();
+                    let schema_name_log = schema_name.clone();
+
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = global_state.execute_single(
+                            cx,
+                            connection_id.clone(),
+                            create_sql,
+                            Some(database.clone()),
+                            None,
+                        ).await;
+
+                        match result {
+                            Ok(sql_result) => {
+                                match sql_result {
+                                    SqlResult::Query(_) => {}
+                                    SqlResult::Exec(_) => {
+                                        if let Some(comment_sql) = comment_sql {
+                                            let _ = global_state.execute_single(
+                                                cx,
+                                                connection_id.clone(),
+                                                comment_sql,
+                                                Some(database.clone()),
+                                                None,
+                                            ).await;
+                                        }
+
+                                        let db_node_id = format!("{}:{}", connection_id, database);
+                                        if let Some(window_id) = cx.update(|cx| cx.active_window()).ok().flatten() {
+                                            let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                                window.close_dialog(cx);
+                                                tree_view.update(cx, |tree, cx| {
+                                                    tree.refresh_tree(db_node_id, cx);
+                                                });
+                                                window.push_notification(
+                                                    Notification::success(format!("模式 {} 创建成功", schema_name_log)).autohide(true),
+                                                    cx
+                                                );
+                                            });
+                                        }
+                                    }
+                                    SqlResult::Error(err) => {
+                                        let _ = cx.update(|cx| {
+                                            Self::show_error_async(cx, format!("创建模式失败: {}", err.message));
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("创建模式失败: {}", e));
+                                });
+                            }
+                        }
+                    }).detach();
+
+                    false
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
+    }
+
+    /// 处理删除模式事件
+    fn handle_delete_schema(
+        node: DbNode,
+        global_state: GlobalDbState,
+        tree_view: Entity<DbTreeView>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let connection_id = node.connection_id.clone();
+        let schema_name = node.name.clone();
+        let metadata = node.metadata.clone();
+        let database_type = node.database_type;
+
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let conn_id = connection_id.clone();
+            let schema = schema_name.clone();
+            let meta = metadata.clone();
+            let state = global_state.clone();
+            let schema_display = schema_name.clone();
+            let tree = tree_view.clone();
+
+            dialog
+                .title("确认删除")
+                .confirm()
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(format!("确定要删除模式 \"{}\" 吗？", schema_display))
+                        .child("此操作将删除模式中的所有对象，不可恢复！")
+                )
+                .on_ok(move |_, _, cx| {
+                    let conn_id = conn_id.clone();
+                    let schema = schema.clone();
+                    let meta = meta.clone();
+                    let state = state.clone();
+                    let schema_log = schema.clone();
+                    let tree = tree.clone();
+                    let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
+                    let db_node_id = format!("{}:{}", conn_id, database);
+
+                    let sql = state.get_plugin(&database_type)
+                        .map(|p| p.build_drop_schema_sql(&schema))
+                        .unwrap_or_else(|_| format!("DROP SCHEMA \"{}\"", schema));
+
+                    cx.spawn(async move |cx: &mut AsyncApp| {
+                        let result = state.execute_single(
+                            cx,
+                            conn_id.clone(),
+                            sql,
+                            Some(database.clone()),
+                            None,
+                        ).await;
+
+                        match result {
+                            Ok(sql_result) => {
+                                match sql_result {
+                                    SqlResult::Query(_) => {}
+                                    SqlResult::Exec(_) => {
+                                        let _ = cx.update(|cx| {
+                                            tree.update(cx, |tree, cx| {
+                                                tree.refresh_tree(db_node_id, cx);
+                                            });
+                                            Self::show_success_async(cx, format!("模式 {} 已删除", schema_log));
+                                        });
+                                    }
+                                    SqlResult::Error(err) => {
+                                        let _ = cx.update(|cx| {
+                                            Self::show_error_async(cx, format!("删除模式失败: {}", err.message));
+                                        });
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = cx.update(|cx| {
+                                    Self::show_error_async(cx, format!("删除模式失败: {}", e));
                                 });
                             }
                         }

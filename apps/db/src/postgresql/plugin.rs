@@ -880,6 +880,22 @@ impl DatabasePlugin for PostgresPlugin {
     fn build_drop_database_sql(&self, database_name: &str) -> String {
         format!("DROP DATABASE \"{}\";", database_name)
     }
+
+    fn build_create_schema_sql(&self, schema_name: &str) -> String {
+        format!("CREATE SCHEMA \"{}\";", schema_name.replace("\"", "\"\""))
+    }
+
+    fn build_drop_schema_sql(&self, schema_name: &str) -> String {
+        format!("DROP SCHEMA \"{}\" CASCADE;", schema_name.replace("\"", "\"\""))
+    }
+
+    fn build_comment_schema_sql(&self, schema_name: &str, comment: &str) -> Option<String> {
+        Some(format!(
+            "COMMENT ON SCHEMA \"{}\" IS '{}';",
+            schema_name.replace("\"", "\"\""),
+            comment.replace("'", "''")
+        ))
+    }
 }
 
 impl Default for PostgresPlugin {

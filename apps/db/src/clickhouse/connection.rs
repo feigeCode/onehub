@@ -175,6 +175,13 @@ impl DbConnection for ClickHouseDbConnection {
             client = client.with_database(db);
         }
 
+        // Apply extra params
+        if let Some(compression) = config.get_param("compression") {
+            if compression == "lz4" {
+                client = client.with_compression(clickhouse::Compression::Lz4);
+            }
+        }
+
         // Test the connection
         client
             .query("SELECT 1")

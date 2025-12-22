@@ -149,6 +149,24 @@ pub struct DbConnectionConfig {
     pub database: Option<String>,
     #[serde(skip)]
     pub workspace_id: Option<i64>,
+    #[serde(default)]
+    pub extra_params: std::collections::HashMap<String, String>,
+}
+
+impl DbConnectionConfig {
+    pub fn get_param(&self, key: &str) -> Option<&String> {
+        self.extra_params.get(key)
+    }
+
+    pub fn get_param_as<T: std::str::FromStr>(&self, key: &str) -> Option<T> {
+        self.extra_params.get(key).and_then(|v| v.parse().ok())
+    }
+
+    pub fn get_param_bool(&self, key: &str) -> bool {
+        self.extra_params.get(key)
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false)
+    }
 }
 
 impl ConnectionType {

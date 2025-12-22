@@ -61,6 +61,10 @@ pub struct NodeMenuCapabilities {
     pub supports_drop_database: bool,
     /// 是否支持转储数据库（导出 SQL）
     pub supports_dump_database: bool,
+    /// 是否支持新建模式(Schema)
+    pub supports_create_schema: bool,
+    /// 是否支持删除模式(Schema)
+    pub supports_delete_schema: bool,
 
     // === View 节点菜单项 ===
     /// 是否支持新建视图
@@ -90,6 +94,8 @@ impl Default for NodeMenuCapabilities {
             supports_edit_database: false,
             supports_drop_database: false,
             supports_dump_database: false,
+            supports_create_schema: false,
+            supports_delete_schema: false,
             supports_create_view: false,
             supports_edit_view: false,
             supports_sequences: false,

@@ -6,12 +6,40 @@ use gpui_component::{
     form::{field, v_form},
     h_flex,
     input::{Input, InputEvent, InputState},
-    select::{Select, SelectItem, SelectState},
+    select::{Select, SelectEvent, SelectItem, SelectState},
     tab::{Tab, TabBar},
-    v_flex, ActiveTheme, IconName, Sizable, Size,
+    v_flex, ActiveTheme, IconName, IndexPath, Sizable, Size,
 };
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{get_config_dir, DatabaseType, DbConnectionConfig, StoredConnection, Workspace};
+
+/// Form select item for dropdown fields
+#[derive(Clone, Debug)]
+pub struct FormSelectItem {
+    pub value: String,
+    pub label: String,
+}
+
+impl FormSelectItem {
+    pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+        }
+    }
+}
+
+impl SelectItem for FormSelectItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.clone().into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
 
 /// Workspace select item for dropdown
 #[derive(Clone, Debug)]
@@ -85,6 +113,7 @@ pub struct FormField {
     pub field_type: FormFieldType,
     pub required: bool,
     pub default_value: String,
+    pub options: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +122,7 @@ pub enum FormFieldType {
     Number,
     Password,
     TextArea,
+    Select,
 }
 
 impl FormField {
@@ -109,6 +139,7 @@ impl FormField {
             field_type,
             required: true,
             default_value: String::new(),
+            options: Vec::new(),
         }
     }
 
@@ -124,6 +155,11 @@ impl FormField {
 
     pub fn default(mut self, value: impl Into<String>) -> Self {
         self.default_value = value.into();
+        self
+    }
+
+    pub fn options(mut self, options: Vec<(String, String)>) -> Self {
+        self.options = options;
         self
     }
 }
@@ -163,7 +199,15 @@ impl DbFormConfig {
                         .placeholder("database name (optional)")
                         .default("ai_app"),
                 ]),
-                TabGroup::new("advanced", "高级"),
+                TabGroup::new("advanced", "高级").fields(vec![
+                    FormField::new("connect_timeout", "连接超时(秒)", FormFieldType::Number)
+                        .optional()
+                        .placeholder("30")
+                        .default("30"),
+                    FormField::new("read_timeout", "空闲超时(秒)", FormFieldType::Number)
+                        .optional()
+                        .placeholder("28800"),
+                ]),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
@@ -201,7 +245,15 @@ impl DbFormConfig {
                         .optional()
                         .placeholder("database name (optional)"),
                 ]),
-                TabGroup::new("advanced", "高级"),
+                TabGroup::new("advanced", "高级").fields(vec![
+                    FormField::new("connect_timeout", "连接超时(秒)", FormFieldType::Number)
+                        .optional()
+                        .placeholder("30")
+                        .default("30"),
+                    FormField::new("application_name", "应用名称", FormFieldType::Text)
+                        .optional()
+                        .placeholder("OneHub"),
+                ]),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
@@ -239,7 +291,30 @@ impl DbFormConfig {
                         .optional()
                         .placeholder("database name (optional)"),
                 ]),
-                TabGroup::new("advanced", "高级"),
+                TabGroup::new("advanced", "高级").fields(vec![
+                    FormField::new("connect_timeout", "连接超时(秒)", FormFieldType::Number)
+                        .optional()
+                        .placeholder("30")
+                        .default("30"),
+                    FormField::new("encrypt", "加密", FormFieldType::Select)
+                        .optional()
+                        .default("off")
+                        .options(vec![
+                            ("off".to_string(), "关闭".to_string()),
+                            ("on".to_string(), "开启".to_string()),
+                            ("required".to_string(), "强制".to_string()),
+                        ]),
+                    FormField::new("trust_cert", "信任证书", FormFieldType::Select)
+                        .optional()
+                        .default("true")
+                        .options(vec![
+                            ("true".to_string(), "是".to_string()),
+                            ("false".to_string(), "否".to_string()),
+                        ]),
+                    FormField::new("application_name", "应用名称", FormFieldType::Text)
+                        .optional()
+                        .placeholder("OneHub"),
+                ]),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
@@ -280,7 +355,12 @@ impl DbFormConfig {
                         .optional()
                         .placeholder("orcl (或使用 Service Name)"),
                 ]),
-                TabGroup::new("advanced", "高级"),
+                TabGroup::new("advanced", "高级").fields(vec![
+                    FormField::new("connect_timeout", "连接超时(秒)", FormFieldType::Number)
+                        .optional()
+                        .placeholder("30")
+                        .default("30"),
+                ]),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
@@ -318,7 +398,19 @@ impl DbFormConfig {
                         .optional()
                         .placeholder("database name (optional)"),
                 ]),
-                TabGroup::new("advanced", "高级"),
+                TabGroup::new("advanced", "高级").fields(vec![
+                    FormField::new("connect_timeout", "连接超时(秒)", FormFieldType::Number)
+                        .optional()
+                        .placeholder("30")
+                        .default("30"),
+                    FormField::new("compression", "压缩", FormFieldType::Select)
+                        .optional()
+                        .default("lz4")
+                        .options(vec![
+                            ("none".to_string(), "无".to_string()),
+                            ("lz4".to_string(), "LZ4".to_string()),
+                        ]),
+                ]),
                 TabGroup::new("ssl", "SSL"),
                 TabGroup::new("ssh", "SSH"),
                 TabGroup::new("notes", "备注").fields(vec![
@@ -367,7 +459,8 @@ pub struct DbConnectionForm {
     focus_handle: FocusHandle,
     active_tab: usize,
     field_values: Vec<(String, Entity<String>)>,
-    field_inputs: Vec<Entity<InputState>>,
+    field_inputs: Vec<Option<Entity<InputState>>>,
+    field_selects: std::collections::HashMap<String, Entity<SelectState<Vec<FormSelectItem>>>>,
     is_testing: Entity<bool>,
     test_result: Entity<Option<Result<bool, String>>>,
     workspace_select: Entity<SelectState<Vec<WorkspaceSelectItem>>>,
@@ -380,45 +473,78 @@ impl DbConnectionForm {
         let focus_handle = cx.focus_handle();
         let current_db_type = cx.new(|_| config.db_type);
 
-        // Initialize field values and inputs
+        // Initialize field values, inputs, and selects
         let mut field_values = Vec::new();
         let mut field_inputs = Vec::new();
+        let mut field_selects = std::collections::HashMap::new();
 
         for tab_group in &config.tab_groups {
             for field in &tab_group.fields {
                 let value = cx.new(|_| field.default_value.clone());
                 field_values.push((field.name.clone(), value.clone()));
 
-                let input = cx.new(|cx| {
-                    let mut input_state = InputState::new(window, cx)
-                        .placeholder(&field.placeholder);
+                if field.field_type == FormFieldType::Select {
+                    // Create SelectState for Select fields
+                    let items: Vec<FormSelectItem> = field.options.iter()
+                        .map(|(v, l)| FormSelectItem::new(v.clone(), l.clone()))
+                        .collect();
+                    // Find the index of the default value
+                    let selected_index = if field.default_value.is_empty() {
+                        Some(IndexPath::new(0))
+                    } else {
+                        items.iter()
+                            .position(|i| i.value == field.default_value)
+                            .map(IndexPath::new)
+                    };
+                    let field_name = field.name.clone();
+                    let value_clone = value.clone();
+                    let select = cx.new(|cx| {
+                        SelectState::new(items, selected_index, window, cx)
+                    });
+                    // Subscribe to select changes
+                    cx.subscribe_in(&select, window, move |_form, _select, event: &SelectEvent<Vec<FormSelectItem>>, _window, cx| {
+                        if let SelectEvent::Confirm(Some(val)) = event {
+                            value_clone.update(cx, |v, cx| {
+                                *v = val.clone();
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .detach();
+                    field_selects.insert(field_name, select);
+                    field_inputs.push(None);
+                } else {
+                    // Create InputState for other field types
+                    let input = cx.new(|cx| {
+                        let mut input_state = InputState::new(window, cx)
+                            .placeholder(&field.placeholder);
 
-                    if field.field_type == FormFieldType::Password {
-                        input_state = input_state.masked(true);
-                    }
+                        if field.field_type == FormFieldType::Password {
+                            input_state = input_state.masked(true);
+                        }
 
-                    if field.field_type == FormFieldType::TextArea {
-                        input_state = input_state.auto_grow(5, 15);
-                    }
+                        if field.field_type == FormFieldType::TextArea {
+                            input_state = input_state.auto_grow(5, 15);
+                        }
 
-                    input_state.set_value(field.default_value.clone(), window, cx);
-                    input_state
-                });
+                        input_state.set_value(field.default_value.clone(), window, cx);
+                        input_state
+                    });
 
-                // Subscribe to input changes
-                let value_clone = value.clone();
-                cx.subscribe_in(&input, window, move |_form, _input, event, _window, cx| {
-                    if let InputEvent::Change = event {
-                        value_clone.update(cx, |v, cx| {
-                            // Get the new text from the input
-                            *v = _input.read(cx).text().to_string();
-                            cx.notify();
-                        });
-                    }
-                })
-                .detach();
+                    // Subscribe to input changes
+                    let value_clone = value.clone();
+                    cx.subscribe_in(&input, window, move |_form, _input, event, _window, cx| {
+                        if let InputEvent::Change = event {
+                            value_clone.update(cx, |v, cx| {
+                                *v = _input.read(cx).text().to_string();
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .detach();
 
-                field_inputs.push(input);
+                    field_inputs.push(Some(input));
+                }
             }
         }
 
@@ -439,6 +565,7 @@ impl DbConnectionForm {
             active_tab: 0,
             field_values,
             field_inputs,
+            field_selects,
             is_testing,
             test_result,
             workspace_select,
@@ -492,9 +619,16 @@ impl DbConnectionForm {
                 *v = value.to_string();
                 cx.notify();
             });
-            self.field_inputs[idx].update(cx, |input, cx| {
-                input.set_value(value.to_string(), window, cx);
-            });
+            // Update input or select based on field type
+            if let Some(Some(input)) = self.field_inputs.get(idx) {
+                input.update(cx, |input, cx| {
+                    input.set_value(value.to_string(), window, cx);
+                });
+            } else if let Some(select) = self.field_selects.get(field_name) {
+                select.update(cx, |select, cx| {
+                    select.set_selected_value(&value.to_string(), window, cx);
+                });
+            }
         }
     }
 
@@ -511,7 +645,20 @@ impl DbConnectionForm {
             .selected_value()
             .cloned()
             .flatten();
-        
+
+        // Collect extra params (fields that are not basic connection fields)
+        let basic_fields = ["name", "host", "port", "username", "password", "database", "remark", "service_name", "sid"];
+        let mut extra_params = std::collections::HashMap::new();
+
+        for (field_name, value_entity) in &self.field_values {
+            if !basic_fields.contains(&field_name.as_str()) {
+                let value = value_entity.read(cx).clone();
+                if !value.is_empty() {
+                    extra_params.insert(field_name.clone(), value);
+                }
+            }
+        }
+
         DbConnectionConfig {
             id: String::new(),
             database_type: *self.current_db_type.read(cx),
@@ -532,6 +679,7 @@ impl DbConnectionForm {
                 }
             },
             workspace_id,
+            extra_params,
         }
     }
 
@@ -674,12 +822,12 @@ impl DbConnectionForm {
         .detach();
     }
 
-    fn get_input_by_name(&self, field_name: &str) -> Option<&Entity<InputState>> {
+    fn get_input_by_name(&self, field_name: &str) -> Option<Entity<InputState>> {
         let mut idx = 0;
         for tab_group in &self.config.tab_groups {
             for field in &tab_group.fields {
                 if field.name == field_name {
-                    return self.field_inputs.get(idx);
+                    return self.field_inputs.get(idx).and_then(|opt| opt.clone());
                 }
                 idx += 1;
             }
@@ -698,7 +846,7 @@ impl Render for DbConnectionForm {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Check if there's a pending file path to apply
         if let Some(path) = self.pending_file_path.read(cx).clone() {
-            if let Some(host_input) = self.get_input_by_name("host").cloned() {
+            if let Some(host_input) = self.get_input_by_name("host") {
                 host_input.update(cx, |state, cx| {
                     state.set_value(path, window, cx);
                 });
@@ -770,6 +918,8 @@ impl Render for DbConnectionForm {
                                             let input_idx = field_input_offset + i;
                                             let is_sqlite_path = db_type == DatabaseType::SQLite && field_info.name == "host";
                                             let is_textarea = field_info.field_type == FormFieldType::TextArea;
+                                            let is_select = field_info.field_type == FormFieldType::Select;
+                                            let field_name = field_info.name.clone();
 
                                             field()
                                                 .label(field_info.label.clone())
@@ -781,7 +931,20 @@ impl Render for DbConnectionForm {
                                                     h_flex()
                                                         .w_full()
                                                         .gap_2()
-                                                        .child(Input::new(&self.field_inputs[input_idx]).w_full())
+                                                        .when(is_select, |el| {
+                                                            if let Some(select_state) = self.field_selects.get(&field_name) {
+                                                                el.child(Select::new(select_state).w_full())
+                                                            } else {
+                                                                el
+                                                            }
+                                                        })
+                                                        .when(!is_select, |el| {
+                                                            if let Some(Some(input_state)) = self.field_inputs.get(input_idx) {
+                                                                el.child(Input::new(input_state).w_full())
+                                                            } else {
+                                                                el
+                                                            }
+                                                        })
                                                         .when(is_sqlite_path, |el| {
                                                             el.child(
                                                                 Button::new("browse-file")

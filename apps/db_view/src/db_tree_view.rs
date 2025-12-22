@@ -257,6 +257,10 @@ pub enum DbTreeViewEvent {
     CloseDatabase { node_id: String },
     /// 删除数据库
     DeleteDatabase { node_id: String },
+    /// 新建模式(Schema)
+    CreateSchema { node_id: String },
+    /// 删除模式(Schema)
+    DeleteSchema { node_id: String },
     /// 删除表
     DeleteTable { node_id: String },
     /// 重命名表
@@ -984,6 +988,7 @@ impl DbTreeView {
                 }
             }
             Some(DbNodeType::Database) => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Schema) => Icon::from(IconName::Schema).color().with_size(Size::Size(px(20.))),
             Some(DbNodeType::TablesFolder) | Some(DbNodeType::ViewsFolder) |
             Some(DbNodeType::FunctionsFolder) | Some(DbNodeType::ProceduresFolder) |
             Some(DbNodeType::TriggersFolder) | Some(DbNodeType::SequencesFolder) |
@@ -1525,6 +1530,9 @@ impl Render for DbTreeView {
                                                                     if capabilities.supports_edit_database {
                                                                         menu = menu.item(Self::create_menu_item(&node_id_for_menu, "编辑数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::EditDatabase { node_id: n.clone() }));
                                                                     }
+                                                                    if capabilities.supports_create_schema {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "新建模式".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateSchema { node_id: n.clone() }));
+                                                                    }
                                                                     menu = menu.item(Self::create_menu_item(&node_id_for_menu, "关闭数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::CloseDatabase { node_id: n.clone() }));
                                                                     if capabilities.supports_drop_database {
                                                                         menu = menu.item(Self::create_menu_item(&node_id_for_menu, "删除数据库".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteDatabase { node_id: n.clone() }));
@@ -1576,6 +1584,25 @@ impl Render for DbTreeView {
                                                                         .separator()
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "删除视图".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteView { node_id: n }))
                                                                         .separator();
+                                                                }
+                                                                DbNodeType::Schema => {
+                                                                    let node_id_for_menu = node_id_clone.clone();
+
+                                                                    let capabilities = {
+                                                                        let registry = cx.global::<DatabaseViewPluginRegistry>();
+                                                                        registry.get(&node.database_type)
+                                                                            .map(|p| p.get_node_menu_capabilities())
+                                                                            .unwrap_or_default()
+                                                                    };
+
+                                                                    menu = menu
+                                                                        .item(Self::create_menu_item(&node_id_for_menu, "新建查询".to_string(), &view_clone, window, |n| DbTreeViewEvent::CreateNewQuery { node_id: n.clone() }))
+                                                                        .separator();
+
+                                                                    if capabilities.supports_delete_schema {
+                                                                        menu = menu.item(Self::create_menu_item(&node_id_for_menu, "删除模式".to_string(), &view_clone, window, |n| DbTreeViewEvent::DeleteSchema { node_id: n.clone() }))
+                                                                            .separator();
+                                                                    }
                                                                 }
                                                                 DbNodeType::QueriesFolder => {
                                                                     let node_id_for_menu = node_id_clone.clone();

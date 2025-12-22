@@ -85,6 +85,8 @@ impl DatabaseViewPlugin for ClickHouseDatabaseViewPlugin {
             supports_edit_database: false,
             supports_drop_database: true,
             supports_dump_database: true,
+            supports_create_schema: false,
+            supports_delete_schema: false,
             supports_create_view: true,
             supports_edit_view: true,
             supports_sequences: false,

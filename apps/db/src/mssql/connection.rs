@@ -8,6 +8,7 @@ use tiberius::{Client, Config, AuthMethod, Row};
 use tokio::net::TcpStream;
 use tokio_util::compat::{TokioAsyncWriteCompatExt, Compat};
 use tokio::sync::mpsc;
+use tracing::{debug, error, info};
 
 use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::executor::{
@@ -210,23 +211,61 @@ impl DbConnection for MssqlDbConnection {
 
     async fn connect(&mut self) -> Result<(), DbError> {
         let config = &self.config;
+        info!("[MSSQL] Connecting to {}:{}", config.host, config.port);
 
         let mut tiberius_config = Config::new();
         tiberius_config.host(&config.host);
         tiberius_config.port(config.port);
         tiberius_config.authentication(AuthMethod::sql_server(&config.username, &config.password));
 
-        if let Some(ref db) = config.database {
-            tiberius_config.database(db);
+        // Trust certificate (default: true)
+        if config.get_param("trust_cert").map(|v| v != "false").unwrap_or(true) {
+            tiberius_config.trust_cert();
         }
 
-        let tcp = TcpStream::connect(tiberius_config.get_addr())
-            .await
-            .map_err(|e| DbError::ConnectionError(format!("Failed to connect to TCP: {}", e)))?;
+        // Encryption level: off, on, required (default: off for compatibility)
+        let encrypt = config.get_param("encrypt").map(|s| s.as_str()).unwrap_or("off");
+        match encrypt {
+            "on" => tiberius_config.encryption(tiberius::EncryptionLevel::On),
+            "required" => tiberius_config.encryption(tiberius::EncryptionLevel::Required),
+            _ => tiberius_config.encryption(tiberius::EncryptionLevel::NotSupported),
+        };
 
+        // Application name
+        if let Some(app_name) = config.get_param("application_name") {
+            tiberius_config.application_name(app_name);
+        }
+
+        if let Some(ref db) = config.database {
+            tiberius_config.database(db);
+            debug!("[MSSQL] Using database: {}", db);
+        }
+
+        // Connection timeout (default: 30 seconds)
+        let connect_timeout = config.get_param_as::<u64>("connect_timeout").unwrap_or(30);
+        debug!("[MSSQL] Connect timeout: {}s", connect_timeout);
+
+        debug!("[MSSQL] Establishing TCP connection...");
+        let tcp = tokio::time::timeout(
+            std::time::Duration::from_secs(connect_timeout),
+            TcpStream::connect(tiberius_config.get_addr())
+        )
+            .await
+            .map_err(|_| DbError::ConnectionError("Connection timeout".to_string()))?
+            .map_err(|e| {
+                error!("[MSSQL] TCP connection failed: {}", e);
+                DbError::ConnectionError(format!("Failed to connect to TCP: {}", e))
+            })?;
+        debug!("[MSSQL] TCP connection established");
+
+        debug!("[MSSQL] Authenticating with SQL Server...");
         let client = Client::connect(tiberius_config, tcp.compat_write())
             .await
-            .map_err(|e| DbError::ConnectionError(format!("Failed to connect to MSSQL: {}", e)))?;
+            .map_err(|e| {
+                error!("[MSSQL] Authentication failed: {}", e);
+                DbError::ConnectionError(format!("Failed to connect to MSSQL: {}", e))
+            })?;
+        info!("[MSSQL] Connected successfully");
 
         {
             let mut guard = self.client.lock().await;
@@ -337,43 +376,55 @@ impl DbConnection for MssqlDbConnection {
         _params: Option<Vec<SqlValue>>,
         _options: ExecOptions,
     ) -> Result<SqlResult, DbError> {
+        debug!("[MSSQL] Acquiring client lock...");
         let mut guard = self.client.lock().await;
         let client = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
+        debug!("[MSSQL] Lock acquired");
 
         let start = Instant::now();
         let is_query = SqlStatementClassifier::is_query_statement(query);
         let query_string = query.to_string();
+        debug!("[MSSQL] Executing query: {}", &query_string[..query_string.len().min(100)]);
 
-        // TODO: Implement parameter binding for MSSQL
-        // For now, execute without parameters
         if is_query {
             let table_name = SqlStatementClassifier::analyze_select_editability(query);
 
+            debug!("[MSSQL] Sending query to server...");
             match client.query(query, &[]).await {
                 Ok(stream) => {
+                    debug!("[MSSQL] Query sent, fetching results...");
                     match stream.into_first_result().await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
+                            debug!("[MSSQL] Query completed, {} rows in {}ms", rows.len(), elapsed_ms);
                             Ok(Self::rows_to_query_result(rows, query_string, elapsed_ms, table_name))
                         }
-                        Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
-                            sql: query_string,
-                            message: e.to_string(),
-                        })),
+                        Err(e) => {
+                            error!("[MSSQL] Failed to fetch results: {}", e);
+                            Ok(SqlResult::Error(SqlErrorInfo {
+                                sql: query_string,
+                                message: e.to_string(),
+                            }))
+                        }
                     }
                 }
-                Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
-                    sql: query_string,
-                    message: e.to_string(),
-                })),
+                Err(e) => {
+                    error!("[MSSQL] Query failed: {}", e);
+                    Ok(SqlResult::Error(SqlErrorInfo {
+                        sql: query_string,
+                        message: e.to_string(),
+                    }))
+                }
             }
         } else {
+            debug!("[MSSQL] Executing non-query statement...");
             match client.execute(query, &[]).await {
                 Ok(result) => {
                     let elapsed_ms = start.elapsed().as_millis();
                     let rows_affected = result.total();
                     let message = SqlStatementClassifier::format_message(query, rows_affected);
+                    debug!("[MSSQL] Statement completed, {} rows affected in {}ms", rows_affected, elapsed_ms);
 
                     Ok(SqlResult::Exec(ExecResult {
                         sql: query_string,
@@ -382,10 +433,13 @@ impl DbConnection for MssqlDbConnection {
                         message: Some(message),
                     }))
                 }
-                Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
-                    sql: query_string,
-                    message: e.to_string(),
-                })),
+                Err(e) => {
+                    error!("[MSSQL] Statement failed: {}", e);
+                    Ok(SqlResult::Error(SqlErrorInfo {
+                        sql: query_string,
+                        message: e.to_string(),
+                    }))
+                }
             }
         }
     }

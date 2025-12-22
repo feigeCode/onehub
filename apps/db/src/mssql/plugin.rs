@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use gpui_component::table::Column;
 use one_core::storage::{DatabaseType, DbConnectionConfig};
+use tracing::{debug, info};
 
 use crate::connection::{DbConnection, DbError};
 use crate::executor::{ExecOptions, SqlResult};
@@ -23,6 +24,39 @@ impl MsSqlPlugin {
 impl DatabasePlugin for MsSqlPlugin {
     fn name(&self) -> DatabaseType {
         DatabaseType::MSSQL
+    }
+
+    fn supports_schema(&self) -> bool {
+        true
+    }
+
+    async fn list_schemas(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<String>> {
+        let sql = format!(
+            r#"
+            SELECT s.name
+            FROM [{database}].sys.schemas s
+            WHERE s.name NOT IN (
+                'INFORMATION_SCHEMA', 'sys',
+                'db_owner', 'db_accessadmin', 'db_securityadmin', 'db_ddladmin',
+                'db_backupoperator', 'db_datareader', 'db_datawriter',
+                'db_denydatareader', 'db_denydatawriter'
+            )
+            ORDER BY s.name
+            "#,
+            database = database.replace("]", "]]")
+        );
+
+        let result = connection.query(&sql, None, ExecOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list schemas: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            Ok(query_result.rows.iter()
+                .filter_map(|row| row.first().and_then(|v| v.clone()))
+                .collect())
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
     }
 
     fn get_completion_info(&self) -> SqlCompletionInfo {
@@ -172,14 +206,17 @@ impl DatabasePlugin for MsSqlPlugin {
     }
 
     async fn create_connection(&self, config: DbConnectionConfig) -> Result<Box<dyn DbConnection + Send + Sync>, DbError> {
+        info!("[MSSQL Plugin] Creating connection to {}:{}", config.host, config.port);
         let mut conn = MssqlDbConnection::new(config);
         conn.connect().await?;
+        info!("[MSSQL Plugin] Connection created successfully");
         Ok(Box::new(conn))
     }
 
     // === Database/Schema Level Operations ===
 
     async fn list_databases(&self, connection: &dyn DbConnection) -> Result<Vec<String>> {
+        info!("[MSSQL Plugin] Listing databases...");
         let result = connection.query(
             "SELECT name FROM sys.databases WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb') ORDER BY name",
             None,
@@ -187,9 +224,11 @@ impl DatabasePlugin for MsSqlPlugin {
         ).await.map_err(|e| anyhow::anyhow!("Failed to list databases: {}", e))?;
 
         if let SqlResult::Query(query_result) = result {
-            Ok(query_result.rows.iter()
+            let databases: Vec<String> = query_result.rows.iter()
                 .filter_map(|row| row.first().and_then(|v| v.clone()))
-                .collect())
+                .collect();
+            info!("[MSSQL Plugin] Found {} databases", databases.len());
+            Ok(databases)
         } else {
             Err(anyhow::anyhow!("Unexpected result type"))
         }
@@ -249,10 +288,10 @@ impl DatabasePlugin for MsSqlPlugin {
             r#"
             SELECT
                 t.TABLE_NAME,
-                t.TABLE_TYPE
+                t.TABLE_SCHEMA
             FROM [{database}].INFORMATION_SCHEMA.TABLES t
             WHERE t.TABLE_TYPE = 'BASE TABLE'
-            ORDER BY t.TABLE_NAME
+            ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME
             "#,
             database = database.replace("]", "]]")
         );
@@ -265,7 +304,7 @@ impl DatabasePlugin for MsSqlPlugin {
             Ok(query_result.rows.iter().map(|row| {
                 TableInfo {
                     name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
-                    schema: None,
+                    schema: row.get(1).and_then(|v| v.clone()),
                     comment: None,
                     engine: None,
                     row_count: None,
@@ -287,7 +326,7 @@ impl DatabasePlugin for MsSqlPlugin {
             SELECT
                 t.TABLE_NAME,
                 t.TABLE_TYPE,
-                ep.value as table_comment
+                CAST(ep.value AS NVARCHAR(MAX)) as table_comment
             FROM [{database}].INFORMATION_SCHEMA.TABLES t
             LEFT JOIN [{database}].sys.extended_properties ep
                 ON ep.major_id = OBJECT_ID('[{database}].[' + t.TABLE_SCHEMA + '].[' + t.TABLE_NAME + ']')
@@ -338,7 +377,7 @@ impl DatabasePlugin for MsSqlPlugin {
                 c.IS_NULLABLE,
                 c.COLUMN_DEFAULT,
                 COLUMNPROPERTY(OBJECT_ID('[{database}].[' + c.TABLE_SCHEMA + '].[{table}]'), c.COLUMN_NAME, 'IsIdentity') as is_identity,
-                ep.value as column_comment
+                CAST(ep.value AS NVARCHAR(MAX)) as column_comment
             FROM [{database}].INFORMATION_SCHEMA.COLUMNS c
             LEFT JOIN [{database}].sys.extended_properties ep
                 ON ep.major_id = OBJECT_ID('[{database}].[' + c.TABLE_SCHEMA + '].[{table}]')
@@ -458,7 +497,7 @@ impl DatabasePlugin for MsSqlPlugin {
             r#"
             SELECT
                 v.TABLE_NAME,
-                ep.value as view_comment
+                CAST(ep.value AS NVARCHAR(MAX)) as view_comment
             FROM [{database}].INFORMATION_SCHEMA.VIEWS v
             LEFT JOIN [{database}].sys.extended_properties ep
                 ON ep.major_id = OBJECT_ID('[{database}].[' + v.TABLE_SCHEMA + '].[' + v.TABLE_NAME + ']')
@@ -940,5 +979,21 @@ impl DatabasePlugin for MsSqlPlugin {
 
     fn build_drop_database_sql(&self, database_name: &str) -> String {
         format!("DROP DATABASE [{}];", database_name.replace("]", "]]"))
+    }
+
+    fn build_create_schema_sql(&self, schema_name: &str) -> String {
+        format!("CREATE SCHEMA [{}];", schema_name.replace("]", "]]"))
+    }
+
+    fn build_drop_schema_sql(&self, schema_name: &str) -> String {
+        format!("DROP SCHEMA [{}];", schema_name.replace("]", "]]"))
+    }
+
+    fn build_comment_schema_sql(&self, schema_name: &str, comment: &str) -> Option<String> {
+        Some(format!(
+            "EXEC sp_addextendedproperty @name=N'MS_Description', @value=N'{}', @level0type=N'SCHEMA', @level0name=N'{}';",
+            comment.replace("'", "''"),
+            schema_name.replace("'", "''")
+        ))
     }
 }

@@ -209,13 +209,27 @@ impl DbConnection for PostgresDbConnection {
             pg_config.dbname(db);
         }
 
+        // Apply extra params
+        if let Some(timeout) = config.get_param_as::<u64>("connect_timeout") {
+            pg_config.connect_timeout(std::time::Duration::from_secs(timeout));
+        }
+        if let Some(app_name) = config.get_param("application_name") {
+            pg_config.application_name(app_name);
+        }
+
         // Connect to PostgreSQL
         let (client, connection) = pg_config
             .connect(NoTls)
             .await
             .map_err(|e| DbError::ConnectionError(format!("Failed to connect: {}", e)))?;
 
-        connection.await.map_err(|e| DbError::ConnectionError(format!("Connection error: {}", e)))?;
+        // Spawn the connection task in background - it handles communication with the server
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::error!("PostgreSQL connection error: {}", e);
+            }
+        });
+
         {
             let mut guard = self.client.lock().await;
             *guard = Some(client);

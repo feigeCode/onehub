@@ -192,6 +192,14 @@ impl DbConnection for MysqlDbConnection {
             opts_builder = opts_builder.db_name(Some(db));
         }
 
+        // Apply extra params
+        if let Some(timeout) = config.get_param_as::<u64>("connect_timeout") {
+            opts_builder = opts_builder.conn_ttl(Some(std::time::Duration::from_secs(timeout)));
+        }
+        if let Some(wait_timeout) = config.get_param_as::<usize>("read_timeout") {
+            opts_builder = opts_builder.wait_timeout(Some(wait_timeout));
+        }
+
         let opts = Opts::from(opts_builder);
         let conn = Conn::new(opts)
             .await

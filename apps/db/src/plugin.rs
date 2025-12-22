@@ -106,8 +106,8 @@ pub trait DatabasePlugin: Send + Sync {
             DatabaseType::MySQL => "`",
             DatabaseType::PostgreSQL => "\"",
             DatabaseType::SQLite => "\"",
-            DatabaseType::MSSQL => "",
-            DatabaseType::Oracle => "",
+            DatabaseType::MSSQL => "[",
+            DatabaseType::Oracle => "\"",
             DatabaseType::ClickHouse => "`",
         }
     }
@@ -118,8 +118,13 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     fn quote_identifier(&self, identifier: &str) -> String {
-        let quote = self.identifier_quote();
-        format!("{}{}{}", quote, identifier, quote)
+        match self.name() {
+            DatabaseType::MSSQL => format!("[{}]", identifier.replace("]", "]]")),
+            _ => {
+                let quote = self.identifier_quote();
+                format!("{}{}{}", quote, identifier, quote)
+            }
+        }
     }
 
     async fn create_connection(&self, config: DbConnectionConfig) -> Result<Box<dyn DbConnection + Send + Sync>, DbError>;
@@ -219,6 +224,23 @@ pub trait DatabasePlugin: Send + Sync {
     /// Build SQL for dropping a database
     fn build_drop_database_sql(&self, database_name: &str) -> String;
 
+    // === Schema Management Operations ===
+    /// Build SQL for creating a new schema
+    fn build_create_schema_sql(&self, schema_name: &str) -> String {
+        format!("CREATE SCHEMA {}", self.quote_identifier(schema_name))
+    }
+
+    /// Build SQL for dropping a schema
+    fn build_drop_schema_sql(&self, schema_name: &str) -> String {
+        format!("DROP SCHEMA {}", self.quote_identifier(schema_name))
+    }
+
+    /// Build SQL for adding/updating schema comment
+    /// Returns None if the database doesn't support schema comments
+    fn build_comment_schema_sql(&self, _schema_name: &str, _comment: &str) -> Option<String> {
+        None
+    }
+
     // === Tree Building ===
     async fn build_database_tree(&self, connection: &dyn DbConnection, node: &DbNode, global_storage_state: &GlobalStorageState) -> Result<Vec<DbNode>> {
         let database = &node.name;
@@ -246,9 +268,6 @@ pub trait DatabasePlugin: Send + Sync {
 
                 nodes.push(schema_node);
             }
-
-            let queries_folder = self.load_queries(node, global_storage_state).await?;
-            nodes.push(queries_folder);
 
             Ok(nodes)
         } else {
@@ -357,10 +376,8 @@ pub trait DatabasePlugin: Send + Sync {
             nodes.push(views_folder);
         }
 
-        if schema.is_none() {
-            let queries_folder = self.load_queries(node, global_storage_state).await?;
-            nodes.push(queries_folder);
-        }
+        let queries_folder = self.load_queries(node, global_storage_state).await?;
+        nodes.push(queries_folder);
 
         Ok(nodes)
     }
