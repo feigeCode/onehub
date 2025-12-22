@@ -4,6 +4,7 @@ pub mod manager;
 pub mod connection;
 pub mod executor;
 pub mod import_export;
+pub mod sql_format;
 
 // Database implementations
 pub mod mysql;
@@ -21,3 +22,4 @@ pub use manager::*;
 pub use connection::*;
 pub use executor::*;
 pub use import_export::*;
+pub use sql_format::*;

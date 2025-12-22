@@ -28,12 +28,6 @@ provider-claude.workspace = true
 provider-qwen.workspace = true
 provider-ollama.workspace = true
 reqwest_client.workspace = true
-[profile.release]
-opt-level = "s"
-lto = "fat"
-codegen-units = 1
-strip = true
-panic = "abort"
 
 [lints]
 workspace = true

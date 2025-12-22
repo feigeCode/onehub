@@ -3,7 +3,7 @@ use one_core::gpui_tokio::Tokio;
 use crate::sql_editor::SqlEditor;
 use crate::sql_result_tab::SqlResultTabContainer;
 use one_core::tab_container::{TabContent, TabContentType};
-use db::{GlobalDbState};
+use db::{format_sql, compress_sql, GlobalDbState};
 use gpui::{px, AnyElement, App, AppContext, AsyncApp, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString, Styled, WeakEntity, Window};
 use gpui::prelude::*;
 use gpui_component::button::{Button, ButtonVariants};
@@ -286,94 +286,13 @@ impl SqlEditorTab {
             return;
         }
 
-        let formatted = Self::format_sql(&text);
+        let formatted = format_sql(&text);
         self.editor.update(cx, |s, cx| s.set_value(formatted, window, cx));
-    }
-
-    /// Format SQL with proper indentation and line breaks
-    fn format_sql(sql: &str) -> String {
-        let mut formatted = String::new();
-        let mut indent_level: usize = 0;
-        let lines: Vec<&str> = sql.lines().collect();
-
-        for line in lines {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            // Decrease indent for closing parentheses
-            if trimmed.starts_with(')') {
-                indent_level = indent_level.saturating_sub(1);
-            }
-
-            // Keywords that should be on new line at base level
-            let is_major_keyword = trimmed.starts_with("SELECT")
-                || trimmed.starts_with("FROM")
-                || trimmed.starts_with("WHERE")
-                || trimmed.starts_with("GROUP BY")
-                || trimmed.starts_with("HAVING")
-                || trimmed.starts_with("ORDER BY")
-                || trimmed.starts_with("LIMIT")
-                || trimmed.starts_with("UNION")
-                || trimmed.starts_with("INSERT")
-                || trimmed.starts_with("UPDATE")
-                || trimmed.starts_with("DELETE")
-                || trimmed.starts_with("CREATE")
-                || trimmed.starts_with("ALTER")
-                || trimmed.starts_with("DROP");
-
-            let is_join = trimmed.starts_with("INNER JOIN")
-                || trimmed.starts_with("LEFT JOIN")
-                || trimmed.starts_with("RIGHT JOIN")
-                || trimmed.starts_with("FULL JOIN")
-                || trimmed.starts_with("CROSS JOIN")
-                || trimmed.starts_with("JOIN");
-
-            // Set indent level for major keywords
-            if is_major_keyword && indent_level > 0 {
-                indent_level = 0;
-            }
-
-            // Add indentation
-            if !formatted.is_empty() && !formatted.ends_with('\n') {
-                formatted.push('\n');
-            }
-            formatted.push_str(&"  ".repeat(indent_level));
-            formatted.push_str(trimmed);
-
-            // Increase indent after SELECT or other keywords
-            if trimmed.ends_with("SELECT") || trimmed.starts_with("SELECT") {
-                if !trimmed.ends_with(';') {
-                    indent_level = 1;
-                }
-            }
-
-            // JOIN at same level as FROM
-            if is_join {
-                indent_level = 0;
-            }
-
-            // Handle opening parentheses
-            if trimmed.ends_with('(') {
-                indent_level += 1;
-            }
-
-            // Add newline
-            formatted.push('\n');
-        }
-
-        formatted.trim().to_string()
     }
 
     fn handle_compress_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.get_sql_text(cx);
-        let compressed = text
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
+        let compressed = compress_sql(&text);
         self.editor.update(cx, |e, cx| e.set_value(compressed, window, cx));
     }
 
