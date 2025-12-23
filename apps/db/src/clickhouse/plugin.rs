@@ -292,7 +292,7 @@ impl DatabasePlugin for ClickHousePlugin {
 
     async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
         let sql = format!(
-            "SELECT name, type, default_kind, default_expression, comment FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
+            "SELECT name, type, default_kind, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
             database.replace("'", "''"),
             table.replace("'", "''")
         );
@@ -313,6 +313,7 @@ impl DatabasePlugin for ClickHousePlugin {
                     let default_kind = row.get(2).and_then(|v| v.clone());
                     let default_expression = row.get(3).and_then(|v| v.clone());
                     let comment = row.get(4).and_then(|v| v.clone());
+                    let is_primary_key = row.get(5).and_then(|v| v.clone()).map(|v| v == "1").unwrap_or(false);
 
                     let is_nullable = data_type.starts_with("Nullable(");
                     let default_value = if default_kind.as_deref() == Some("DEFAULT") {
@@ -326,7 +327,7 @@ impl DatabasePlugin for ClickHousePlugin {
                         data_type: data_type.clone(),
                         is_nullable,
                         default_value,
-                        is_primary_key: false, // ClickHouse doesn't have explicit primary keys in system.columns
+                        is_primary_key,
                         comment,
                     });
                 }

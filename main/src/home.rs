@@ -850,7 +850,6 @@ impl HomePage {
             .when(is_selected, |this| {
                 this.border_color(cx.theme().primary)
                     .shadow_md()
-                    .bg(cx.theme().primary_foreground)
             })
             .when(!is_selected, |this| {
                 this.border_color(cx.theme().border)

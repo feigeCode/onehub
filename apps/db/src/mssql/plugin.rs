@@ -377,12 +377,22 @@ impl DatabasePlugin for MsSqlPlugin {
                 c.IS_NULLABLE,
                 c.COLUMN_DEFAULT,
                 COLUMNPROPERTY(OBJECT_ID('[{database}].[' + c.TABLE_SCHEMA + '].[{table}]'), c.COLUMN_NAME, 'IsIdentity') as is_identity,
-                CAST(ep.value AS NVARCHAR(MAX)) as column_comment
+                CAST(ep.value AS NVARCHAR(MAX)) as column_comment,
+                CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END as is_primary_key
             FROM [{database}].INFORMATION_SCHEMA.COLUMNS c
             LEFT JOIN [{database}].sys.extended_properties ep
                 ON ep.major_id = OBJECT_ID('[{database}].[' + c.TABLE_SCHEMA + '].[{table}]')
                 AND ep.minor_id = c.ORDINAL_POSITION
                 AND ep.name = 'MS_Description'
+            LEFT JOIN (
+                SELECT ku.COLUMN_NAME
+                FROM [{database}].INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                JOIN [{database}].INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku
+                    ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
+                    AND tc.TABLE_SCHEMA = ku.TABLE_SCHEMA
+                WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                    AND tc.TABLE_NAME = '{table}'
+            ) pk ON c.COLUMN_NAME = pk.COLUMN_NAME
             WHERE c.TABLE_NAME = '{table}'
             ORDER BY c.ORDINAL_POSITION
             "#,
@@ -397,11 +407,12 @@ impl DatabasePlugin for MsSqlPlugin {
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
                 let is_nullable = row.get(2).and_then(|v| v.clone()).unwrap_or("YES".to_string()) == "YES";
+                let is_primary_key = row.get(6).and_then(|v| v.clone()).map(|v| v == "1").unwrap_or(false);
                 ColumnInfo {
                     name: row.get(0).and_then(|v| v.clone()).unwrap_or_default(),
                     data_type: row.get(1).and_then(|v| v.clone()).unwrap_or_default(),
                     is_nullable,
-                    is_primary_key: false, // TODO: query primary key info
+                    is_primary_key,
                     default_value: row.get(3).and_then(|v| v.clone()),
                     comment: row.get(5).and_then(|v| v.clone()),
                 }

@@ -535,9 +535,13 @@ pub trait DatabasePlugin: Send + Sync {
                 }
                 children.push(columns_folder);
 
-                // Indexes folder
+                // Indexes folder (excluding primary key index)
                 let indexes = self.list_indexes(connection, db, table).await?;
-                let index_count = indexes.len();
+                let non_primary_indexes: Vec<_> = indexes
+                    .into_iter()
+                    .filter(|idx| idx.name.to_uppercase() != "PRIMARY")
+                    .collect();
+                let index_count = non_primary_indexes.len();
                 let mut indexes_folder = DbNode::new(
                     format!("{}:indexes_folder", id),
                     format!("Indexes ({})", index_count),
@@ -548,7 +552,7 @@ pub trait DatabasePlugin: Send + Sync {
                 .with_metadata(folder_metadata.clone());
 
                 if index_count > 0 {
-                    let index_nodes: Vec<DbNode> = indexes
+                    let index_nodes: Vec<DbNode> = non_primary_indexes
                         .into_iter()
                         .map(|idx| {
                             let mut metadata = HashMap::new();

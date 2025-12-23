@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use gpui::{AnyElement, App, AppContext, Entity, FocusHandle, Global, IntoElement, SharedString, Window};
+use gpui::{AnyElement, App, AppContext, Entity, FocusHandle, Focusable, Global, IntoElement, SharedString, Window};
 use gpui_component::{ActiveTheme, IconName, Sizable, Size, Theme, ThemeMode, group_box::GroupBoxVariant, setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 }, Icon};
@@ -10,7 +10,6 @@ use crate::settings::llm_providers_view::LlmProvidersView;
 
 struct AppSettings {
     auto_switch_theme: bool,
-    cli_path: SharedString,
     font_family: SharedString,
     font_size: f64,
     line_height: f64,
@@ -23,7 +22,6 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             auto_switch_theme: false,
-            cli_path: "/usr/local/bin/bash".into(),
             font_family: "Arial".into(),
             font_size: 14.0,
             line_height: 12.0,
@@ -153,6 +151,12 @@ impl SettingsTabContent {
                         }))
                 ),
         ]
+    }
+}
+
+impl Focusable for SettingsTabContent {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 

@@ -875,6 +875,35 @@ impl DbTreeView {
                 // 如果有搜索关键字且有匹配的子节点，自动展开
                 should_expand = !query.is_empty();
             }
+        } else if !node.children_loaded && query.is_empty() {
+            // 未加载子节点但可能有子节点的节点：添加空占位符以显示展开箭头
+            // 需要占位符的节点类型：
+            // - Connection: 下有数据库
+            // - Database: 下有 Schema 或 Tables/Views 文件夹
+            // - Schema: 下有 Tables/Views 等文件夹
+            // - Table: 下有 Columns、Indexes
+            // - 各种文件夹类型: 下有具体对象
+            let needs_placeholder = matches!(
+                node.node_type,
+                DbNodeType::Table
+                | DbNodeType::TablesFolder
+                | DbNodeType::ViewsFolder
+                | DbNodeType::ColumnsFolder
+                | DbNodeType::IndexesFolder
+                | DbNodeType::FunctionsFolder
+                | DbNodeType::ProceduresFolder
+                | DbNodeType::TriggersFolder
+                | DbNodeType::SequencesFolder
+                | DbNodeType::QueriesFolder
+            );
+
+            if needs_placeholder {
+                let placeholder = TreeItem::new(
+                    format!("{}:placeholder", node.id),
+                    ""
+                );
+                item = item.children(vec![placeholder]);
+            }
         }
 
         // 设置展开状态
@@ -991,8 +1020,19 @@ impl DbTreeView {
             Some(DbNodeType::Table) => Icon::from(IconName::Table).with_size(Size::Size(px(20.))),
             Some(DbNodeType::View) => Icon::from(IconName::View).with_size(Size::Size(px(20.))),
             Some(DbNodeType::Function) | Some(DbNodeType::Procedure) => Icon::from(IconName::Function).with_size(Size::Size(px(20.))),
-            Some(DbNodeType::Column) => Icon::from(IconName::Column).with_size(Size::Size(px(20.))),
-            Some(DbNodeType::Index) => Icon::from(IconName::GoldKey).with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Column) => {
+                let is_primary_key = node
+                    .and_then(|n| n.metadata.as_ref())
+                    .and_then(|m| m.get("is_primary_key"))
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                if is_primary_key {
+                    Icon::from(IconName::GoldKey).with_size(Size::Size(px(20.)))
+                } else {
+                    Icon::from(IconName::Column).with_size(Size::Size(px(20.)))
+                }
+            }
+            Some(DbNodeType::Index) => Icon::from(IconName::Key).with_size(Size::Size(px(20.))),
             Some(DbNodeType::Trigger) => Icon::from(IconName::Settings),
             Some(DbNodeType::Sequence) => Icon::from(IconName::ArrowRight),
             Some(DbNodeType::NamedQuery) => Icon::from(IconName::File).text_color(cx.theme().primary),
@@ -1273,13 +1313,23 @@ impl Render for DbTreeView {
                                     &self.tree_state,
                                     move |ix, item, _depth, _selected, _window, cx| {
                                         let node_id = item.id.to_string();
-                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query, db_count) = view.update(cx, |this, cx| {
+                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query, db_count, requires_double_click) = view.update(cx, |this, cx| {
                                             let icon = this.get_icon_for_node(&node_id, item.is_expanded(),cx).color();
 
+                                            // 获取节点类型，用于判断展开行为
+                                            let node_type = this.db_nodes.get(&node_id).map(|n| n.node_type.clone());
+
+                                            // Connection、Database、Schema 只能通过双击展开，不响应箭头点击
+                                            let requires_double_click = matches!(
+                                                node_type,
+                                                Some(DbNodeType::Connection) | Some(DbNodeType::Database) | Some(DbNodeType::Schema)
+                                            );
+
                                             // 同步节点展开状态
-                                            if item.is_expanded() {
+                                            if item.is_expanded() && !requires_double_click {
+                                                // 只有非双击展开的节点才同步展开状态
                                                 this.expanded_nodes.insert(item.id.to_string());
-                                            } else {
+                                            } else if !item.is_expanded() {
                                                 this.expanded_nodes.remove(item.id.as_ref());
                                             }
 
@@ -1295,18 +1345,18 @@ impl Render for DbTreeView {
                                                 label_text.clone()
                                             };
 
-                                            let node_type = this.db_nodes.get(&node_id).map(|n| n.node_type.clone());
                                             let db_count = if node_type == Some(DbNodeType::Connection) {
                                                 Some(this.get_selected_database_count(&node_id))
                                             } else {
                                                 None
                                             };
 
-                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone(), db_count)
+                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone(), db_count, requires_double_click)
                                         });
 
                                         // 在 update 之后触发懒加载
-                                        if item.is_expanded() {
+                                        // Connection、Database、Schema 只能通过双击展开，这里不触发懒加载
+                                        if item.is_expanded() && !requires_double_click {
                                             let id = node_id.clone();
                                             view.update(cx, |this, cx| {
                                                 this.lazy_load_children(id, cx);
