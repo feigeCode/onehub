@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ pub mod exporter;
 // Re-exports
 pub use importer::DataImporter;
 pub use exporter::DataExporter;
+use crate::DatabasePlugin;
 
 /// 数据格式枚举
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +137,7 @@ pub trait FormatHandler: Send + Sync {
     /// 导入数据
     async fn import(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         connection: &dyn DbConnection,
         config: &ImportConfig,
         data: &str,

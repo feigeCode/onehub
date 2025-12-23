@@ -228,8 +228,6 @@ pub enum DbTreeViewEvent {
     OpenTableData { node_id: String },
     /// 打开视图数据标签页
     OpenViewData { node_id: String },
-    /// 打开表结构标签页
-    OpenTableStructure { node_id: String },
     /// 设计表（新建或编辑）
     DesignTable { node_id: String },
     /// 为指定数据库创建新查询
@@ -277,19 +275,20 @@ pub enum DbTreeViewEvent {
 }
 
 /// 根据节点类型获取图标（公共函数，可被其他模块复用）
-pub fn get_icon_for_node_type(node_type: &DbNodeType, theme: &gpui_component::Theme) -> Icon {
+pub fn get_icon_for_node_type(node_type: &DbNodeType, _theme: &gpui_component::Theme) -> Icon {
     match node_type {
         DbNodeType::Connection => IconName::MySQLLineColor.color().with_size(Size::Large),
         DbNodeType::Schema => IconName::Schema.color(),
         DbNodeType::Database => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
-        DbNodeType::Table => Icon::from(IconName::Table).text_color(gpui::rgb(0x10B981)),
-        DbNodeType::View => Icon::from(IconName::View),
-        DbNodeType::Function | DbNodeType::Procedure => Icon::from(IconName::Function),
-        DbNodeType::Column => Icon::from(IconName::Column).text_color(gpui::rgb(0x6B7280)),
-        DbNodeType::Index => Icon::from(IconName::Settings),
-        DbNodeType::Trigger => Icon::from(IconName::Settings),
-        DbNodeType::Sequence => Icon::from(IconName::ArrowRight),
-        DbNodeType::NamedQuery => Icon::from(IconName::File).text_color(theme.primary),
+        DbNodeType::Table => Icon::from(IconName::Table).color(),
+        DbNodeType::View => Icon::from(IconName::View).color(),
+        DbNodeType::Function => Icon::from(IconName::Function).color(),
+        DbNodeType::Procedure => Icon::from(IconName::Procedure).color(),
+        DbNodeType::Column => Icon::from(IconName::Column).color(),
+        DbNodeType::Index => Icon::from(IconName::Index).color(),
+        DbNodeType::Trigger => Icon::from(IconName::Trigger).color(),
+        DbNodeType::Sequence => Icon::from(IconName::Sequence).color(),
+        DbNodeType::NamedQuery => Icon::from(IconName::Query).color(),
         _ => IconName::File.color()
     }
 }
@@ -900,7 +899,7 @@ impl DbTreeView {
             if needs_placeholder {
                 let placeholder = TreeItem::new(
                     format!("{}:placeholder", node.id),
-                    ""
+                    "loading..."
                 );
                 item = item.children(vec![placeholder]);
             }
@@ -999,7 +998,7 @@ impl DbTreeView {
     }
 
     /// 根据节点类型获取图标
-    fn get_icon_for_node(&self, node_id: &str, is_expanded: bool, cx: &mut Context<Self>) -> Icon {
+    fn get_icon_for_node(&self, node_id: &str, is_expanded: bool, _cx: &mut Context<Self>) -> Icon {
         let node = self.db_nodes.get(node_id);
         match node.map(|n| &n.node_type) {
             Some(DbNodeType::Connection) => {
@@ -1011,15 +1010,23 @@ impl DbTreeView {
             }
             Some(DbNodeType::Database) => Icon::from(IconName::Database).color().with_size(Size::Size(px(20.))),
             Some(DbNodeType::Schema) => Icon::from(IconName::Schema).color().with_size(Size::Size(px(20.))),
-            Some(DbNodeType::TablesFolder) | Some(DbNodeType::ViewsFolder) |
-            Some(DbNodeType::FunctionsFolder) | Some(DbNodeType::ProceduresFolder) |
-            Some(DbNodeType::TriggersFolder) | Some(DbNodeType::SequencesFolder) |
-            Some(DbNodeType::QueriesFolder) | Some(DbNodeType::ColumnsFolder) | Some(DbNodeType::IndexesFolder) => {
-                if is_expanded { Icon::new(IconName::FolderOpen1).with_size(Size::Size(px(20.))) } else { Icon::from(IconName::Folder1).with_size(Size::Size(px(20.))) }
-            }
-            Some(DbNodeType::Table) => Icon::from(IconName::Table).with_size(Size::Size(px(20.))),
-            Some(DbNodeType::View) => Icon::from(IconName::View).with_size(Size::Size(px(20.))),
-            Some(DbNodeType::Function) | Some(DbNodeType::Procedure) => Icon::from(IconName::Function).with_size(Size::Size(px(20.))),
+
+            Some(DbNodeType::TablesFolder) => Icon::from(IconName::FolderTables).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::ViewsFolder) => Icon::from(IconName::FolderViews).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::FunctionsFolder) => Icon::from(IconName::FolderFunctions).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::ProceduresFolder) => Icon::from(IconName::FolderProcedures).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::TriggersFolder) => Icon::from(IconName::FolderTriggers).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::ForeignKeysFolder) => Icon::from(IconName::FolderForeignKeys).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::ChecksFolder) => Icon::from(IconName::FolderCheckConstraints).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::QueriesFolder) => Icon::from(IconName::FolderQueries).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::ColumnsFolder) => Icon::from(IconName::FolderColumns).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::IndexesFolder) => Icon::from(IconName::FolderIndexes).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::SequencesFolder) => Icon::from(IconName::FolderSequences).color().with_size(Size::Size(px(20.))),
+
+            Some(DbNodeType::Table) => Icon::from(IconName::Table).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::View) => Icon::from(IconName::View).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Function) => Icon::from(IconName::Function).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Procedure) => Icon::from(IconName::Procedure).color().with_size(Size::Size(px(20.))),
             Some(DbNodeType::Column) => {
                 let is_primary_key = node
                     .and_then(|n| n.metadata.as_ref())
@@ -1027,16 +1034,18 @@ impl DbTreeView {
                     .map(|v| v == "true")
                     .unwrap_or(false);
                 if is_primary_key {
-                    Icon::from(IconName::GoldKey).with_size(Size::Size(px(20.)))
+                    Icon::from(IconName::PrimaryKey).color().with_size(Size::Size(px(20.)))
                 } else {
-                    Icon::from(IconName::Column).with_size(Size::Size(px(20.)))
+                    Icon::from(IconName::Column).color().with_size(Size::Size(px(20.)))
                 }
             }
-            Some(DbNodeType::Index) => Icon::from(IconName::Key).with_size(Size::Size(px(20.))),
-            Some(DbNodeType::Trigger) => Icon::from(IconName::Settings),
-            Some(DbNodeType::Sequence) => Icon::from(IconName::ArrowRight),
-            Some(DbNodeType::NamedQuery) => Icon::from(IconName::File).text_color(cx.theme().primary),
-            _ => Icon::from(IconName::File),
+            Some(DbNodeType::Index) => Icon::from(IconName::Index).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::ForeignKey) => Icon::from(IconName::GoldKey).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Trigger) => Icon::from(IconName::Trigger).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Sequence) => Icon::from(IconName::Sequence).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::Check) => Icon::from(IconName::CheckConstraint).color().with_size(Size::Size(px(20.))),
+            Some(DbNodeType::NamedQuery) => Icon::from(IconName::Query).color().with_size(Size::Size(px(20.))),
+            _ => Icon::from(IconName::Loader).with_size(Size::Size(px(14.))),
         }
     }
 
@@ -1087,9 +1096,8 @@ impl DbTreeView {
                 DbNodeType::Connection | DbNodeType::Database | DbNodeType::Schema |
                 DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder |
                 DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
-                DbNodeType::TriggersFolder | DbNodeType::SequencesFolder |
-                DbNodeType::QueriesFolder | DbNodeType::TablesFolder |
-                DbNodeType::ViewsFolder  => {
+                DbNodeType::TriggersFolder | DbNodeType::QueriesFolder |
+                DbNodeType::TablesFolder | DbNodeType::ViewsFolder  => {
                     let node_id = item.id.to_string();
                     let is_expanded = self.expanded_nodes.contains(&node_id);
                     
@@ -1277,7 +1285,7 @@ impl Render for DbTreeView {
                 v_flex()
                     .flex_1()
                     .w_full()
-                    .bg(cx.theme().muted.opacity(0.3))
+                    .bg(cx.theme().background)  // 树背景
                     .child(
                         div()
                             .id("tree-scroll")
@@ -1311,13 +1319,22 @@ impl Render for DbTreeView {
 
                                 context_menu_tree(
                                     &self.tree_state,
-                                    move |ix, item, _depth, _selected, _window, cx| {
+                                    move |ix, item, _depth, selected, _window, cx| {
                                         let node_id = item.id.to_string();
-                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query, db_count, requires_double_click) = view.update(cx, |this, cx| {
+                                        let (icon, label_text, label_for_tooltip, _item_clone, search_query, db_count, requires_double_click, is_folder_type) = view.update(cx, |this, cx| {
                                             let icon = this.get_icon_for_node(&node_id, item.is_expanded(),cx).color();
 
                                             // 获取节点类型，用于判断展开行为
                                             let node_type = this.db_nodes.get(&node_id).map(|n| n.node_type.clone());
+
+                                            // 判断是否是分组类型（Folder 类型）
+                                            let is_folder_type = matches!(
+                                                node_type,
+                                                Some(DbNodeType::TablesFolder) | Some(DbNodeType::ViewsFolder) |
+                                                Some(DbNodeType::FunctionsFolder) | Some(DbNodeType::ProceduresFolder) |
+                                                Some(DbNodeType::TriggersFolder) | Some(DbNodeType::QueriesFolder) |
+                                                Some(DbNodeType::ColumnsFolder) | Some(DbNodeType::IndexesFolder)
+                                            );
 
                                             // Connection、Database、Schema 只能通过双击展开，不响应箭头点击
                                             let requires_double_click = matches!(
@@ -1351,7 +1368,7 @@ impl Render for DbTreeView {
                                                 None
                                             };
 
-                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone(), db_count, requires_double_click)
+                                            (icon, label_text, label_for_tooltip, item.clone(), this.search_query.clone(), db_count, requires_double_click, is_folder_type)
                                         });
 
                                         // 在 update 之后触发懒加载
@@ -1378,13 +1395,43 @@ impl Render for DbTreeView {
                                         let view_for_filter = view.clone();
                                         let node_id_for_filter = node_id.clone();
 
-                                        let list_item = ListItem::new(ix)
+                                        // 选中状态的样式
+                                        let selection_bg = cx.theme().selection;
+                                        let selection_bar_color = cx.theme().blue;
+                                        let hover_bg = cx.theme().secondary;
+                                        let folder_text_color = cx.theme().muted_foreground;
+                                        let foreground_color = cx.theme().foreground;
+
+                                        // 使用 div 替代 ListItem 以精确控制样式
+                                        let list_item = div()
+                                            .id(SharedString::from(format!("tree-item-{}", ix)))
                                             .flex_1()
                                             .min_w(px(0.))
                                             .overflow_hidden()
-                                            .rounded(cx.theme().radius)
+                                            .h(px(26.))  // 行高 26px
+                                            .relative()
+                                            .items_center()
+                                            .text_sm()
+                                            .text_color(foreground_color)
+                                            // 选中时显示左侧蓝条和背景
+                                            .when(selected, |this| {
+                                                this.child(
+                                                    div()
+                                                        .absolute()
+                                                        .left_0()
+                                                        .top_0()
+                                                        .bottom_0()
+                                                        .w(px(2.))  // 左侧选中条 2px
+                                                        .bg(selection_bar_color)
+                                                )
+                                                .bg(selection_bg)
+                                                .text_color(gpui::white())
+                                            })
+                                            // hover 背景
+                                            .when(!selected, |this| {
+                                                this.hover(|style| style.bg(hover_bg))
+                                            })
                                             .px_2()
-                                            .py_1()
                                             .child(
                                                 h_flex()
                                                     .gap_2()
@@ -1400,7 +1447,10 @@ impl Render for DbTreeView {
                                                             .overflow_hidden()
                                                             .whitespace_nowrap()
                                                             .text_ellipsis()
-                                                            .text_sm()
+                                                            // 分组文字使用 muted.foreground（但选中状态下仍然白色）
+                                                            .when(is_folder_type && !selected, |this| {
+                                                                this.text_color(folder_text_color)
+                                                            })
                                                             .child(Label::new(label_text).highlights(search_query).into_any_element())
                                                             .tooltip(move |window, cx| {
                                                                 Tooltip::new(label_for_tooltip.clone()).build(window, cx)
@@ -1631,7 +1681,6 @@ impl Render for DbTreeView {
 
                                                                     menu = menu
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "查看表数据".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableData { node_id: n.clone() }))
-                                                                        .item(Self::create_menu_item(&node_id_for_menu, "编辑表结构".to_string(), &view_clone, window, |n| DbTreeViewEvent::OpenTableStructure { node_id: n.clone() }))
                                                                         .item(Self::create_menu_item(&node_id_for_menu, "设计表".to_string(), &view_clone, window, |n| DbTreeViewEvent::DesignTable { node_id: n.clone() }))
                                                                         .separator();
 

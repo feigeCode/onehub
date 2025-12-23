@@ -1,27 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 60" width="48" height="60">
-  <defs>
-    <linearGradient id="tableGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#3ED6FF;stop-opacity:1"/>
-      <stop offset="100%" style="stop-color:#1B9BDB;stop-opacity:1"/>
-    </linearGradient>
-    <filter id="shadow">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="1.5"/>
-      <feOffset dx="0" dy="1"/>
-      <feComponentTransfer>
-        <feFuncA type="linear" slope="0.3"/>
-      </feComponentTransfer>
-      <feMerge>
-        <feMergeNode/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-  </defs>
-  <g filter="url(#shadow)">
-    <rect x="4" y="8" width="40" height="42" rx="3" fill="url(#tableGrad)"/>
-    <rect x="4" y="8" width="40" height="10" rx="3" fill="white" opacity="0.2"/>
-    <line x1="4" y1="22" x2="44" y2="22" stroke="white" stroke-width="2" opacity="0.9"/>
-    <line x1="4" y1="34" x2="44" y2="34" stroke="white" stroke-width="2" opacity="0.9"/>
-    <line x1="24" y1="22" x2="24" y2="50" stroke="white" stroke-width="2" opacity="0.9"/>
-    <rect x="4" y="8" width="40" height="42" rx="3" fill="none" stroke="#1589C3" stroke-width="0.5" opacity="0.6"/>
-  </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+                    <defs>
+                        <linearGradient id="tb" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" style="stop-color:#42A5F5"/>
+                            <stop offset="100%" style="stop-color:#1E88E5"/>
+                        </linearGradient>
+                    </defs>
+                    <rect x="2" y="2" width="12" height="12" rx="1" fill="url(#tb)"/>
+                    <line x1="2" y1="6" x2="14" y2="6" stroke="white" stroke-width="1" opacity="0.6"/>
+                    <line x1="2" y1="10" x2="14" y2="10" stroke="white" stroke-width="1" opacity="0.6"/>
+                    <line x1="6" y1="2" x2="6" y2="14" stroke="white" stroke-width="1" opacity="0.6"/>
+                    <line x1="10" y1="2" x2="10" y2="14" stroke="white" stroke-width="1" opacity="0.6"/>
+                </svg>

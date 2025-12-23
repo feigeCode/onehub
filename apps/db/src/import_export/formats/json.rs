@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
@@ -5,6 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::connection::DbConnection;
+use crate::DatabasePlugin;
 use crate::executor::{ExecOptions, SqlResult};
 use crate::import_export::{ExportConfig, ExportResult, FormatHandler, ImportConfig, ImportResult};
 
@@ -14,6 +16,7 @@ pub struct JsonFormatHandler;
 impl FormatHandler for JsonFormatHandler {
     async fn import(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         connection: &dyn DbConnection,
         config: &ImportConfig,
         data: &str,
@@ -45,7 +48,7 @@ impl FormatHandler for JsonFormatHandler {
         // TRUNCATE表
         if config.truncate_before_import {
             let truncate_sql = format!("TRUNCATE TABLE `{}`", table);
-            let results = connection.execute(&truncate_sql, ExecOptions::default()).await
+            let results = connection.execute(plugin.clone(), &truncate_sql, ExecOptions::default()).await
                 .map_err(|e| anyhow!("Truncate failed: {}", e))?;
             
             for result in results {
@@ -114,7 +117,7 @@ impl FormatHandler for JsonFormatHandler {
             }
             insert_sql.push(')');
 
-            match connection.execute(&insert_sql, ExecOptions::default()).await {
+            match connection.execute(plugin.clone(), &insert_sql, ExecOptions::default()).await {
                 Ok(results) => {
                     for result in results {
                         match result {

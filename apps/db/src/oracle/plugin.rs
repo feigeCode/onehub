@@ -28,6 +28,10 @@ impl DatabasePlugin for OraclePlugin {
         "\""
     }
 
+    fn supports_sequences(&self) -> bool {
+        true
+    }
+
     fn get_completion_info(&self) -> SqlCompletionInfo {
         SqlCompletionInfo {
             keywords: vec![

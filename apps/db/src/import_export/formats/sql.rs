@@ -1,9 +1,11 @@
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::connection::DbConnection;
+use crate::DatabasePlugin;
 use crate::executor::{ExecOptions, SqlResult};
 use crate::import_export::{ExportConfig, ExportResult, FormatHandler, ImportConfig, ImportResult};
 
@@ -13,6 +15,7 @@ pub struct SqlFormatHandler;
 impl FormatHandler for SqlFormatHandler {
     async fn import(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         connection: &dyn DbConnection,
         config: &ImportConfig,
         data: &str,
@@ -25,7 +28,7 @@ impl FormatHandler for SqlFormatHandler {
         if config.truncate_before_import {
             if let Some(table) = &config.table {
                 let truncate_sql = format!("TRUNCATE TABLE `{}`", table);
-                let results = connection.execute(&truncate_sql, ExecOptions::default()).await
+                let results = connection.execute(plugin.clone(), &truncate_sql, ExecOptions::default()).await
                     .map_err(|e| anyhow::anyhow!("Truncate failed: {}", e))?;
                 
                 for result in results {
@@ -51,7 +54,7 @@ impl FormatHandler for SqlFormatHandler {
             max_rows: None,
         };
 
-        let results = connection.execute(data, exec_options).await
+        let results = connection.execute(plugin.clone(), data, exec_options).await
             .map_err(|e| anyhow::anyhow!("Execute failed: {}", e))?;
 
         for result in results {

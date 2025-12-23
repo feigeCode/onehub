@@ -1,11 +1,20 @@
-use std::collections::HashMap;
-use crate::connection::{DbConnection, DbError};
-use crate::executor::{ExecOptions, SqlResult};
+use crate::connection::{
+    DbConnection, DbError
+};
+use crate::executor::{ExecOptions, SqlResult, StatementType};
 use crate::types::*;
 use anyhow::{Error, Result};
 use async_trait::async_trait;
-use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
 use one_core::storage::query_repository::QueryRepository;
+use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
+use sqlparser::ast;
+use sqlparser::ast::{Expr, SetExpr, Statement, TableFactor};
+use sqlparser::dialect::{
+    ClickHouseDialect, Dialect, MsSqlDialect, MySqlDialect,
+    OracleDialect, PostgreSqlDialect, SQLiteDialect
+};
+use sqlparser::parser::Parser;
+use std::collections::HashMap;
 
 /// Standard SQL functions common to most databases
 pub const STANDARD_SQL_FUNCTIONS: &[(&str, &str)] = &[
@@ -140,22 +149,91 @@ pub trait DatabasePlugin: Send + Sync {
         false
     }
 
+    /// Whether this database supports sequences (e.g., PostgreSQL, Oracle, MSSQL)
+    fn supports_sequences(&self) -> bool {
+        false
+    }
+
+    /// Get the SQL dialect for this database type
+    fn sql_dialect(&self) -> Box<dyn Dialect> {
+        match self.name() {
+            DatabaseType::MySQL => Box::new(MySqlDialect {}),
+            DatabaseType::PostgreSQL => Box::new(PostgreSqlDialect {}),
+            DatabaseType::MSSQL => Box::new(MsSqlDialect {}),
+            DatabaseType::SQLite => Box::new(SQLiteDialect {}),
+            DatabaseType::ClickHouse => Box::new(ClickHouseDialect {}),
+            DatabaseType::Oracle => Box::new(OracleDialect {})
+        }
+    }
+
+    /// Split a SQL script into individual statements using this database's dialect
+    fn split_statements(&self, script: &str) -> Vec<String> {
+        match Parser::parse_sql(self.sql_dialect().as_ref(), script) {
+            Ok(statements) => statements.iter().map(|stmt| stmt.to_string()).collect(),
+            Err(_) => fallback_split(script),
+        }
+    }
+
+    /// Check if a SQL statement is a query (returns rows)
+    fn is_query_statement(&self, sql: &str) -> bool {
+        if let Ok(statements) = Parser::parse_sql(self.sql_dialect().as_ref(), sql) {
+            if let Some(stmt) = statements.first() {
+                return is_query_stmt(stmt);
+            }
+        }
+        is_query_statement_fallback(sql)
+    }
+
+    /// Determine the statement category
+    fn classify_statement(&self, sql: &str) -> StatementType {
+        if let Ok(statements) = Parser::parse_sql(self.sql_dialect().as_ref(), sql) {
+            if let Some(stmt) = statements.first() {
+                return classify_stmt(stmt);
+            }
+        }
+        classify_fallback(sql)
+    }
+
+    /// Check if a SELECT query might be editable
+    /// Returns None if cannot determine, Some(table_name) if looks like simple single-table query
+    fn analyze_select_editability(&self, sql: &str) -> Option<String> {
+        if let Ok(statements) = Parser::parse_sql(self.sql_dialect().as_ref(), sql) {
+            if let Some(Statement::Query(query)) = statements.first() {
+                return analyze_query_editability(query);
+            }
+        }
+        analyze_select_editability_fallback(sql)
+    }
+
     /// List schemas in a database (for databases that support schemas)
     async fn list_schemas(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
 
+    /// List schemas view (for databases that support schemas)
+    async fn list_schemas_view(&self, _connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        Ok(ObjectView::default())
+    }
+
     // === Table Operations ===
     async fn list_tables(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<TableInfo>>;
-    
+
     async fn list_tables_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView>;
     async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>>;
     async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView>;
     async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<IndexInfo>>;
-    
+
     async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView>;
-    
-    
+
+    /// List foreign keys for a table
+    async fn list_foreign_keys(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<ForeignKeyDefinition>> {
+        Ok(Vec::new())
+    }
+
+    /// List triggers for a specific table
+    async fn list_table_triggers(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<TriggerInfo>> {
+        Ok(Vec::new())
+    }
 
     // === View Operations ===
     async fn list_views(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<ViewInfo>>;
@@ -174,7 +252,7 @@ pub trait DatabasePlugin: Send + Sync {
 
     // === Trigger Operations ===
     async fn list_triggers(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<TriggerInfo>>;
-    
+
     async fn list_triggers_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView>;
 
     // === Sequence Operations ===
@@ -365,15 +443,125 @@ pub trait DatabasePlugin: Send + Sync {
                 })
                 .collect();
             views_folder.set_children( children);
-            
+
         }
         nodes.push(views_folder);
-        let queries_folder = self.load_queries(node, global_storage_state).await?;
+
+        // Functions folder
+        let functions = self.list_functions(connection, database).await.unwrap_or_default();
+        let function_count = functions.len();
+        let mut functions_folder = DbNode::new(
+            format!("{}:functions_folder", id),
+            format!("Functions ({})", function_count),
+            DbNodeType::FunctionsFolder,
+            node.connection_id.clone(),
+            node.database_type
+        ).with_parent_context(id).with_metadata(metadata.clone());
+        if function_count > 0 {
+            let children: Vec<DbNode> = functions
+                .into_iter()
+                .map(|func| {
+                    DbNode::new(
+                        format!("{}:functions_folder:{}", id, func.name),
+                        func.name.clone(),
+                        DbNodeType::Function,
+                        node.connection_id.clone(),
+                        node.database_type
+                    )
+                    .with_parent_context(format!("{}:functions_folder", id))
+                    .with_metadata(metadata.clone())
+                })
+                .collect();
+            functions_folder.set_children(children);
+        }
+        nodes.push(functions_folder);
+
+        // Procedures folder
+        let procedures = self.list_procedures(connection, database).await.unwrap_or_default();
+        let procedure_count = procedures.len();
+        let mut procedures_folder = DbNode::new(
+            format!("{}:procedures_folder", id),
+            format!("Procedures ({})", procedure_count),
+            DbNodeType::ProceduresFolder,
+            node.connection_id.clone(),
+            node.database_type
+        ).with_parent_context(id).with_metadata(metadata.clone());
+        if procedure_count > 0 {
+            let children: Vec<DbNode> = procedures
+                .into_iter()
+                .map(|proc| {
+                    DbNode::new(
+                        format!("{}:procedures_folder:{}", id, proc.name),
+                        proc.name.clone(),
+                        DbNodeType::Procedure,
+                        node.connection_id.clone(),
+                        node.database_type
+                    )
+                    .with_parent_context(format!("{}:procedures_folder", id))
+                    .with_metadata(metadata.clone())
+                })
+                .collect();
+            procedures_folder.set_children(children);
+        }
+        nodes.push(procedures_folder);
+
+        // Sequences folder (only for databases that support sequences)
+        if self.supports_sequences() {
+            let sequences = self.list_sequences(connection, database).await.unwrap_or_default();
+            let filtered_sequences: Vec<_> = if let Some(s) = schema {
+                sequences.into_iter().filter(|seq| {
+                    seq.name.starts_with(&format!("{}.", s))
+                }).collect()
+            } else {
+                sequences
+            };
+            let sequence_count = filtered_sequences.len();
+            let mut sequences_folder = DbNode::new(
+                format!("{}:sequences_folder", id),
+                format!("Sequences ({})", sequence_count),
+                DbNodeType::SequencesFolder,
+                node.connection_id.clone(),
+                node.database_type
+            ).with_parent_context(id).with_metadata(metadata.clone());
+            if sequence_count > 0 {
+                let children: Vec<DbNode> = filtered_sequences
+                    .into_iter()
+                    .map(|seq| {
+                        let mut seq_meta: HashMap<String, String> = metadata.clone();
+                        if let Some(start) = seq.start_value {
+                            seq_meta.insert("start_value".to_string(), start.to_string());
+                        }
+                        if let Some(inc) = seq.increment {
+                            seq_meta.insert("increment".to_string(), inc.to_string());
+                        }
+                        if let Some(min) = seq.min_value {
+                            seq_meta.insert("min_value".to_string(), min.to_string());
+                        }
+                        if let Some(max) = seq.max_value {
+                            seq_meta.insert("max_value".to_string(), max.to_string());
+                        }
+                        DbNode::new(
+                            format!("{}:sequences_folder:{}", id, seq.name),
+                            seq.name.clone(),
+                            DbNodeType::Sequence,
+                            node.connection_id.clone(),
+                            node.database_type
+                        )
+                        .with_parent_context(format!("{}:sequences_folder", id))
+                        .with_metadata(seq_meta)
+                    })
+                    .collect();
+                sequences_folder.set_children(children);
+            }
+            nodes.push(sequences_folder);
+        }
+
+        let queries_folder = self.load_queries(node, metadata.clone(), global_storage_state).await?;
         nodes.push(queries_folder);
         Ok(nodes)
     }
 
-    async fn load_queries(&self, node: &DbNode, global_storage_state: &GlobalStorageState) -> std::result::Result<DbNode, Error> {
+    async fn load_queries(&self, node: &DbNode, metadata: HashMap<String, String>, global_storage_state: &GlobalStorageState) -> std::result::Result<DbNode, Error> {
         let node_id_for_queries = node.id.clone();
         let connection_id_for_queries = node.connection_id.clone();
         let database_name = node.name.clone();  // Database node's name is the database name
@@ -387,9 +575,6 @@ pub trait DatabasePlugin: Send + Sync {
             let query_count = queries.len();
 
             // Add database name to metadata
-            let mut metadata = HashMap::new();
-            metadata.insert("database".to_string(), database_name.clone());
-
             let mut queries_folder_node = DbNode::new(
                 format!("{}:queries_folder", &node_id_for_queries),
                 format!("Queries ({})", query_count),
@@ -400,7 +585,7 @@ pub trait DatabasePlugin: Send + Sync {
                 .with_parent_context(node_id_for_queries.clone())
                 .with_metadata(metadata.clone());
 
-            if !queries.is_empty() {
+            return if !queries.is_empty() {
                 // Add NamedQuery children
                 let mut query_nodes = Vec::new();
                 for query in queries {
@@ -427,10 +612,10 @@ pub trait DatabasePlugin: Send + Sync {
                 }
 
                 queries_folder_node.set_children(query_nodes);
-                return Ok(queries_folder_node);
+                Ok(queries_folder_node)
             } else {
                 // Add empty QueriesFolder node
-                return Ok(queries_folder_node);
+                Ok(queries_folder_node)
             }
         }
 
@@ -474,8 +659,7 @@ pub trait DatabasePlugin: Send + Sync {
             }
             DbNodeType::TablesFolder | DbNodeType::ViewsFolder |
             DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
-            DbNodeType::TriggersFolder | DbNodeType::SequencesFolder |
-            DbNodeType::QueriesFolder => {
+            DbNodeType::SequencesFolder | DbNodeType::QueriesFolder => {
                 if node.children_loaded {
                     Ok(node.children.clone())
                 } else {
@@ -576,9 +760,85 @@ pub trait DatabasePlugin: Send + Sync {
                 }
                 children.push(indexes_folder);
 
+                // Foreign Keys folder
+                let foreign_keys = self.list_foreign_keys(connection, db, table).await.unwrap_or_default();
+                let fk_count = foreign_keys.len();
+                let mut fk_folder = DbNode::new(
+                    format!("{}:foreign_keys_folder", id),
+                    format!("Foreign Keys ({})", fk_count),
+                    DbNodeType::ForeignKeysFolder,
+                    node.connection_id.clone(),
+                    node.database_type
+                ).with_parent_context(id)
+                .with_metadata(folder_metadata.clone());
+
+                if fk_count > 0 {
+                    let fk_nodes: Vec<DbNode> = foreign_keys
+                        .into_iter()
+                        .map(|fk| {
+                            let mut metadata = HashMap::new();
+                            folder_metadata.iter().for_each(|(k, v)| {
+                                metadata.insert(k.clone(), v.clone());
+                            });
+                            metadata.insert("columns".to_string(), fk.columns.join(", "));
+                            metadata.insert("ref_table".to_string(), fk.ref_table.clone());
+                            metadata.insert("ref_columns".to_string(), fk.ref_columns.join(", "));
+                            DbNode::new(
+                                format!("{}:foreign_keys_folder:{}", id, fk.name),
+                                fk.name,
+                                DbNodeType::ForeignKey,
+                                node.connection_id.clone(),
+                                node.database_type
+                            )
+                            .with_metadata(metadata)
+                            .with_parent_context(format!("{}:foreign_keys_folder", id))
+                        })
+                        .collect();
+                    fk_folder.set_children(fk_nodes);
+                }
+                children.push(fk_folder);
+
+                // Triggers folder
+                let triggers = self.list_table_triggers(connection, db, table).await.unwrap_or_default();
+                let trigger_count = triggers.len();
+                let mut triggers_folder = DbNode::new(
+                    format!("{}:triggers_folder", id),
+                    format!("Triggers ({})", trigger_count),
+                    DbNodeType::TriggersFolder,
+                    node.connection_id.clone(),
+                    node.database_type
+                ).with_parent_context(id)
+                .with_metadata(folder_metadata.clone());
+
+                if trigger_count > 0 {
+                    let trigger_nodes: Vec<DbNode> = triggers
+                        .into_iter()
+                        .map(|trigger| {
+                            let mut metadata = HashMap::new();
+                            folder_metadata.iter().for_each(|(k, v)| {
+                                metadata.insert(k.clone(), v.clone());
+                            });
+                            metadata.insert("event".to_string(), trigger.event.clone());
+                            metadata.insert("timing".to_string(), trigger.timing.clone());
+                            DbNode::new(
+                                format!("{}:triggers_folder:{}", id, trigger.name),
+                                trigger.name,
+                                DbNodeType::Trigger,
+                                node.connection_id.clone(),
+                                node.database_type
+                            )
+                            .with_metadata(metadata)
+                            .with_parent_context(format!("{}:triggers_folder", id))
+                        })
+                        .collect();
+                    triggers_folder.set_children(trigger_nodes);
+                }
+                children.push(triggers_folder);
+
                 Ok(children)
             }
-            DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder => {
+            DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder |
+            DbNodeType::ForeignKeysFolder | DbNodeType::TriggersFolder => {
                 if node.children_loaded {
                     Ok(node.children.clone())
                 } else {
@@ -779,46 +1039,6 @@ pub trait DatabasePlugin: Send + Sync {
         } else {
             sql_statements.join(";\n\n") + ";"
         }
-    }
-
-    /// Apply table data changes (insert/update/delete)
-    async fn apply_table_changes(
-        &self,
-        connection: &dyn DbConnection,
-        request: TableSaveRequest,
-    ) -> Result<TableSaveResponse> {
-        let mut success_count = 0;
-        let mut errors = Vec::new();
-
-        for change in &request.changes {
-            let Some(sql) = self.build_table_change_sql(&request, change) else {
-                continue;
-            };
-
-            match connection.execute(&sql, ExecOptions::default()).await {
-                Ok(results) => {
-                    for result in results {
-                        match result {
-                            SqlResult::Exec(_) => {
-                                success_count += 1;
-                            }
-                            SqlResult::Error(err) => {
-                                errors.push(err.message);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Err(e) => {
-                    errors.push(e.to_string());
-                }
-            }
-        }
-
-        Ok(TableSaveResponse {
-            success_count,
-            errors,
-        })
     }
 
     fn build_table_change_sql(
@@ -1201,11 +1421,11 @@ pub trait DatabasePlugin: Send + Sync {
         let table_name = self.quote_identifier(&new.table_name);
 
         // Compare columns
-        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+        let original_cols: HashMap<&str, &ColumnDefinition> = original.columns
             .iter()
             .map(|c| (c.name.as_str(), c))
             .collect();
-        let new_cols: std::collections::HashMap<&str, &ColumnDefinition> = new.columns
+        let new_cols: HashMap<&str, &ColumnDefinition> = new.columns
             .iter()
             .map(|c| (c.name.as_str(), c))
             .collect();
@@ -1383,28 +1603,40 @@ pub trait DatabasePlugin: Send + Sync {
             let mut options_changed = false;
             let mut option_parts: Vec<String> = Vec::new();
 
-            if original.options.engine != new.options.engine {
+            if original.options.engine != new.options.engine
+                && original.options.engine.is_some()
+                && new.options.engine.is_some()
+            {
                 if let Some(engine) = &new.options.engine {
                     option_parts.push(format!("ENGINE={}", engine));
                     options_changed = true;
                 }
             }
 
-            if original.options.charset != new.options.charset {
+            if original.options.charset != new.options.charset
+                && original.options.charset.is_some()
+                && new.options.charset.is_some()
+            {
                 if let Some(charset) = &new.options.charset {
                     option_parts.push(format!("DEFAULT CHARSET={}", charset));
                     options_changed = true;
                 }
             }
 
-            if original.options.collation != new.options.collation {
+            if original.options.collation != new.options.collation
+                && original.options.collation.is_some()
+                && new.options.collation.is_some()
+            {
                 if let Some(collation) = &new.options.collation {
                     option_parts.push(format!("COLLATE={}", collation));
                     options_changed = true;
                 }
             }
 
-            if original.options.comment != new.options.comment && !new.options.comment.is_empty() {
+            if original.options.comment != new.options.comment
+                && !original.options.comment.is_empty()
+                && !new.options.comment.is_empty()
+            {
                 option_parts.push(format!("COMMENT='{}'", new.options.comment.replace("'", "''")));
                 options_changed = true;
             }
@@ -1427,7 +1659,7 @@ pub trait DatabasePlugin: Send + Sync {
 
     /// Check if a column definition has changed
     fn column_changed(&self, original: &ColumnDefinition, new: &ColumnDefinition) -> bool {
-        original.data_type != new.data_type
+        original.data_type.to_uppercase() != new.data_type.to_uppercase()
             || original.length != new.length
             || original.precision != new.precision
             || original.scale != new.scale
@@ -1453,4 +1685,325 @@ pub trait DatabasePlugin: Send + Sync {
         type_str
     }
 
+}
+
+
+/// Split SQL statements using sqlparser's parser with the given dialect
+pub fn split_statements_with_dialect(script: &str, dialect: &dyn Dialect) -> Vec<String> {
+    match Parser::parse_sql(dialect, script) {
+        Ok(statements) => {
+            statements.iter().map(|stmt| stmt.to_string()).collect()
+        }
+        Err(_) => fallback_split(script),
+    }
+}
+
+pub fn fallback_split(script: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut string_char = ' ';
+    let mut paren_depth = 0i32;
+    let mut chars = script.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            current.push(ch);
+            if ch == string_char {
+                if chars.peek() == Some(&string_char) {
+                    current.push(chars.next().unwrap());
+                } else {
+                    in_string = false;
+                }
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' | '`' => {
+                in_string = true;
+                string_char = ch;
+                current.push(ch);
+            }
+            '(' => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                paren_depth = (paren_depth - 1).max(0);
+                current.push(ch);
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                current.push(ch);
+                while let Some(c) = chars.next() {
+                    current.push(c);
+                    if c == '\n' { break; }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                current.push(ch);
+                current.push(chars.next().unwrap());
+                while let Some(c) = chars.next() {
+                    current.push(c);
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        current.push(chars.next().unwrap());
+                        break;
+                    }
+                }
+            }
+            ';' if paren_depth == 0 => {
+                let trimmed = current.trim();
+                if !trimmed.is_empty() {
+                    statements.push(trimmed.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    let trimmed = current.trim();
+    if !trimmed.is_empty() {
+        statements.push(trimmed.to_string());
+    }
+
+    statements
+}
+
+
+pub fn is_query_stmt(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::Query(_)
+            | Statement::ShowTables { .. }
+            | Statement::ShowColumns { .. }
+            | Statement::ShowDatabases { .. }
+            | Statement::ShowFunctions { .. }
+            | Statement::ShowVariable { .. }
+            | Statement::ShowVariables { .. }
+            | Statement::ShowCreate { .. }
+            | Statement::ShowStatus { .. }
+            | Statement::ShowCollation { .. }
+            | Statement::ExplainTable { .. }
+            | Statement::Explain { .. }
+    )
+}
+
+pub fn is_query_statement_fallback(sql: &str) -> bool {
+    let trimmed = sql.trim().to_uppercase();
+    trimmed.starts_with("SELECT")
+        || trimmed.starts_with("SHOW")
+        || trimmed.starts_with("DESC")
+        || trimmed.starts_with("DESCRIBE")
+        || trimmed.starts_with("EXPLAIN")
+        || trimmed.starts_with("WITH")
+        || trimmed.starts_with("TABLE")
+        || trimmed.starts_with("PRAGMA")
+}
+
+pub fn classify_stmt(stmt: &Statement) -> StatementType {
+    if is_query_stmt(stmt) {
+        return StatementType::Query;
+    }
+
+    match stmt {
+        Statement::Insert(_)
+        | Statement::Update { .. }
+        | Statement::Delete(_)
+        | Statement::Merge { .. } => StatementType::Dml,
+
+        Statement::CreateTable { .. }
+        | Statement::CreateView { .. }
+        | Statement::CreateIndex(_)
+        | Statement::CreateFunction { .. }
+        | Statement::CreateProcedure { .. }
+        | Statement::CreateTrigger { .. }
+        | Statement::CreateSchema { .. }
+        | Statement::CreateDatabase { .. }
+        | Statement::CreateSequence { .. }
+        | Statement::AlterTable { .. }
+        | Statement::AlterView { .. }
+        | Statement::AlterIndex { .. }
+        | Statement::Drop { .. }
+        | Statement::DropFunction { .. }
+        | Statement::DropProcedure { .. }
+        | Statement::DropTrigger { .. }
+        | Statement::DropSecret { .. }
+        | Statement::Truncate { .. }
+        | Statement::RenameTable { .. } => StatementType::Ddl,
+
+        Statement::StartTransaction { .. }
+        | Statement::Commit { .. }
+        | Statement::Rollback { .. }
+        | Statement::Savepoint { .. } => StatementType::Transaction,
+
+        Statement::Use(_)
+        | Statement::Set(_) => StatementType::Command,
+
+        _ => StatementType::Exec,
+    }
+}
+
+pub fn classify_fallback(sql: &str) -> StatementType {
+    let trimmed = sql.trim().to_uppercase();
+
+    if is_query_statement_fallback(sql) {
+        return StatementType::Query;
+    }
+
+    if trimmed.starts_with("INSERT")
+        || trimmed.starts_with("UPDATE")
+        || trimmed.starts_with("DELETE")
+        || trimmed.starts_with("REPLACE")
+    {
+        return StatementType::Dml;
+    }
+
+    if trimmed.starts_with("CREATE")
+        || trimmed.starts_with("ALTER")
+        || trimmed.starts_with("DROP")
+        || trimmed.starts_with("TRUNCATE")
+        || trimmed.starts_with("RENAME")
+    {
+        return StatementType::Ddl;
+    }
+
+    if trimmed.starts_with("BEGIN")
+        || trimmed.starts_with("COMMIT")
+        || trimmed.starts_with("ROLLBACK")
+        || trimmed.starts_with("START TRANSACTION")
+    {
+        return StatementType::Transaction;
+    }
+
+    if trimmed.starts_with("USE") || trimmed.starts_with("SET") {
+        return StatementType::Command;
+    }
+
+    StatementType::Exec
+}
+
+pub fn analyze_query_editability(query: &Box<ast::Query>) -> Option<String> {
+    let body = &query.body;
+
+    let select = match body.as_ref() {
+        SetExpr::Select(s) => s,
+        _ => return None,
+    };
+
+    if select.distinct.is_some() {
+        return None;
+    }
+
+    let has_group_by = match &select.group_by {
+        ast::GroupByExpr::All(_) => true,
+        ast::GroupByExpr::Expressions(exprs, _) => !exprs.is_empty(),
+    };
+    if has_group_by {
+        return None;
+    }
+
+    if select.having.is_some() {
+        return None;
+    }
+
+    for item in &select.projection {
+        if has_aggregate_function_in_select_item(item) {
+            return None;
+        }
+    }
+
+    if select.from.len() != 1 {
+        return None;
+    }
+
+    let table_with_joins = &select.from[0];
+    if !table_with_joins.joins.is_empty() {
+        return None;
+    }
+
+    match &table_with_joins.relation {
+        TableFactor::Table { name, .. } => {
+            let table_name = name.to_string();
+            Some(table_name)
+        }
+        _ => None,
+    }
+}
+
+fn has_aggregate_function_in_select_item(item: &ast::SelectItem) -> bool {
+    match item {
+        ast::SelectItem::UnnamedExpr(expr) | ast::SelectItem::ExprWithAlias { expr, .. } => {
+            has_aggregate_function(expr)
+        }
+        _ => false,
+    }
+}
+
+fn has_aggregate_function(expr: &Expr) -> bool {
+    match expr {
+        Expr::Function(func) => {
+            let name = func.name.to_string().to_uppercase();
+            matches!(name.as_str(), "COUNT" | "SUM" | "AVG" | "MAX" | "MIN" | "GROUP_CONCAT" | "STRING_AGG")
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            has_aggregate_function(left) || has_aggregate_function(right)
+        }
+        Expr::UnaryOp { expr, .. } => has_aggregate_function(expr),
+        Expr::Nested(inner) => has_aggregate_function(inner),
+        _ => false,
+    }
+}
+
+pub fn analyze_select_editability_fallback(sql: &str) -> Option<String> {
+    let upper = sql.trim().to_uppercase();
+
+    if !upper.starts_with("SELECT") {
+        return None;
+    }
+
+    let complex_keywords = [
+        " JOIN ", " INNER JOIN ", " LEFT JOIN ", " RIGHT JOIN ", " OUTER JOIN ",
+        " CROSS JOIN ", " FULL JOIN ",
+        " UNION ", " INTERSECT ", " EXCEPT ",
+        " GROUP BY ", " HAVING ",
+        "DISTINCT", " DISTINCT ",
+    ];
+
+    for keyword in &complex_keywords {
+        if upper.contains(keyword) {
+            return None;
+        }
+    }
+
+    let aggregate_functions = [
+        "COUNT(", "SUM(", "AVG(", "MAX(", "MIN(",
+        "GROUP_CONCAT(", "STRING_AGG(",
+    ];
+
+    for func in &aggregate_functions {
+        if upper.contains(func) {
+            return None;
+        }
+    }
+
+    if let Some(from_pos) = upper.find(" FROM ") {
+        let after_from = &sql[from_pos + 6..].trim();
+        let table_name = after_from
+            .split_whitespace()
+            .next()?
+            .trim_end_matches(';')
+            .trim_matches('`')
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_string();
+
+        if table_name.contains('(') || table_name.contains(',') {
+            return None;
+        }
+
+        return Some(table_name);
+    }
+
+    None
 }

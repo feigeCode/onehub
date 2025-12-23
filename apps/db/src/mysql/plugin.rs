@@ -5,7 +5,7 @@ use gpui_component::table::Column;
 use one_core::storage::{DatabaseType, DbConnectionConfig};
 
 use crate::connection::{DbConnection, DbError};
-use crate::executor::{ExecOptions, ExecResult, SqlResult};
+use crate::executor::{ExecOptions, SqlResult};
 use crate::mysql::connection::MysqlDbConnection;
 use crate::plugin::{DatabasePlugin, SqlCompletionInfo};
 use crate::types::*;
@@ -816,38 +816,38 @@ impl DatabasePlugin for MySqlPlugin {
             DataTypeInfo::new("MEDIUMINT", "Medium integer (-8388608 to 8388607)").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("INT", "Standard integer (-2147483648 to 2147483647)").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("BIGINT", "Large integer").with_category(DataTypeCategory::Numeric),
-            DataTypeInfo::new("DECIMAL(10,2)", "Fixed-point number").with_category(DataTypeCategory::Numeric),
+            DataTypeInfo::new("DECIMAL", "Fixed-point number").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("FLOAT", "Single-precision floating-point").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("DOUBLE", "Double-precision floating-point").with_category(DataTypeCategory::Numeric),
-            
+
             // 字符串类型
-            DataTypeInfo::new("CHAR(255)", "Fixed-length string").with_category(DataTypeCategory::String),
-            DataTypeInfo::new("VARCHAR(255)", "Variable-length string").with_category(DataTypeCategory::String),
+            DataTypeInfo::new("CHAR", "Fixed-length string").with_category(DataTypeCategory::String),
+            DataTypeInfo::new("VARCHAR", "Variable-length string").with_category(DataTypeCategory::String),
             DataTypeInfo::new("TINYTEXT", "Very small text (255 bytes)").with_category(DataTypeCategory::String),
             DataTypeInfo::new("TEXT", "Text (65,535 bytes)").with_category(DataTypeCategory::String),
             DataTypeInfo::new("MEDIUMTEXT", "Medium text (16MB)").with_category(DataTypeCategory::String),
             DataTypeInfo::new("LONGTEXT", "Large text (4GB)").with_category(DataTypeCategory::String),
-            
+
             // 日期时间类型
             DataTypeInfo::new("DATE", "Date (YYYY-MM-DD)").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("TIME", "Time (HH:MM:SS)").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("DATETIME", "Date and time").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("TIMESTAMP", "Timestamp with timezone").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("YEAR", "Year (1901-2155)").with_category(DataTypeCategory::DateTime),
-            
+
             // 二进制类型
-            DataTypeInfo::new("BINARY(255)", "Fixed-length binary").with_category(DataTypeCategory::Binary),
-            DataTypeInfo::new("VARBINARY(255)", "Variable-length binary").with_category(DataTypeCategory::Binary),
+            DataTypeInfo::new("BINARY", "Fixed-length binary").with_category(DataTypeCategory::Binary),
+            DataTypeInfo::new("VARBINARY", "Variable-length binary").with_category(DataTypeCategory::Binary),
             DataTypeInfo::new("TINYBLOB", "Very small BLOB (255 bytes)").with_category(DataTypeCategory::Binary),
             DataTypeInfo::new("BLOB", "BLOB (65KB)").with_category(DataTypeCategory::Binary),
             DataTypeInfo::new("MEDIUMBLOB", "Medium BLOB (16MB)").with_category(DataTypeCategory::Binary),
             DataTypeInfo::new("LONGBLOB", "Large BLOB (4GB)").with_category(DataTypeCategory::Binary),
-            
+
             // 其他类型
             DataTypeInfo::new("BOOLEAN", "Boolean (TINYINT(1))").with_category(DataTypeCategory::Boolean),
             DataTypeInfo::new("JSON", "JSON document").with_category(DataTypeCategory::Structured),
-            DataTypeInfo::new("ENUM('value1','value2')", "Enumeration").with_category(DataTypeCategory::Other),
-            DataTypeInfo::new("SET('value1','value2')", "Set of values").with_category(DataTypeCategory::Other),
+            DataTypeInfo::new("ENUM", "Enumeration").with_category(DataTypeCategory::Other),
+            DataTypeInfo::new("SET", "Set of values").with_category(DataTypeCategory::Other),
         ]
     }
 

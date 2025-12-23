@@ -4,7 +4,7 @@ use gpui_component::table::Column;
 use one_core::storage::{DatabaseType, DbConnectionConfig};
 
 use crate::connection::{DbConnection, DbError};
-use crate::executor::{ExecOptions, ExecResult, SqlResult};
+use crate::executor::{ExecOptions, SqlResult};
 use crate::plugin::{DatabasePlugin, SqlCompletionInfo};
 use crate::sqlite::SqliteDbConnection;
 use crate::types::*;

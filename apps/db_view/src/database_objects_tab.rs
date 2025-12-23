@@ -260,13 +260,29 @@ impl DatabaseObjects {
                             }
                         }
                     }
-                    DbNodeType::Database | DbNodeType::TablesFolder => {
+                    DbNodeType::Database => {
+                        let database = &node_clone.name;
+                        if plugin.supports_schema() {
+                            plugin.list_schemas_view(&**conn, database).await.ok()
+                        } else {
+                            plugin.list_tables_view(&**conn, database).await.ok()
+                        }
+                    }
+                    DbNodeType::TablesFolder => {
                         let mut database = &node_clone.name;
                         if let Some(metadata) = node_clone.metadata.as_ref() {
                             if let Some(value) = metadata.get("database") {
                                 database = value;
                             }
                         }
+                        plugin.list_tables_view(&**conn, database).await.ok()
+                    }
+                    DbNodeType::Schema => {
+                        let metadata = match node_clone.metadata.as_ref() {
+                            Some(meta) => meta,
+                            None => return Ok(None),
+                        };
+                        let database = metadata.get("database").unwrap_or(&node_clone.name);
                         plugin.list_tables_view(&**conn, database).await.ok()
                     }
                     DbNodeType::Table | DbNodeType::ColumnsFolder => {
@@ -585,8 +601,10 @@ impl DatabaseObjects {
             DbNodeType::FunctionsFolder | DbNodeType::Function |
             DbNodeType::ProceduresFolder | DbNodeType::Procedure |
             DbNodeType::TriggersFolder | DbNodeType::Trigger |
+            DbNodeType::IndexesFolder | DbNodeType::Index |
+            DbNodeType::ForeignKeysFolder | DbNodeType::ForeignKey |
             DbNodeType::SequencesFolder | DbNodeType::Sequence |
-            DbNodeType::IndexesFolder | DbNodeType::Index => {
+            DbNodeType::ChecksFolder | DbNodeType::Check => {
             }
             DbNodeType::QueriesFolder => {
                 buttons.push(create_button(

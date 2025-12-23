@@ -1,8 +1,10 @@
+use std::sync::Arc;
 use crate::executor::{ExecOptions, SqlResult};
 use crate::types::SqlValue;
 use async_trait::async_trait;
 use one_core::storage::DbConnectionConfig;
 use tokio::sync::mpsc;
+use crate::DatabasePlugin;
 
 #[derive(Debug)]
 pub enum DbError {
@@ -51,7 +53,7 @@ pub trait DbConnection: Sync + Send {
 
     async fn connect(&mut self) -> Result<(), DbError>;
     async fn disconnect(&mut self) -> Result<(), DbError>;
-    async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError>;
+    async fn execute(&self, plugin: Arc<dyn DatabasePlugin>, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError>;
     async fn query(&self, query: &str, params: Option<Vec<SqlValue>>, options: ExecOptions) -> Result<SqlResult, DbError>;
 
     async fn ping(&self) -> Result<(), DbError> {
@@ -66,6 +68,7 @@ pub trait DbConnection: Sync + Send {
 
     async fn execute_streaming(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,

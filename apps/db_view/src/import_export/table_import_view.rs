@@ -366,7 +366,7 @@ impl TableImportView {
                 csv_config,
             };
 
-            match DataImporter::import(connection.as_ref(), import_config, data).await {
+            match DataImporter::import(plugin.clone(), connection.as_ref(), import_config, data).await {
                 Ok(result) => {
                     cx.update(|cx| {
                         status.update(cx, |s, cx| {

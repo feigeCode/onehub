@@ -8,8 +8,9 @@ use tokio::sync::Mutex;
 use one_core::storage::DbConnectionConfig;
 use crate::connection::{DbConnection, DbError, StreamingProgress};
 use tokio::sync::mpsc;
+use crate::DatabasePlugin;
 use crate::executor::{
-    ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter,
+    ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult,
     SqlStatementClassifier,
 };
 
@@ -146,12 +147,6 @@ impl DbConnection for SqliteDbConnection {
         Ok(())
     }
 
-    async fn current_database(&self) -> Result<Option<String>, DbError> {
-        // SQLite doesn't have a "current database" concept like other DBs
-        // Return the database file path from config
-        Ok(self.config.database.clone())
-    }
-
     async fn disconnect(&mut self) -> Result<(), DbError> {
         let conn_opt = {
             let mut guard = self.connection.lock().await;
@@ -166,11 +161,11 @@ impl DbConnection for SqliteDbConnection {
     }
 
     async fn execute(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
     ) -> Result<Vec<SqlResult>, DbError> {
-        let statements = SqlScriptSplitter::split(script);
+        let statements = plugin.split_statements(script);
         let mut results = Vec::new();
 
         for sql in statements {
@@ -180,7 +175,7 @@ impl DbConnection for SqliteDbConnection {
             }
 
             let modified_sql = if let Some(max_rows) = options.max_rows {
-                if SqlStatementClassifier::is_query_statement(sql)
+                if plugin.is_query_statement(sql)
                     && !sql.to_uppercase().contains(" LIMIT ")
                 {
                     format!("{} LIMIT {}", sql, max_rows)
@@ -365,13 +360,27 @@ impl DbConnection for SqliteDbConnection {
         Ok(result)
     }
 
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        // SQLite doesn't have a "current database" concept like other DBs
+        // Return the database file path from config
+        Ok(self.config.database.clone())
+    }
+
+    async fn switch_database(&self, _database: &str) -> Result<(), DbError> {
+        // SQLite doesn't support switching databases - each database is a separate file
+        // The connection must be recreated to connect to a different database file
+        Err(DbError::QueryError(
+            "SQLite does not support switching databases. Each database is a separate file connection.".to_string()
+        ))
+    }
+
     async fn execute_streaming(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
     ) -> Result<(), DbError> {
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -405,7 +414,7 @@ impl DbConnection for SqliteDbConnection {
                     sql.clone()
                 };
 
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
                 let start = Instant::now();
 
                 let result = if is_query {
@@ -520,7 +529,7 @@ impl DbConnection for SqliteDbConnection {
                 let current = index + 1;
 
                 let modified_sql = if let Some(max_rows) = options.max_rows {
-                    if SqlStatementClassifier::is_query_statement(&sql)
+                    if plugin.is_query_statement(&sql)
                         && !sql.to_uppercase().contains(" LIMIT ")
                     {
                         format!("{} LIMIT {}", sql, max_rows)
@@ -626,13 +635,5 @@ impl DbConnection for SqliteDbConnection {
         }
 
         Ok(())
-    }
-
-    async fn switch_database(&self, _database: &str) -> Result<(), DbError> {
-        // SQLite doesn't support switching databases - each database is a separate file
-        // The connection must be recreated to connect to a different database file
-        Err(DbError::QueryError(
-            "SQLite does not support switching databases. Each database is a separate file connection.".to_string()
-        ))
     }
 }

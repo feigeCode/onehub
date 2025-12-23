@@ -12,10 +12,10 @@ use tracing::{debug, error, info};
 
 use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::executor::{
-    ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter,
+    ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult,
     SqlStatementClassifier,
 };
-use crate::SqlValue;
+use crate::{DatabasePlugin, SqlValue};
 
 pub struct MssqlDbConnection {
     config: DbConnectionConfig,
@@ -304,12 +304,12 @@ impl DbConnection for MssqlDbConnection {
         Ok(())
     }
 
-    async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
+    async fn execute(&self, plugin: Arc<dyn DatabasePlugin>, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-        let statements = SqlScriptSplitter::split(script);
+        let statements = plugin.split_statements(script);
         let mut results = Vec::new();
 
         // MSSQL supports transactions
@@ -327,7 +327,7 @@ impl DbConnection for MssqlDbConnection {
                 }
 
                 let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
                 let result = Self::execute_single(client, &modified_sql, is_query).await?;
 
                 let is_error = result.is_error();
@@ -355,7 +355,7 @@ impl DbConnection for MssqlDbConnection {
                 }
 
                 let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
                 let result = Self::execute_single(client, &modified_sql, is_query).await?;
 
                 let is_error = result.is_error();
@@ -445,7 +445,7 @@ impl DbConnection for MssqlDbConnection {
     }
 
     async fn execute_streaming(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
@@ -454,7 +454,7 @@ impl DbConnection for MssqlDbConnection {
         let client = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -472,7 +472,7 @@ impl DbConnection for MssqlDbConnection {
             for (index, sql) in statements.into_iter().enumerate() {
                 let current = index + 1;
                 let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
 
                 let result = match Self::execute_single(client, &modified_sql, is_query).await {
                     Ok(r) => r,
@@ -513,7 +513,7 @@ impl DbConnection for MssqlDbConnection {
             for (index, sql) in statements.into_iter().enumerate() {
                 let current = index + 1;
                 let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
 
                 let result = match Self::execute_single(client, &modified_sql, is_query).await {
                     Ok(r) => r,

@@ -27,6 +27,7 @@ oracle.workspace = true
 clickhouse.workspace = true
 one-core.workspace = true
 sqlformat.workspace = true
+sqlparser.workspace = true
 unicode_categories.workspace = true
 uuid.workspace = true
 

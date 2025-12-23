@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use gpui_component::table::Column;
 use one_core::storage::{DatabaseType, DbConnectionConfig};
-use tracing::{debug, info};
+use tracing::{info};
 
 use crate::connection::{DbConnection, DbError};
 use crate::executor::{ExecOptions, SqlResult};
@@ -27,6 +27,10 @@ impl DatabasePlugin for MsSqlPlugin {
     }
 
     fn supports_schema(&self) -> bool {
+        true
+    }
+
+    fn supports_sequences(&self) -> bool {
         true
     }
 
@@ -54,6 +58,58 @@ impl DatabasePlugin for MsSqlPlugin {
             Ok(query_result.rows.iter()
                 .filter_map(|row| row.first().and_then(|v| v.clone()))
                 .collect())
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
+    async fn list_schemas_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        let sql = format!(
+            r#"
+            SELECT
+                s.name AS schema_name,
+                dp.name AS owner,
+                (SELECT COUNT(*) FROM [{database}].sys.tables t WHERE t.schema_id = s.schema_id) AS table_count
+            FROM [{database}].sys.schemas s
+            LEFT JOIN [{database}].sys.database_principals dp ON s.principal_id = dp.principal_id
+            WHERE s.name NOT IN (
+                'INFORMATION_SCHEMA', 'sys',
+                'db_owner', 'db_accessadmin', 'db_securityadmin', 'db_ddladmin',
+                'db_backupoperator', 'db_datareader', 'db_datawriter',
+                'db_denydatareader', 'db_denydatawriter'
+            )
+            ORDER BY s.name
+            "#,
+            database = database.replace("]", "]]")
+        );
+
+        let result = connection.query(&sql, None, ExecOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list schemas: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            let columns = vec![
+                Column::new("name", "Name").width(px(180.0)),
+                Column::new("owner", "Owner").width(px(120.0)),
+                Column::new("tables", "Tables").width(px(80.0)).text_right(),
+            ];
+
+            let rows: Vec<Vec<String>> = query_result.rows.iter().map(|row| {
+                vec![
+                    row.first().and_then(|v| v.clone()).unwrap_or_default(),
+                    row.get(1).and_then(|v| v.clone()).unwrap_or_default(),
+                    row.get(2).and_then(|v| v.clone()).unwrap_or_else(|| "0".to_string()),
+                ]
+            }).collect();
+
+            Ok(ObjectView {
+                db_node_type: DbNodeType::Schema,
+                title: format!("{} schema(s)", rows.len()),
+                columns,
+                rows,
+            })
         } else {
             Err(anyhow::anyhow!("Unexpected result type"))
         }

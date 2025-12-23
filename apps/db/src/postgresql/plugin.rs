@@ -6,7 +6,7 @@ use gpui_component::table::Column;
 use one_core::storage::{DatabaseType, DbConnectionConfig};
 
 use crate::connection::{DbConnection, DbError};
-use crate::executor::{ExecOptions, ExecResult, SqlResult};
+use crate::executor::{ExecOptions, SqlResult};
 use crate::plugin::{DatabasePlugin, SqlCompletionInfo};
 use crate::postgresql::connection::PostgresDbConnection;
 use crate::types::*;
@@ -30,6 +30,10 @@ impl DatabasePlugin for PostgresPlugin {
         true
     }
 
+    fn supports_sequences(&self) -> bool {
+        true
+    }
+
     async fn list_schemas(&self, connection: &dyn DbConnection, _database: &str) -> Result<Vec<String>> {
         let result = connection.query(
             "SELECT schema_name FROM information_schema.schemata \
@@ -43,6 +47,51 @@ impl DatabasePlugin for PostgresPlugin {
             Ok(query_result.rows.iter()
                 .filter_map(|row| row.first().and_then(|v| v.clone()))
                 .collect())
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
+    }
+
+    async fn list_schemas_view(&self, connection: &dyn DbConnection, _database: &str) -> Result<ObjectView> {
+        use gpui::px;
+
+        let sql = "SELECT
+                n.nspname AS schema_name,
+                pg_catalog.pg_get_userbyid(n.nspowner) AS owner,
+                (SELECT COUNT(*) FROM pg_tables t WHERE t.schemaname = n.nspname) AS table_count,
+                obj_description(n.oid, 'pg_namespace') AS description
+            FROM pg_catalog.pg_namespace n
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND n.nspname NOT LIKE 'pg_%'
+            ORDER BY n.nspname";
+
+        let result = connection.query(sql, None, ExecOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list schemas: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            let columns = vec![
+                Column::new("name", "Name").width(px(180.0)),
+                Column::new("owner", "Owner").width(px(120.0)),
+                Column::new("tables", "Tables").width(px(80.0)).text_right(),
+                Column::new("description", "Description").width(px(300.0)),
+            ];
+
+            let rows: Vec<Vec<String>> = query_result.rows.iter().map(|row| {
+                vec![
+                    row.first().and_then(|v| v.clone()).unwrap_or_default(),
+                    row.get(1).and_then(|v| v.clone()).unwrap_or_default(),
+                    row.get(2).and_then(|v| v.clone()).unwrap_or_else(|| "0".to_string()),
+                    row.get(3).and_then(|v| v.clone()).unwrap_or_default(),
+                ]
+            }).collect();
+
+            Ok(ObjectView {
+                db_node_type: DbNodeType::Schema,
+                title: format!("{} schema(s)", rows.len()),
+                columns,
+                rows,
+            })
         } else {
             Err(anyhow::anyhow!("Unexpected result type"))
         }
@@ -826,37 +875,37 @@ impl DatabasePlugin for PostgresPlugin {
             DataTypeInfo::new("SMALLINT", "Small integer (-32768 to 32767)").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("INTEGER", "Standard integer").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("BIGINT", "Large integer").with_category(DataTypeCategory::Numeric),
-            DataTypeInfo::new("DECIMAL(10,2)", "Exact numeric").with_category(DataTypeCategory::Numeric),
-            DataTypeInfo::new("NUMERIC(10,2)", "Exact numeric (alias)").with_category(DataTypeCategory::Numeric),
+            DataTypeInfo::new("DECIMAL", "Exact numeric").with_category(DataTypeCategory::Numeric),
+            DataTypeInfo::new("NUMERIC", "Exact numeric (alias)").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("REAL", "Single-precision floating-point").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("DOUBLE PRECISION", "Double-precision floating-point").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("SERIAL", "Auto-incrementing integer").with_category(DataTypeCategory::Numeric),
             DataTypeInfo::new("BIGSERIAL", "Auto-incrementing bigint").with_category(DataTypeCategory::Numeric),
-            
+
             // 字符串类型
-            DataTypeInfo::new("CHAR(255)", "Fixed-length string").with_category(DataTypeCategory::String),
-            DataTypeInfo::new("VARCHAR(255)", "Variable-length string").with_category(DataTypeCategory::String),
+            DataTypeInfo::new("CHAR", "Fixed-length string").with_category(DataTypeCategory::String),
+            DataTypeInfo::new("VARCHAR", "Variable-length string").with_category(DataTypeCategory::String),
             DataTypeInfo::new("TEXT", "Variable-length text").with_category(DataTypeCategory::String),
-            
+
             // 日期时间类型
             DataTypeInfo::new("DATE", "Date (no time)").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("TIME", "Time (no date)").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("TIMESTAMP", "Date and time").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("TIMESTAMPTZ", "Timestamp with timezone").with_category(DataTypeCategory::DateTime),
             DataTypeInfo::new("INTERVAL", "Time interval").with_category(DataTypeCategory::DateTime),
-            
+
             // 布尔类型
             DataTypeInfo::new("BOOLEAN", "True/False").with_category(DataTypeCategory::Boolean),
-            
+
             // 二进制类型
             DataTypeInfo::new("BYTEA", "Binary data").with_category(DataTypeCategory::Binary),
-            
+
             // 结构化类型
             DataTypeInfo::new("JSON", "JSON document").with_category(DataTypeCategory::Structured),
             DataTypeInfo::new("JSONB", "Binary JSON (indexed)").with_category(DataTypeCategory::Structured),
             DataTypeInfo::new("XML", "XML document").with_category(DataTypeCategory::Structured),
             DataTypeInfo::new("ARRAY", "Array type").with_category(DataTypeCategory::Structured),
-            
+
             // 其他类型
             DataTypeInfo::new("UUID", "Universally unique identifier").with_category(DataTypeCategory::Other),
             DataTypeInfo::new("INET", "IP address").with_category(DataTypeCategory::Other),

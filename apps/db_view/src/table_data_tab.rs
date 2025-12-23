@@ -47,7 +47,7 @@ impl TabContent for TableDataTabContent {
     }
 
     fn icon(&self) -> Option<Icon> {
-        Some(IconName::Folder.color())
+        Some(IconName::TableData.color())
     }
 
     fn closeable(&self) -> bool {

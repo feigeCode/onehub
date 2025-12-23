@@ -1,4 +1,8 @@
 use serde::{Deserialize, Serialize};
+use sqlparser::ast::Statement;
+use sqlparser::dialect::GenericDialect;
+use sqlparser::parser::Parser;
+use crate::{analyze_query_editability, analyze_select_editability_fallback, classify_fallback, classify_stmt, is_query_statement_fallback, is_query_stmt};
 
 /// Execution options for SQL script
 #[derive(Debug, Clone)]
@@ -80,241 +84,46 @@ pub struct SqlErrorInfo {
     pub message: String,
 }
 
-/// SQL script splitter
-pub struct SqlScriptSplitter;
-
-impl SqlScriptSplitter {
-    /// Split SQL script into individual statements
-    /// Handles string literals, comments, and multi-line statements
-    pub fn split(script: &str) -> Vec<String> {
-        let mut statements = Vec::new();
-        let mut current_statement = String::new();
-        let mut chars = script.chars().peekable();
-
-        let mut in_single_quote = false;
-        let mut in_double_quote = false;
-        let mut in_backtick = false;
-        let mut in_line_comment = false;
-        let mut in_block_comment = false;
-
-        while let Some(ch) = chars.next() {
-            // Handle line comments (-- or #)
-            if !in_single_quote && !in_double_quote && !in_backtick && !in_block_comment {
-                if ch == '-' {
-                    if let Some(&next_ch) = chars.peek() {
-                        if next_ch == '-' {
-                            chars.next(); // consume the second '-'
-                            in_line_comment = true;
-                            continue;
-                        }
-                    }
-                } else if ch == '#' {
-                    in_line_comment = true;
-                    continue;
-                }
-            }
-
-            // Handle end of line comment
-            if in_line_comment {
-                if ch == '\n' {
-                    in_line_comment = false;
-                    current_statement.push(ch);
-                }
-                continue;
-            }
-
-            // Handle block comments (/* ... */)
-            if !in_single_quote && !in_double_quote && !in_backtick
-                && ch == '/' {
-                    if let Some(&next_ch) = chars.peek() {
-                        if next_ch == '*' {
-                            chars.next(); // consume the '*'
-                            in_block_comment = true;
-                            continue;
-                        }
-                    }
-                }
-
-            if in_block_comment {
-                if ch == '*' {
-                    if let Some(&next_ch) = chars.peek() {
-                        if next_ch == '/' {
-                            chars.next(); // consume the '/'
-                            in_block_comment = false;
-                            continue;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            // Handle string literals
-            if ch == '\'' && !in_double_quote && !in_backtick {
-                in_single_quote = !in_single_quote;
-                current_statement.push(ch);
-                continue;
-            }
-
-            if ch == '"' && !in_single_quote && !in_backtick {
-                in_double_quote = !in_double_quote;
-                current_statement.push(ch);
-                continue;
-            }
-
-            if ch == '`' && !in_single_quote && !in_double_quote {
-                in_backtick = !in_backtick;
-                current_statement.push(ch);
-                continue;
-            }
-
-            // Handle semicolon (statement separator)
-            if ch == ';' && !in_single_quote && !in_double_quote && !in_backtick {
-                let trimmed = current_statement.trim();
-                if !trimmed.is_empty() {
-                    statements.push(trimmed.to_string());
-                }
-                current_statement.clear();
-                continue;
-            }
-
-            current_statement.push(ch);
-        }
-
-        // Add the last statement if it's not empty
-        let trimmed = current_statement.trim();
-        if !trimmed.is_empty() {
-            statements.push(trimmed.to_string());
-        }
-
-        statements
-    }
-}
-
 /// SQL statement type detector
+/// Note: For dialect-specific parsing, use DbConnection methods instead
 pub struct SqlStatementClassifier;
 
 impl SqlStatementClassifier {
     /// Check if a SQL statement is a query (returns rows)
+    /// Uses GenericDialect - for dialect-specific parsing, use DbConnection::is_query_statement
     pub fn is_query_statement(sql: &str) -> bool {
-        let trimmed = sql.trim().to_uppercase();
-
-        // Query statements that return rows
-        trimmed.starts_with("SELECT")
-            || trimmed.starts_with("SHOW")
-            || trimmed.starts_with("DESC")
-            || trimmed.starts_with("DESCRIBE")
-            || trimmed.starts_with("EXPLAIN")
-            || trimmed.starts_with("WITH") // CTE
-            || trimmed.starts_with("TABLE") // PostgreSQL TABLE command
-            || trimmed.starts_with("PRAGMA") // SQLite PRAGMA (table_info, index_list, etc.)
+        let dialect = GenericDialect {};
+        if let Ok(statements) = Parser::parse_sql(&dialect, sql) {
+            if let Some(stmt) = statements.first() {
+                return is_query_stmt(stmt);
+            }
+        }
+        is_query_statement_fallback(sql)
     }
 
     /// Check if a SELECT query might be editable (basic heuristic)
     /// Returns None if cannot determine, Some(table_name) if looks like simple single-table query
+    /// Uses GenericDialect - for dialect-specific parsing, use DbConnection::analyze_select_editability
     pub fn analyze_select_editability(sql: &str) -> Option<String> {
-        let upper = sql.trim().to_uppercase();
-
-        // Must be a SELECT statement
-        if !upper.starts_with("SELECT") {
-            return None;
-        }
-
-        // Cannot have these keywords (indicate complex queries)
-        let complex_keywords = [
-            " JOIN ", " INNER JOIN ", " LEFT JOIN ", " RIGHT JOIN ", " OUTER JOIN ",
-            " CROSS JOIN ", " FULL JOIN ",
-            " UNION ", " INTERSECT ", " EXCEPT ",
-            " GROUP BY ", " HAVING ",
-            "DISTINCT", " DISTINCT ",
-        ];
-
-        for keyword in &complex_keywords {
-            if upper.contains(keyword) {
-                return None;
+        let dialect = GenericDialect {};
+        if let Ok(statements) = Parser::parse_sql(&dialect, sql) {
+            if let Some(Statement::Query(query)) = statements.first() {
+                return analyze_query_editability(query);
             }
         }
-
-        // Check for aggregate functions in SELECT clause
-        let aggregate_functions = [
-            "COUNT(", "SUM(", "AVG(", "MAX(", "MIN(",
-            "GROUP_CONCAT(", "STRING_AGG(",
-        ];
-
-        for func in &aggregate_functions {
-            if upper.contains(func) {
-                return None;
-            }
-        }
-
-        // Try to extract table name from "FROM table_name"
-        // Simple regex-like parsing
-        if let Some(from_pos) = upper.find(" FROM ") {
-            let after_from = &sql[from_pos + 6..].trim();
-
-            // Extract table name (stop at WHERE, ORDER, LIMIT, semicolon, or whitespace)
-            let table_name = after_from
-                .split_whitespace()
-                .next()?
-                .trim_end_matches(';')
-                .trim_matches('`')
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_string();
-
-            // Check if table name contains subquery or complex syntax
-            if table_name.contains('(') || table_name.contains(',') {
-                return None;
-            }
-
-            return Some(table_name);
-        }
-
-        None
+        analyze_select_editability_fallback(sql)
     }
 
     /// Determine the statement category
+    /// Uses GenericDialect - for dialect-specific parsing, use DbConnection::classify_statement
     pub fn classify(sql: &str) -> StatementType {
-        let trimmed = sql.trim().to_uppercase();
-
-        if Self::is_query_statement(sql) {
-            return StatementType::Query;
+        let dialect = GenericDialect {};
+        if let Ok(statements) = Parser::parse_sql(&dialect, sql) {
+            if let Some(stmt) = statements.first() {
+                return classify_stmt(stmt);
+            }
         }
-
-        // DML statements
-        if trimmed.starts_with("INSERT")
-            || trimmed.starts_with("UPDATE")
-            || trimmed.starts_with("DELETE")
-            || trimmed.starts_with("REPLACE")
-        {
-            return StatementType::Dml;
-        }
-
-        // DDL statements
-        if trimmed.starts_with("CREATE")
-            || trimmed.starts_with("ALTER")
-            || trimmed.starts_with("DROP")
-            || trimmed.starts_with("TRUNCATE")
-            || trimmed.starts_with("RENAME")
-        {
-            return StatementType::Ddl;
-        }
-
-        // Transaction control
-        if trimmed.starts_with("BEGIN")
-            || trimmed.starts_with("COMMIT")
-            || trimmed.starts_with("ROLLBACK")
-            || trimmed.starts_with("START TRANSACTION")
-        {
-            return StatementType::Transaction;
-        }
-
-        // Database/connection commands
-        if trimmed.starts_with("USE") || trimmed.starts_with("SET") {
-            return StatementType::Command;
-        }
-
-        // Default to execution
-        StatementType::Exec
+        classify_fallback(sql)
     }
 
     /// Format execution message based on query type
@@ -375,72 +184,6 @@ pub enum StatementType {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_split_simple_statements() {
-        let script = "SELECT * FROM users; INSERT INTO users VALUES (1); DELETE FROM users;";
-        let statements = SqlScriptSplitter::split(script);
-
-        assert_eq!(statements.len(), 3);
-        assert_eq!(statements[0], "SELECT * FROM users");
-        assert_eq!(statements[1], "INSERT INTO users VALUES (1)");
-        assert_eq!(statements[2], "DELETE FROM users");
-    }
-
-    #[test]
-    fn test_split_with_string_literals() {
-        let script = r#"INSERT INTO users VALUES ('John; Doe'); SELECT * FROM users WHERE name = 'test;';"#;
-        let statements = SqlScriptSplitter::split(script);
-
-        assert_eq!(statements.len(), 2);
-        assert!(statements[0].contains("John; Doe"));
-        assert!(statements[1].contains("test;"));
-    }
-
-    #[test]
-    fn test_split_with_comments() {
-        let script = r#"
-            -- This is a comment
-            SELECT * FROM users; -- inline comment
-            # Another comment style
-            INSERT INTO users VALUES (1);
-            /* Block comment
-               spanning multiple lines */
-            DELETE FROM users;
-        "#;
-        let statements = SqlScriptSplitter::split(script);
-
-        assert_eq!(statements.len(), 3);
-        assert!(statements[0].contains("SELECT"));
-        assert!(statements[1].contains("INSERT"));
-        assert!(statements[2].contains("DELETE"));
-    }
-
-    #[test]
-    fn test_split_multiline_statement() {
-        let script = r#"
-            SELECT
-                id,
-                name,
-                email
-            FROM users
-            WHERE active = 1;
-        "#;
-        let statements = SqlScriptSplitter::split(script);
-
-        assert_eq!(statements.len(), 1);
-        assert!(statements[0].contains("SELECT"));
-        assert!(statements[0].contains("FROM users"));
-    }
-
-    #[test]
-    fn test_split_no_trailing_semicolon() {
-        let script = "SELECT * FROM users";
-        let statements = SqlScriptSplitter::split(script);
-
-        assert_eq!(statements.len(), 1);
-        assert_eq!(statements[0], "SELECT * FROM users");
-    }
 
     #[test]
     fn test_classify_query_statements() {

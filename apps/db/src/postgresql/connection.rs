@@ -7,9 +7,9 @@ use tokio::sync::{Mutex};
 use tokio_postgres::{Client, Config, NoTls, Row, types::Type};
 
 use crate::connection::{DbConnection, DbError, StreamingProgress};
-use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
+use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlStatementClassifier};
 use tokio::sync::mpsc;
-use crate::SqlValue;
+use crate::{DatabasePlugin, SqlValue};
 
 pub struct PostgresDbConnection {
     config: DbConnectionConfig,
@@ -238,33 +238,19 @@ impl DbConnection for PostgresDbConnection {
         Ok(())
     }
 
-    async fn current_database(&self) -> Result<Option<String>, DbError> {
-        let mut guard = self.client.lock().await;
-        let client = guard.as_mut()
-            .ok_or_else(|| DbError::ConnectionError("Not connected".into()))?;
-
-        let row = client
-            .query_one("SELECT current_database()", &[])
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
-
-        Ok(row.try_get::<_, Option<String>>(0).ok().flatten())
-    }
-
     async fn disconnect(&mut self) -> Result<(), DbError> {
         let mut guard = self.client.lock().await;
         *guard = None;
         Ok(())
     }
 
-
-    async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
+    async fn execute(&self, plugin: Arc<dyn DatabasePlugin>, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected".into()))?;
 
         // Split script into statements
-        let statements = SqlScriptSplitter::split(script);
+        let statements = plugin.split_statements(script);
         let mut results = Vec::new();
 
         if options.transactional {
@@ -282,7 +268,7 @@ impl DbConnection for PostgresDbConnection {
 
                 // Apply max_rows limit
                 let modified_sql = if let Some(max_rows) = options.max_rows {
-                    if SqlStatementClassifier::is_query_statement(sql)
+                    if plugin.is_query_statement(sql)
                         && !sql.to_uppercase().contains(" LIMIT ")
                     {
                         format!("{} LIMIT {}", sql, max_rows)
@@ -522,6 +508,7 @@ impl DbConnection for PostgresDbConnection {
         Ok(results)
     }
 
+
     async fn query(
         &self,
         query: &str,
@@ -677,8 +664,29 @@ impl DbConnection for PostgresDbConnection {
         }
     }
 
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        let mut guard = self.client.lock().await;
+        let client = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected".into()))?;
+
+        let row = client
+            .query_one("SELECT current_database()", &[])
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
+
+        Ok(row.try_get::<_, Option<String>>(0).ok().flatten())
+    }
+
+    async fn switch_database(&self, _database: &str) -> Result<(), DbError> {
+        // PostgreSQL doesn't support switching databases within a connection
+        // The connection must be recreated to connect to a different database
+        Err(DbError::QueryError(
+            "PostgreSQL does not support switching databases within a connection. Please create a new connection.".to_string()
+        ))
+    }
+
     async fn execute_streaming(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
@@ -687,7 +695,7 @@ impl DbConnection for PostgresDbConnection {
         let client = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected".into()))?;
 
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -707,7 +715,7 @@ impl DbConnection for PostgresDbConnection {
                 let current = index + 1;
 
                 let modified_sql = if let Some(max_rows) = options.max_rows {
-                    if SqlStatementClassifier::is_query_statement(&sql)
+                    if plugin.is_query_statement(&sql)
                         && !sql.to_uppercase().contains(" LIMIT ")
                     {
                         format!("{} LIMIT {}", sql, max_rows)
@@ -719,7 +727,7 @@ impl DbConnection for PostgresDbConnection {
                 };
 
                 let start = Instant::now();
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
 
                 let result = if is_query {
                     match tx.query(&modified_sql, &[]).await {
@@ -819,7 +827,7 @@ impl DbConnection for PostgresDbConnection {
                 let current = index + 1;
 
                 let modified_sql = if let Some(max_rows) = options.max_rows {
-                    if SqlStatementClassifier::is_query_statement(&sql)
+                    if plugin.is_query_statement(&sql)
                         && !sql.to_uppercase().contains(" LIMIT ")
                     {
                         format!("{} LIMIT {}", sql, max_rows)
@@ -916,13 +924,5 @@ impl DbConnection for PostgresDbConnection {
         }
 
         Ok(())
-    }
-
-    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
-        // PostgreSQL doesn't support switching databases within a connection
-        // The connection must be recreated to connect to a different database
-        Err(DbError::QueryError(
-            "PostgreSQL does not support switching databases within a connection. Please create a new connection.".to_string()
-        ))
     }
 }

@@ -103,6 +103,7 @@ deadpool-postgres = "0.14.1"
 bb8-tiberius = "0.16.0"
 clickhouse = "0.14.1"
 sqlformat = "0.5.0"
+sqlparser = "0.60.0"
 unicode_categories = "0.1.1"
 uuid = { version = "1.18.0", features = ["v4", "serde"] }
 [workspace.dependencies.windows]

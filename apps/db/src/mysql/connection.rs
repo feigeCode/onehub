@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 use crate::connection::{DbConnection, DbError, StreamingProgress};
-use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
-use crate::SqlValue;
+use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlStatementClassifier};
+use crate::{DatabasePlugin, SqlValue};
 
 pub struct MysqlDbConnection {
     config: DbConnectionConfig,
@@ -213,19 +213,6 @@ impl DbConnection for MysqlDbConnection {
         Ok(())
     }
 
-    async fn current_database(&self) -> Result<Option<String>, DbError> {
-        let mut guard = self.conn.lock().await;
-        let conn = guard.as_mut()
-            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
-
-        let result: Option<String> = conn
-            .query_first("SELECT DATABASE()")
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
-
-        Ok(result)
-    }
-
     async fn disconnect(&mut self) -> Result<(), DbError> {
         let conn_opt = {
             let mut guard = self.conn.lock().await;
@@ -241,12 +228,12 @@ impl DbConnection for MysqlDbConnection {
         Ok(())
     }
 
-    async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
+    async fn execute(&self, plugin: Arc<dyn DatabasePlugin>, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
         let mut guard = self.conn.lock().await;
         let conn = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-        let statements = SqlScriptSplitter::split(script);
+        let statements = plugin.split_statements(script);
         let mut results = Vec::new();
 
         if options.transactional {
@@ -262,11 +249,11 @@ impl DbConnection for MysqlDbConnection {
                 }
 
                 let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
                 let start = Instant::now();
 
                 let result = if is_query {
-                    let table_name = SqlStatementClassifier::analyze_select_editability(&modified_sql);
+                    let table_name = plugin.analyze_select_editability(&modified_sql);
                     match tx.query::<Row, _>(&modified_sql).await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
@@ -316,7 +303,7 @@ impl DbConnection for MysqlDbConnection {
                 }
 
                 let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
                 let result = Self::execute_single(conn, &modified_sql, is_query).await?;
 
                 let is_error = result.is_error();
@@ -378,8 +365,34 @@ impl DbConnection for MysqlDbConnection {
         }
     }
 
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
+
+        let result: Option<String> = conn
+            .query_first("SELECT DATABASE()")
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
+
+        Ok(result)
+    }
+
+    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
+        let mut guard = self.conn.lock().await;
+        let conn = guard.as_mut()
+            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
+
+        let sql = format!("USE `{}`", database.replace("`", "``"));
+        conn.query_drop(&sql)
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to switch database: {}", e)))?;
+
+        Ok(())
+    }
+
     async fn execute_streaming(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
@@ -388,7 +401,7 @@ impl DbConnection for MysqlDbConnection {
         let conn = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -407,11 +420,11 @@ impl DbConnection for MysqlDbConnection {
             for (index, sql) in statements.into_iter().enumerate() {
                 let current = index + 1;
                 let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
-                let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+                let is_query = plugin.is_query_statement(&modified_sql);
                 let start = Instant::now();
 
                 let result = if is_query {
-                    let table_name = SqlStatementClassifier::analyze_select_editability(&modified_sql);
+                    let table_name = plugin.analyze_select_editability(&modified_sql);
                     match tx.query::<Row, _>(&modified_sql).await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
@@ -494,19 +507,6 @@ impl DbConnection for MysqlDbConnection {
                 }
             }
         }
-
-        Ok(())
-    }
-
-    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
-        let mut guard = self.conn.lock().await;
-        let conn = guard.as_mut()
-            .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
-
-        let sql = format!("USE `{}`", database.replace("`", "``"));
-        conn.query_drop(&sql)
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to switch database: {}", e)))?;
 
         Ok(())
     }

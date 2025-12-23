@@ -8,10 +8,10 @@ use tokio::sync::mpsc;
 
 use crate::connection::{DbConnection, DbError, StreamingProgress};
 use crate::executor::{
-    ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter,
+    ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult,
     SqlStatementClassifier,
 };
-use crate::SqlValue;
+use crate::{DatabasePlugin, SqlValue};
 
 pub struct OracleDbConnection {
     config: DbConnectionConfig,
@@ -142,10 +142,6 @@ impl OracleDbConnection {
         }
     }
 }
-
-unsafe impl Send for OracleDbConnection {}
-unsafe impl Sync for OracleDbConnection {}
-
 #[async_trait]
 impl DbConnection for OracleDbConnection {
     fn config(&self) -> &DbConnectionConfig {
@@ -178,23 +174,6 @@ impl DbConnection for OracleDbConnection {
         Ok(())
     }
 
-    async fn current_database(&self) -> Result<Option<String>, DbError> {
-        let conn_arc = self.conn.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let guard = conn_arc.blocking_lock();
-            let conn = guard.as_ref()
-                .ok_or_else(|| DbError::ConnectionError("Not connected".to_string()))?;
-
-            match conn.query_row_as::<String>("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL", &[]) {
-                Ok(schema) => Ok(Some(schema)),
-                Err(_) => Ok(None),
-            }
-        })
-        .await
-        .map_err(|e| DbError::QueryError(format!("Task error: {}", e)))?
-    }
-
     async fn disconnect(&mut self) -> Result<(), DbError> {
         let conn_opt = {
             let mut guard = self.conn.lock().await;
@@ -212,8 +191,8 @@ impl DbConnection for OracleDbConnection {
         Ok(())
     }
 
-    async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+    async fn execute(&self, plugin: Arc<dyn DatabasePlugin>, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -226,7 +205,7 @@ impl DbConnection for OracleDbConnection {
 
         for sql in statements {
             let modified_sql = Self::apply_max_rows_limit(&sql, max_rows);
-            let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+            let is_query = plugin.is_query_statement(&modified_sql);
 
             let conn_clone = conn_arc.clone();
             let sql_clone = modified_sql.clone();
@@ -281,13 +260,50 @@ impl DbConnection for OracleDbConnection {
         .map_err(|e| DbError::QueryError(format!("Task error: {}", e)))?
     }
 
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        let conn_arc = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let guard = conn_arc.blocking_lock();
+            let conn = guard.as_ref()
+                .ok_or_else(|| DbError::ConnectionError("Not connected".to_string()))?;
+
+            match conn.query_row_as::<String>("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL", &[]) {
+                Ok(schema) => Ok(Some(schema)),
+                Err(_) => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| DbError::QueryError(format!("Task error: {}", e)))?
+    }
+
+    async fn switch_database(&self, schema: &str) -> Result<(), DbError> {
+        // Oracle uses schemas instead of databases
+        // Use ALTER SESSION SET CURRENT_SCHEMA to switch
+        let sql = format!("ALTER SESSION SET CURRENT_SCHEMA = \"{}\"", schema.replace("\"", "\"\""));
+        let conn_arc = self.conn.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let guard = conn_arc.blocking_lock();
+            let conn = guard.as_ref()
+                .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
+
+            conn.execute(&sql, &[])
+                .map_err(|e| DbError::QueryError(format!("Failed to switch schema: {}", e)))?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| DbError::QueryError(format!("Task error: {}", e)))?
+    }
+
     async fn execute_streaming(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
     ) -> Result<(), DbError> {
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -300,7 +316,7 @@ impl DbConnection for OracleDbConnection {
         for (index, sql) in statements.into_iter().enumerate() {
             let current = index + 1;
             let modified_sql = Self::apply_max_rows_limit(&sql, max_rows);
-            let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+            let is_query = plugin.is_query_statement(&modified_sql);
 
             let conn_arc = self.conn.clone();
             let sql_clone = modified_sql.clone();
@@ -346,25 +362,5 @@ impl DbConnection for OracleDbConnection {
         }
 
         Ok(())
-    }
-
-    async fn switch_database(&self, schema: &str) -> Result<(), DbError> {
-        // Oracle uses schemas instead of databases
-        // Use ALTER SESSION SET CURRENT_SCHEMA to switch
-        let sql = format!("ALTER SESSION SET CURRENT_SCHEMA = \"{}\"", schema.replace("\"", "\"\""));
-        let conn_arc = self.conn.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let guard = conn_arc.blocking_lock();
-            let conn = guard.as_ref()
-                .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
-
-            conn.execute(&sql, &[])
-                .map_err(|e| DbError::QueryError(format!("Failed to switch schema: {}", e)))?;
-
-            Ok(())
-        })
-        .await
-        .map_err(|e| DbError::QueryError(format!("Task error: {}", e)))?
     }
 }

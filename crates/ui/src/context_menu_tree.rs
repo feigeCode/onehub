@@ -342,8 +342,8 @@ impl RenderOnce for ContextMenuTree {
                                 div().w(px(16.)).h(px(16.))
                             };
 
-                            // 计算缩进 (每层 16px)
-                            let indent = px(16.) * entry.depth as f32;
+                            // 计算缩进 (每层 12px)
+                            let indent = px(12.) * entry.depth as f32;
 
                             // 调用用户提供的 render_item 函数，返回 AnyElement
                             let item_content = (render_item)(ix, &entry.item, entry.depth, selected, window, cx);

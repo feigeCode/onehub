@@ -7,7 +7,7 @@ use crate::clickhouse::ClickHousePlugin;
 use crate::mssql::MsSqlPlugin;
 use crate::oracle::OraclePlugin;
 use crate::import_export::{DataExporter, DataImporter, ExportConfig, ExportResult, ImportConfig, ImportResult};
-use crate::{DbNode, DbNodeType, ExecOptions, SqlResult};
+use crate::{DbNode, DbNodeType, ExecOptions, SqlResult, TableSaveResponse};
 use tokio::sync::mpsc;
 use one_core::gpui_tokio::Tokio;
 use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
@@ -821,11 +821,13 @@ impl GlobalDbState {
             let opts = opts.unwrap_or_default();
             let is_transactional = opts.transactional;
 
+            let plugin= clone_self.get_plugin(&config.database_type)?;
+
             let result = {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
                 let conn = guard.connection()
                     .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                conn.execute(&script, opts).await?
+                conn.execute(plugin, &script, opts).await?
             };
 
             // Determine if session should stay open based on script content
@@ -878,6 +880,10 @@ impl GlobalDbState {
                 Err(_) => return,
             };
 
+            let plugin = match clone_self.get_plugin(&config.database_type) {
+                Ok(c) => c,
+                Err(_) => return,
+            };
             let session_result = clone_self.connection_manager
                 .create_session(config.clone(), &clone_self.db_manager)
                 .await;
@@ -893,7 +899,7 @@ impl GlobalDbState {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
                 let conn = guard.connection()
                     .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                conn.execute_streaming(&script, opts, tx).await
+                conn.execute_streaming(plugin, &script, opts, tx).await
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 Ok::<_, anyhow::Error>(())
             }.await;
@@ -1059,10 +1065,41 @@ impl GlobalDbState {
         cx: &mut AsyncApp,
         connection_id: String,
         request: crate::types::TableSaveRequest,
-    ) -> anyhow::Result<crate::types::TableSaveResponse>
+    ) -> anyhow::Result<TableSaveResponse>
     {
         with_plugin_session!(self, cx, connection_id, |plugin, conn| {
-            plugin.apply_table_changes(&*conn, request.clone()).await
+            let mut success_count = 0;
+            let mut errors = Vec::new();
+
+            for change in &request.changes {
+                let Some(sql) = plugin.build_table_change_sql(&request, change) else {
+                    continue;
+                };
+
+                match conn.execute(plugin.clone(), &sql, ExecOptions::default()).await {
+                    Ok(results) => {
+                        for result in results {
+                            match result {
+                                SqlResult::Exec(_) => {
+                                    success_count += 1;
+                                }
+                                SqlResult::Error(err) => {
+                                    errors.push(err.message);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(e.to_string());
+                    }
+                }
+            }
+
+            anyhow::Ok(TableSaveResponse {
+                success_count,
+                errors,
+            })
         })
     }
 
@@ -1309,11 +1346,13 @@ impl GlobalDbState {
                 .create_session(db_config.clone(), &clone_self.db_manager)
                 .await?;
 
+            let plugin = clone_self.get_plugin(&db_config.database_type)?;
+
             let result = {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
                 let conn = guard.connection()
                     .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                DataImporter::import(conn, config, data).await
+                DataImporter::import(plugin, conn, config, data).await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             };
 

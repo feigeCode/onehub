@@ -1,10 +1,12 @@
 use std::any::Any;
+use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, AnyElement, App, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, InteractiveElement, MouseButton, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window,
+    div, px, uniform_list, AnyElement, App, AsyncApp, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, IntoElement, InteractiveElement, ListSizingBehavior, MouseButton, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    UniformListScrollHandle, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -12,6 +14,7 @@ use gpui_component::{
     form::{field, h_form},
     h_flex,
     input::{Input, InputEvent, InputState},
+    scroll::Scrollbar,
     select::{Select, SelectItem, SelectState},
     tab::{Tab, TabBar},
     v_flex, ActiveTheme, Icon, IconName, IndexPath, Sizable, Size, WindowExt,
@@ -374,12 +377,13 @@ impl TableDesigner {
     fn build_original_design(&self, columns: Vec<ColumnInfo>, indexes: Vec<IndexInfo>) -> TableDesign {
         let column_defs: Vec<ColumnDefinition> = columns.iter().map(|col| {
             let (data_type, length) = Self::parse_data_type(&col.data_type);
+            let scale = Self::extract_scale_from_type_str(&col.data_type);
             ColumnDefinition {
                 name: col.name.clone(),
                 data_type,
                 length,
                 precision: None,
-                scale: None,
+                scale,
                 is_nullable: col.is_nullable,
                 is_primary_key: col.is_primary_key,
                 is_auto_increment: col.data_type.to_uppercase().contains("AUTO_INCREMENT"),
@@ -391,16 +395,18 @@ impl TableDesigner {
             }
         }).collect();
 
-        let index_defs: Vec<IndexDefinition> = indexes.iter().map(|idx| {
-            IndexDefinition {
-                name: idx.name.clone(),
-                columns: idx.columns.clone(),
-                is_unique: idx.is_unique,
-                is_primary: idx.name.to_uppercase() == "PRIMARY",
-                index_type: idx.index_type.clone(),
-                comment: String::new(),
-            }
-        }).collect();
+        let index_defs: Vec<IndexDefinition> = indexes.iter()
+            .filter(|idx| idx.name.to_uppercase() != "PRIMARY")
+            .map(|idx| {
+                IndexDefinition {
+                    name: idx.name.clone(),
+                    columns: idx.columns.clone(),
+                    is_unique: idx.is_unique,
+                    is_primary: false,
+                    index_type: idx.index_type.clone(),
+                    comment: String::new(),
+                }
+            }).collect();
 
         TableDesign {
             database_name: self.config.database_name.clone(),
@@ -426,6 +432,18 @@ impl TableDesigner {
             }
         }
         (data_type.to_string(), None)
+    }
+
+    fn extract_scale_from_type_str(data_type: &str) -> Option<u32> {
+        if let Some(start) = data_type.find('(') {
+            if let Some(end) = data_type.find(')') {
+                let len_str = &data_type[start + 1..end];
+                if let Some(comma) = len_str.find(',') {
+                    return len_str[comma + 1..].trim().parse().ok();
+                }
+            }
+        }
+        None
     }
 
     fn handle_execute(&mut self, _: &gpui::ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -505,7 +523,7 @@ impl TableDesigner {
                 Button::new("execute")
                     .small()
                     .primary()
-                    .label("创建表")
+                    .label("保存")
                     .on_click(cx.listener(Self::handle_execute))
             )
             .into_any_element()
@@ -717,6 +735,11 @@ pub struct ColumnsEditor {
     data_types: Vec<DataTypeInfo>,
     charsets: Vec<CharsetInfo>,
     database_type: DatabaseType,
+    scroll_handle: UniformListScrollHandle,
+    search_input: Entity<InputState>,
+    search_query: String,
+    filtered_indices: Vec<usize>,
+    _search_subscription: Subscription,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -724,6 +747,7 @@ struct ColumnEditorRow {
     name_input: Entity<InputState>,
     type_select: Entity<SelectState<Vec<DataTypeSelectItem>>>,
     length_input: Entity<InputState>,
+    scale_input: Entity<InputState>,
     nullable: bool,
     is_pk: bool,
     auto_increment: bool,
@@ -735,9 +759,16 @@ struct ColumnEditorRow {
 }
 
 impl ColumnsEditor {
-    pub fn new(database_type: DatabaseType, charsets: Vec<CharsetInfo>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(database_type: DatabaseType, charsets: Vec<CharsetInfo>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let data_types = Self::get_data_types(&database_type, cx);
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("搜索列名..."));
+
+        let search_sub = cx.subscribe_in(&search_input, window, |this, _, event: &InputEvent, _window, cx| {
+            if let InputEvent::Change = event {
+                this.update_filtered_indices(cx);
+            }
+        });
 
         Self {
             focus_handle,
@@ -746,8 +777,39 @@ impl ColumnsEditor {
             data_types,
             charsets,
             database_type,
+            scroll_handle: UniformListScrollHandle::default(),
+            search_input,
+            search_query: String::new(),
+            filtered_indices: vec![],
+            _search_subscription: search_sub,
             _subscriptions: vec![],
         }
+    }
+
+    fn update_filtered_indices(&mut self, cx: &mut Context<Self>) {
+        let query = self.search_input.read(cx).text().to_string().to_lowercase();
+        self.search_query = query.clone();
+
+        if query.is_empty() {
+            self.filtered_indices = (0..self.columns.len()).collect();
+        } else {
+            self.filtered_indices = self.columns
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    let name = row.name_input.read(cx).text().to_string().to_lowercase();
+                    name.contains(&query)
+                })
+                .map(|(idx, _)| idx)
+                .collect();
+
+            if !self.filtered_indices.is_empty() {
+                self.scroll_handle.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                self.selected_index = Some(self.filtered_indices[0]);
+            }
+        }
+
+        cx.notify();
     }
 
     fn get_data_types(database_type: &DatabaseType, cx: &App) -> Vec<DataTypeInfo> {
@@ -776,6 +838,7 @@ impl ColumnsEditor {
             SelectState::new(type_items, Some(IndexPath::new(0)), window, cx)
         });
         let length_input = cx.new(|cx| InputState::new(window, cx).placeholder("长度"));
+        let scale_input = cx.new(|cx| InputState::new(window, cx).placeholder("小数位"));
         let default_input = cx.new(|cx| InputState::new(window, cx).placeholder("默认值"));
         let comment_input = cx.new(|cx| InputState::new(window, cx).placeholder("注释"));
 
@@ -815,6 +878,11 @@ impl ColumnsEditor {
                 cx.emit(ColumnsEditorEvent::Changed);
             }
         });
+        let scale_sub = cx.subscribe_in(&scale_input, window, |_this, _, event: &InputEvent, _window, cx| {
+            if let InputEvent::Change = event {
+                cx.emit(ColumnsEditorEvent::Changed);
+            }
+        });
         let default_sub = cx.subscribe_in(&default_input, window, |_this, _, event: &InputEvent, _window, cx| {
             if let InputEvent::Change = event {
                 cx.emit(ColumnsEditorEvent::Changed);
@@ -840,12 +908,13 @@ impl ColumnsEditor {
             }
         });
 
-        self._subscriptions.extend([name_sub, length_sub, default_sub, comment_sub, type_sub, charset_sub, collation_sub, enum_values_sub]);
+        self._subscriptions.extend([name_sub, length_sub, scale_sub, default_sub, comment_sub, type_sub, charset_sub, collation_sub, enum_values_sub]);
 
         self.columns.push(ColumnEditorRow {
             name_input,
             type_select,
             length_input,
+            scale_input,
             nullable: true,
             is_pk: false,
             auto_increment: false,
@@ -856,6 +925,14 @@ impl ColumnsEditor {
             enum_values_input,
         });
 
+        let new_index = self.columns.len() - 1;
+        self.selected_index = Some(new_index);
+        self.update_filtered_indices(cx);
+
+        if let Some(pos) = self.filtered_indices.iter().position(|&i| i == new_index) {
+            self.scroll_handle.scroll_to_item(pos, gpui::ScrollStrategy::Top);
+        }
+
         cx.emit(ColumnsEditorEvent::Changed);
         cx.notify();
     }
@@ -865,6 +942,7 @@ impl ColumnsEditor {
             if idx < self.columns.len() {
                 self.columns.remove(idx);
                 self.selected_index = None;
+                self.update_filtered_indices(cx);
                 cx.emit(ColumnsEditorEvent::Changed);
                 cx.notify();
             }
@@ -925,6 +1003,8 @@ impl ColumnsEditor {
                 .unwrap_or_else(|| "VARCHAR".to_string());
             let length_str = row.length_input.read(cx).text().to_string();
             let length = length_str.parse::<u32>().ok();
+            let scale_str = row.scale_input.read(cx).text().to_string();
+            let scale = scale_str.parse::<u32>().ok();
 
             let data_type = if Self::is_enum_or_set_type(&base_type) {
                 let enum_values = row.enum_values_input.read(cx).text().to_string();
@@ -956,7 +1036,7 @@ impl ColumnsEditor {
                 data_type,
                 length,
                 precision: None,
-                scale: None,
+                scale,
                 is_nullable: row.nullable,
                 is_primary_key: row.is_pk,
                 is_auto_increment: row.auto_increment,
@@ -1002,6 +1082,14 @@ impl ColumnsEditor {
                 let mut input = InputState::new(window, cx).placeholder("长度");
                 if let Some(len) = Self::extract_length_from_type(&col.data_type) {
                     input.set_value(len.to_string(), window, cx);
+                }
+                input
+            });
+
+            let scale_input = cx.new(|cx| {
+                let mut input = InputState::new(window, cx).placeholder("小数位");
+                if let Some(scale) = Self::extract_scale_from_type(&col.data_type) {
+                    input.set_value(scale.to_string(), window, cx);
                 }
                 input
             });
@@ -1064,6 +1152,11 @@ impl ColumnsEditor {
                     cx.emit(ColumnsEditorEvent::Changed);
                 }
             });
+            let scale_sub = cx.subscribe_in(&scale_input, window, |_this, _, event: &InputEvent, _window, cx| {
+                if let InputEvent::Change = event {
+                    cx.emit(ColumnsEditorEvent::Changed);
+                }
+            });
             let default_sub = cx.subscribe_in(&default_input, window, |_this, _, event: &InputEvent, _window, cx| {
                 if let InputEvent::Change = event {
                     cx.emit(ColumnsEditorEvent::Changed);
@@ -1089,12 +1182,13 @@ impl ColumnsEditor {
                 }
             });
 
-            self._subscriptions.extend([name_sub, length_sub, default_sub, comment_sub, type_sub, charset_sub, collation_sub, enum_values_sub]);
+            self._subscriptions.extend([name_sub, length_sub, scale_sub, default_sub, comment_sub, type_sub, charset_sub, collation_sub, enum_values_sub]);
 
             self.columns.push(ColumnEditorRow {
                 name_input,
                 type_select,
                 length_input,
+                scale_input,
                 nullable: col.is_nullable,
                 is_pk: col.is_primary_key,
                 auto_increment: col.data_type.to_uppercase().contains("AUTO_INCREMENT"),
@@ -1106,6 +1200,7 @@ impl ColumnsEditor {
             });
         }
 
+        self.update_filtered_indices(cx);
         cx.emit(ColumnsEditorEvent::Changed);
         cx.notify();
     }
@@ -1118,6 +1213,18 @@ impl ColumnsEditor {
                     return len_str[..comma].trim().parse().ok();
                 }
                 return len_str.trim().parse().ok();
+            }
+        }
+        None
+    }
+
+    fn extract_scale_from_type(data_type: &str) -> Option<u32> {
+        if let Some(start) = data_type.find('(') {
+            if let Some(end) = data_type.find(')') {
+                let len_str = &data_type[start + 1..end];
+                if let Some(comma) = len_str.find(',') {
+                    return len_str[comma + 1..].trim().parse().ok();
+                }
             }
         }
         None
@@ -1166,6 +1273,14 @@ impl ColumnsEditor {
                     .tooltip("删除列")
                     .on_click(cx.listener(|this, _, _window, cx| this.remove_column(cx)))
             )
+            .child(div().flex_1())
+            .child(
+                Input::new(&self.search_input)
+                    .small()
+                    .w(px(200.))
+                    .prefix(Icon::new(IconName::Search).with_size(Size::Small).text_color(cx.theme().muted_foreground))
+                    .cleanable(true)
+            )
             .into_any_element()
     }
 
@@ -1180,10 +1295,11 @@ impl ColumnsEditor {
             .child(div().w(px(24.)))
             .child(div().w(px(160.)).text_sm().text_color(cx.theme().muted_foreground).child("列名"))
             .child(div().w(px(140.)).text_sm().text_color(cx.theme().muted_foreground).child("类型"))
-            .child(div().w(px(80.)).text_sm().text_color(cx.theme().muted_foreground).child("长度"))
-            .child(div().w(px(60.)).text_sm().text_color(cx.theme().muted_foreground).text_center().child("空"))
-            .child(div().w(px(60.)).text_sm().text_color(cx.theme().muted_foreground).text_center().child("主键"))
-            .child(div().w(px(60.)).text_sm().text_color(cx.theme().muted_foreground).text_center().child("自增"))
+            .child(div().w(px(60.)).text_sm().text_color(cx.theme().muted_foreground).child("长度"))
+            .child(div().w(px(60.)).text_sm().text_color(cx.theme().muted_foreground).child("小数位"))
+            .child(div().w(px(50.)).text_sm().text_color(cx.theme().muted_foreground).text_center().child("空"))
+            .child(div().w(px(50.)).text_sm().text_color(cx.theme().muted_foreground).text_center().child("主键"))
+            .child(div().w(px(50.)).text_sm().text_color(cx.theme().muted_foreground).text_center().child("自增"))
             .child(div().flex_1().text_sm().text_color(cx.theme().muted_foreground).child("注释"))
             .into_any_element()
     }
@@ -1195,6 +1311,7 @@ impl ColumnsEditor {
 
         h_flex()
             .id(("col-row", idx))
+            .w_full()
             .gap_3()
             .px_3()
             .py_1p5()
@@ -1242,14 +1359,21 @@ impl ColumnsEditor {
                 )
             )
             .child(
-                div().w(px(80.)).child(
+                div().w(px(60.)).child(
                     Input::new(&row.length_input)
                         .w_full()
                         .small()
                 )
             )
             .child(
-                div().w(px(60.)).flex().justify_center().child(
+                div().w(px(60.)).child(
+                    Input::new(&row.scale_input)
+                        .w_full()
+                        .small()
+                )
+            )
+            .child(
+                div().w(px(50.)).flex().justify_center().child(
                     Checkbox::new(("null", idx))
                         .checked(row.nullable)
                         .small()
@@ -1257,7 +1381,7 @@ impl ColumnsEditor {
                 )
             )
             .child(
-                div().w(px(60.)).flex().justify_center().child(
+                div().w(px(50.)).flex().justify_center().child(
                     Checkbox::new(("pk", idx))
                         .checked(row.is_pk)
                         .small()
@@ -1265,7 +1389,7 @@ impl ColumnsEditor {
                 )
             )
             .child(
-                div().w(px(60.)).flex().justify_center().child(
+                div().w(px(50.)).flex().justify_center().child(
                     Checkbox::new(("ai", idx))
                         .checked(row.auto_increment)
                         .small()
@@ -1367,22 +1491,38 @@ impl Focusable for ColumnsEditor {
 
 impl Render for ColumnsEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows: Vec<AnyElement> = self.columns
-            .iter()
-            .enumerate()
-            .map(|(idx, row)| self.render_row(idx, row, cx))
-            .collect();
+        let filtered_count = self.filtered_indices.len();
+        let scroll_handle = self.scroll_handle.clone();
 
         v_flex()
             .size_full()
             .child(self.render_header(cx))
             .child(self.render_table_header(cx))
             .child(
-                v_flex()
-                    .id("columns-scroll")
+                div()
+                    .id("columns-list-container")
                     .flex_1()
-                    .overflow_y_scroll()
-                    .children(rows)
+                    .overflow_hidden()
+                    .relative()
+                    .child(
+                        uniform_list("columns-list", filtered_count, {
+                            cx.processor(move |editor, visible_range: Range<usize>, _window, cx| {
+                                visible_range
+                                    .filter_map(|pos| {
+                                        let actual_idx = editor.filtered_indices.get(pos).copied()?;
+                                        let row = editor.columns.get(actual_idx)?;
+                                        Some(editor.render_row(actual_idx, row, cx))
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .flex_grow()
+                        .size_full()
+                        .track_scroll(&scroll_handle)
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
+                        .into_any_element()
+                    )
+                    .child(Scrollbar::vertical(&self.scroll_handle))
             )
             .child(self.render_detail_panel(cx))
     }
@@ -1496,6 +1636,10 @@ impl IndexesEditor {
         self._subscriptions.clear();
 
         for idx in indexes {
+            if idx.name.to_uppercase() == "PRIMARY" {
+                continue;
+            }
+
             let name_input = cx.new(|cx| {
                 let mut input = InputState::new(window, cx).placeholder("索引名");
                 input.set_value(idx.name.clone(), window, cx);
@@ -1891,7 +2035,7 @@ impl TabContent for TableDesignerTabContent {
     }
 
     fn icon(&self) -> Option<Icon> {
-        Some(IconName::Table.color())
+        Some(IconName::TableDesign.color())
     }
 
     fn closeable(&self) -> bool {

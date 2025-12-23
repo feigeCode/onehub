@@ -158,11 +158,6 @@ impl DatabaseEventHandler {
                         Self::handle_open_view_data(node, global_state, tab_container, window, cx);
                     }
                 }
-                DbTreeViewEvent::OpenTableStructure { node_id } => {
-                    if let Some(node) = get_node(&node_id, cx) {
-                        Self::handle_open_table_structure(node, global_state, tab_container, window, cx);
-                    }
-                }
                 DbTreeViewEvent::DesignTable { node_id } => {
                     if let Some(node) = get_node(&node_id, cx) {
                         Self::handle_design_table(node, tab_container, window, cx);
@@ -582,60 +577,6 @@ impl DatabaseEventHandler {
                     if let Some(window_id) = cx.active_window() {
                         let _ = cx.update_window(window_id, |_entity, window, cx| {
                             Self::show_error(window, format!("打开视图数据失败：无法获取连接配置 {}", connection_id_for_error), cx);
-                        });
-                    }
-                });
-            }
-        }).detach();
-    }
-
-    /// 处理打开表结构事件
-    fn handle_open_table_structure(
-        node: DbNode,
-        global_state: GlobalDbState,
-        _tab_container: Entity<TabContainer>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-
-        let connection_id = node.connection_id.clone();
-        let table = node.name.clone();
-
-        let Some(ref metadata) = node.metadata else {
-            Self::show_error(window, "无效的节点数据", cx);
-            return;
-        };
-        let Some(database) = metadata.get("database") else {
-            Self::show_error(window, "无法获取数据库名称", cx);
-            return;
-        };
-
-        let _tab_id = format!("table-designer-{}.{}", database, table);
-
-        let connection_id_for_error = connection_id.clone();
-        let database_string = database.clone();
-        let table_string = table.clone();
-
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            let config = global_state.get_config_async(&connection_id).await;
-
-            if config.is_some() {
-                let database_string = database_string.clone();
-                let table_string = table_string.clone();
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            let _ = (&database_string, &table_string);
-                            Self::show_warning(window, "表结构设计器功能尚未实现", cx);
-                        });
-                    }
-                });
-            } else {
-                let connection_id_for_error = connection_id_for_error.clone();
-                let _ = cx.update(|cx| {
-                    if let Some(window_id) = cx.active_window() {
-                        let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            Self::show_error(window, format!("打开表结构失败：无法获取连接配置 {}", connection_id_for_error), cx);
                         });
                     }
                 });

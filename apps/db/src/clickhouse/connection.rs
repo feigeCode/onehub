@@ -1,6 +1,7 @@
+use std::sync::Arc;
 use crate::connection::{DbConnection, DbError, StreamingProgress};
-use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlScriptSplitter, SqlStatementClassifier};
-use crate::SqlValue;
+use crate::executor::{ExecOptions, ExecResult, QueryResult, SqlErrorInfo, SqlResult, SqlStatementClassifier};
+use crate::{DatabasePlugin, SqlValue};
 
 use clickhouse::{Client, Row};
 use serde::Deserialize;
@@ -194,29 +195,15 @@ impl DbConnection for ClickHouseDbConnection {
         Ok(())
     }
 
-    async fn current_database(&self) -> Result<Option<String>, DbError> {
-        let client = self.ensure_connected()?;
-
-        #[derive(Row, Deserialize)]
-        struct DbName {
-            name: String,
-        }
-
-        match client.query("SELECT currentDatabase() as name").fetch_one::<DbName>().await {
-            Ok(row) => Ok(Some(row.name)),
-            Err(_) => Ok(self.config.database.clone()),
-        }
-    }
-
     async fn disconnect(&mut self) -> Result<(), DbError> {
         self.client = None;
         Ok(())
     }
 
-    async fn execute(&self, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
+    async fn execute(&self, plugin: Arc<dyn DatabasePlugin>, script: &str, options: ExecOptions) -> Result<Vec<SqlResult>, DbError> {
         let client = self.ensure_connected()?;
 
-        let statements = SqlScriptSplitter::split(script);
+        let statements = plugin.split_statements(script);
         let mut results = Vec::new();
 
         // ClickHouse doesn't have traditional transactions like MySQL
@@ -228,7 +215,7 @@ impl DbConnection for ClickHouseDbConnection {
             }
 
             let modified_sql = Self::apply_max_rows_limit(sql, options.max_rows);
-            let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+            let is_query = plugin.is_query_statement(&modified_sql);
             let result = Self::execute_single(client, &modified_sql, is_query).await?;
 
             let is_error = result.is_error();
@@ -265,15 +252,42 @@ impl DbConnection for ClickHouseDbConnection {
         Self::execute_single(client, &modified_sql, is_query).await
     }
 
+    async fn current_database(&self) -> Result<Option<String>, DbError> {
+        let client = self.ensure_connected()?;
+
+        #[derive(Row, Deserialize)]
+        struct DbName {
+            name: String,
+        }
+
+        match client.query("SELECT currentDatabase() as name").fetch_one::<DbName>().await {
+            Ok(row) => Ok(Some(row.name)),
+            Err(_) => Ok(self.config.database.clone()),
+        }
+    }
+
+    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
+        let client = self.ensure_connected()?;
+
+        let sql = format!("USE `{}`", database.replace("`", "``"));
+        client
+            .query(&sql)
+            .execute()
+            .await
+            .map_err(|e| DbError::QueryError(format!("Failed to switch database: {}", e)))?;
+
+        Ok(())
+    }
+
     async fn execute_streaming(
-        &self,
+        &self, plugin: Arc<dyn DatabasePlugin>,
         script: &str,
         options: ExecOptions,
         sender: mpsc::Sender<StreamingProgress>,
     ) -> Result<(), DbError> {
         let client = self.ensure_connected()?;
 
-        let statements: Vec<String> = SqlScriptSplitter::split(script)
+        let statements: Vec<String> = plugin.split_statements(script)
             .into_iter()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -284,7 +298,7 @@ impl DbConnection for ClickHouseDbConnection {
         for (index, sql) in statements.into_iter().enumerate() {
             let current = index + 1;
             let modified_sql = Self::apply_max_rows_limit(&sql, options.max_rows);
-            let is_query = SqlStatementClassifier::is_query_statement(&modified_sql);
+            let is_query = plugin.is_query_statement(&modified_sql);
 
             let result = match Self::execute_single(client, &modified_sql, is_query).await {
                 Ok(r) => r,
@@ -309,19 +323,6 @@ impl DbConnection for ClickHouseDbConnection {
                 break;
             }
         }
-
-        Ok(())
-    }
-
-    async fn switch_database(&self, database: &str) -> Result<(), DbError> {
-        let client = self.ensure_connected()?;
-
-        let sql = format!("USE `{}`", database.replace("`", "``"));
-        client
-            .query(&sql)
-            .execute()
-            .await
-            .map_err(|e| DbError::QueryError(format!("Failed to switch database: {}", e)))?;
 
         Ok(())
     }

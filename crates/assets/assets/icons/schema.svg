@@ -1,23 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 60" width="48" height="60">
-    <defs>
-        <filter id="shadow">
-            <feGaussianBlur in="SourceAlpha" stdDeviation="1.5"/>
-            <feOffset dx="0" dy="1"/>
-            <feComponentTransfer>
-                <feFuncA type="linear" slope="0.3"/>
-            </feComponentTransfer>
-            <feMerge>
-                <feMergeNode/>
-                <feMergeNode in="SourceGraphic"/>
-            </feMerge>
-        </filter>
-    </defs>
-    <g filter="url(#shadow)">
-        <path d="M 6 16 L 6 46 C 6 48 7 50 9 50 L 39 50 C 41 50 42 48 42 46 L 42 19 C 42 17 41 16 39 16 L 26 16 L 23 12 C 22 11 21 10 19 10 L 9 10 C 7 10 6 12 6 14 Z" fill="#1B9BDB"/>
-        <path d="M 6 14 L 19 10 L 23 12 L 26 16 L 9 16 C 7 16 6 15 6 14 Z" fill="#3ED6FF"/>
-        <path d="M 6 14 L 19 10 L 23 12 L 26 16 L 9 16 C 7 16 6 15 6 14 Z" fill="white" opacity="0.3"/>
-        <line x1="12" y1="26" x2="36" y2="26" stroke="white" stroke-width="1.5" opacity="0.7"/>
-        <line x1="12" y1="33" x2="36" y2="33" stroke="white" stroke-width="1.5" opacity="0.7"/>
-        <line x1="12" y1="40" x2="30" y2="40" stroke="white" stroke-width="1.5" opacity="0.7"/>
-    </g>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+                    <defs>
+                        <linearGradient id="sch" x1="0%" y1="0%" x2="0%" y2="100%">
+                            <stop offset="0%" style="stop-color:#66BB6A"/>
+                            <stop offset="100%" style="stop-color:#43A047"/>
+                        </linearGradient>
+                    </defs>
+                    <rect x="2" y="2" width="12" height="12" rx="1.5" fill="url(#sch)"/>
+                    <rect x="4" y="4" width="3.5" height="3.5" rx="0.5" fill="white" opacity="0.9"/>
+                    <rect x="8.5" y="4" width="3.5" height="3.5" rx="0.5" fill="white" opacity="0.9"/>
+                    <rect x="4" y="8.5" width="3.5" height="3.5" rx="0.5" fill="white" opacity="0.9"/>
+                    <rect x="8.5" y="8.5" width="3.5" height="3.5" rx="0.5" fill="white" opacity="0.9"/>
+                    <line x1="5.75" y1="7.5" x2="5.75" y2="8.5" stroke="white" stroke-width="0.8" opacity="0.7"/>
+                    <line x1="10.25" y1="7.5" x2="10.25" y2="8.5" stroke="white" stroke-width="0.8" opacity="0.7"/>
+                    <line x1="7.5" y1="5.75" x2="8.5" y2="5.75" stroke="white" stroke-width="0.8" opacity="0.7"/>
+                </svg>
