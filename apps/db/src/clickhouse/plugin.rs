@@ -515,3 +515,301 @@ impl DatabasePlugin for ClickHousePlugin {
         format!("DROP DATABASE IF EXISTS {}", self.quote_identifier(database_name))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::DatabasePlugin;
+    use crate::types::{ColumnDefinition, IndexDefinition, TableDesign, TableOptions};
+    use std::collections::HashMap;
+
+    fn create_plugin() -> ClickHousePlugin {
+        ClickHousePlugin::new()
+    }
+
+    // ==================== Basic Plugin Info Tests ====================
+
+    #[test]
+    fn test_plugin_name() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.name(), DatabaseType::ClickHouse);
+    }
+
+    #[test]
+    fn test_identifier_quote() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.identifier_quote(), "`");
+    }
+
+    #[test]
+    fn test_quote_identifier() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.quote_identifier("table_name"), "`table_name`");
+        assert_eq!(plugin.quote_identifier("column"), "`column`");
+    }
+
+    // ==================== DDL SQL Generation Tests ====================
+
+    #[test]
+    fn test_drop_database() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_database("test_db");
+        assert!(sql.contains("DROP DATABASE"));
+        assert!(sql.contains("`test_db`"));
+    }
+
+    #[test]
+    fn test_drop_table() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_table("test_db", "users");
+        assert!(sql.contains("DROP TABLE"));
+        assert!(sql.contains("`users`"));
+    }
+
+    #[test]
+    fn test_truncate_table() {
+        let plugin = create_plugin();
+        let sql = plugin.truncate_table("test_db", "users");
+        assert!(sql.contains("TRUNCATE TABLE"));
+        assert!(sql.contains("`users`"));
+    }
+
+    #[test]
+    fn test_rename_table() {
+        let plugin = create_plugin();
+        let sql = plugin.rename_table("test_db", "old_name", "new_name");
+        assert!(sql.contains("RENAME TABLE"));
+        assert!(sql.contains("`old_name`"));
+        assert!(sql.contains("`new_name`"));
+    }
+
+    #[test]
+    fn test_drop_view() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_view("test_db", "my_view");
+        assert!(sql.contains("DROP VIEW"));
+        assert!(sql.contains("`my_view`"));
+    }
+
+    // ==================== Database Operations Tests ====================
+
+    #[test]
+    fn test_build_create_database_sql() {
+        let plugin = create_plugin();
+        let mut field_values = HashMap::new();
+        field_values.insert("engine".to_string(), "Atomic".to_string());
+
+        let request = crate::plugin::DatabaseOperationRequest {
+            database_name: "new_db".to_string(),
+            field_values,
+        };
+
+        let sql = plugin.build_create_database_sql(&request);
+        assert!(sql.contains("CREATE DATABASE"));
+        assert!(sql.contains("`new_db`"));
+        assert!(sql.contains("ENGINE = Atomic"));
+    }
+
+    #[test]
+    fn test_build_modify_database_sql() {
+        let plugin = create_plugin();
+        let field_values = HashMap::new();
+
+        let request = crate::plugin::DatabaseOperationRequest {
+            database_name: "my_db".to_string(),
+            field_values,
+        };
+
+        let sql = plugin.build_modify_database_sql(&request);
+        assert!(sql.contains("--"));
+    }
+
+    #[test]
+    fn test_build_drop_database_sql() {
+        let plugin = create_plugin();
+        let sql = plugin.build_drop_database_sql("old_db");
+        assert!(sql.contains("DROP DATABASE IF EXISTS"));
+        assert!(sql.contains("`old_db`"));
+    }
+
+    // ==================== Column Definition Tests ====================
+
+    #[test]
+    fn test_build_column_def_simple() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("id")
+            .data_type("UInt64")
+            .nullable(false);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("`id`"));
+        assert!(def.contains("UInt64"));
+        assert!(def.contains("NOT NULL"));
+    }
+
+    #[test]
+    fn test_build_column_def_string() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("name")
+            .data_type("String")
+            .nullable(true);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("`name`"));
+        assert!(def.contains("String"));
+    }
+
+    #[test]
+    fn test_build_column_def_with_default() {
+        let plugin = create_plugin();
+        let mut col = ColumnDefinition::new("status")
+            .data_type("UInt8")
+            .default_value("0");
+        col.is_nullable = false;
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("DEFAULT 0"));
+        assert!(def.contains("NOT NULL"));
+    }
+
+    // ==================== CREATE TABLE Tests ====================
+
+    #[test]
+    fn test_build_create_table_sql_simple() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "events".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("UInt64")
+                    .nullable(false)
+                    .primary_key(true),
+                ColumnDefinition::new("event_name")
+                    .data_type("String"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("CREATE TABLE `events`"));
+        assert!(sql.contains("`id`"));
+        assert!(sql.contains("UInt64"));
+        assert!(sql.contains("`event_name`"));
+        assert!(sql.contains("String"));
+        assert!(sql.contains("PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_build_create_table_sql_with_indexes() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "logs".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("UInt64")
+                    .nullable(false)
+                    .primary_key(true),
+                ColumnDefinition::new("user_id")
+                    .data_type("UInt32")
+                    .nullable(false),
+            ],
+            indexes: vec![
+                IndexDefinition::new("idx_user_id")
+                    .columns(vec!["user_id".to_string()])
+                    .unique(false),
+            ],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("INDEX `idx_user_id`"));
+    }
+
+    // ==================== ALTER TABLE Tests ====================
+
+    #[test]
+    fn test_build_alter_table_sql_add_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "events".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("UInt64"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "events".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("UInt64"),
+                ColumnDefinition::new("timestamp").data_type("DateTime"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("ADD COLUMN"));
+        assert!(sql.contains("`timestamp`"));
+    }
+
+    #[test]
+    fn test_build_alter_table_sql_drop_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "events".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("UInt64"),
+                ColumnDefinition::new("old_column").data_type("String"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "events".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("UInt64"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("DROP COLUMN"));
+        assert!(sql.contains("`old_column`"));
+    }
+
+    // ==================== Completion Info Tests ====================
+
+    #[test]
+    fn test_get_completion_info() {
+        let plugin = create_plugin();
+        let info = plugin.get_completion_info();
+
+        assert!(!info.keywords.is_empty());
+        assert!(!info.functions.is_empty());
+        assert!(!info.operators.is_empty());
+        assert!(!info.data_types.is_empty());
+        assert!(!info.snippets.is_empty());
+
+        assert!(info.keywords.iter().any(|(k, _)| *k == "FINAL"));
+        assert!(info.data_types.iter().any(|(t, _)| *t == "UInt64"));
+    }
+}

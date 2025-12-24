@@ -1789,6 +1789,7 @@ pub fn fallback_split_with_db_type(script: &str, db_type: DatabaseType) -> Vec<S
 
     let mut paren_depth = 0i32;
     let mut begin_depth = 0i32;
+    let mut last_word_checked = String::new();
     let mut delimiter = ";".to_string();
 
     while let Some(ch) = chars.next() {
@@ -1911,33 +1912,48 @@ pub fn fallback_split_with_db_type(script: &str, db_type: DatabaseType) -> Vec<S
 
         current.push(ch);
 
-        // ---------- BEGIN / END 深度 ----------
-        update_begin_depth(&current, &mut begin_depth);
+        // ---------- BEGIN / END 深度 (只在空白字符后检测) ----------
+        if ch.is_whitespace() || ch == ';' || ch == '$' {
+            update_begin_depth(&current, &mut begin_depth, &mut last_word_checked);
+        }
 
         // ---------- DELIMITER 命令 (MySQL) ----------
-        if db_type == DatabaseType::MySQL {
+        if db_type == DatabaseType::MySQL && ch == '\n' {
             if let Some(new_delim) = try_parse_delimiter(&current) {
                 delimiter = new_delim;
-                current.clear();
+                let lines: Vec<&str> = current.lines().collect();
+                if lines.len() > 1 {
+                    current = lines[..lines.len() - 1].join("\n");
+                } else {
+                    current.clear();
+                }
                 continue;
             }
         }
 
         // ---------- GO 命令 (SQL Server) ----------
-        if db_type == DatabaseType::MSSQL {
-            let trimmed = current.trim();
-            if trimmed.to_uppercase() == "GO" {
-                current.clear();
-                continue;
+        if db_type == DatabaseType::MSSQL && ch == '\n' {
+            let lines: Vec<&str> = current.lines().collect();
+            if let Some(last_line) = lines.last() {
+                if last_line.trim().to_uppercase() == "GO" {
+                    let stmt_lines: Vec<&str> = lines[..lines.len() - 1].to_vec();
+                    let stmt = stmt_lines.join("\n").trim().to_string();
+                    if !stmt.is_empty() {
+                        statements.push(stmt);
+                    }
+                    current.clear();
+                    continue;
+                }
             }
         }
 
         // ---------- 语句分割 ----------
         if paren_depth == 0 && begin_depth == 0 {
-            if current.ends_with(&delimiter) {
-                let stmt = current
+            let trimmed_current = current.trim_end();
+            if trimmed_current.ends_with(&delimiter) {
+                let stmt = trimmed_current
                     .strip_suffix(&delimiter)
-                    .unwrap_or(&current)
+                    .unwrap_or(trimmed_current)
                     .trim();
 
                 if !stmt.is_empty() && !stmt.to_uppercase().starts_with("DELIMITER") {
@@ -1991,25 +2007,32 @@ fn try_parse_dollar_quote(chars: &mut std::iter::Peekable<std::str::Chars>) -> O
 }
 
 fn try_parse_delimiter(current: &str) -> Option<String> {
-    let trimmed = current.trim();
-    if trimmed.to_uppercase().starts_with("DELIMITER") {
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() >= 2 {
-            return Some(parts[1].to_string());
+    let lines: Vec<&str> = current.lines().collect();
+    if let Some(last_line) = lines.last() {
+        let trimmed = last_line.trim();
+        if trimmed.to_uppercase().starts_with("DELIMITER") {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                return Some(parts[1].to_string());
+            }
         }
     }
     None
 }
 
-fn update_begin_depth(current: &str, begin_depth: &mut i32) {
+fn update_begin_depth(current: &str, begin_depth: &mut i32, last_word_checked: &mut String) {
     let upper = current.to_uppercase();
     let words: Vec<&str> = upper.split_whitespace().collect();
 
     if let Some(last_word) = words.last() {
-        match *last_word {
-            "BEGIN" => *begin_depth += 1,
-            "END" | "END;" => *begin_depth = (*begin_depth - 1).max(0),
-            _ => {}
+        let last_word_str = last_word.to_string();
+        if last_word_str != *last_word_checked {
+            *last_word_checked = last_word_str.clone();
+            if last_word_str == "BEGIN" {
+                *begin_depth += 1;
+            } else if last_word_str.starts_with("END") {
+                *begin_depth = (*begin_depth - 1).max(0);
+            }
         }
     }
 }
@@ -2251,4 +2274,553 @@ pub fn analyze_select_editability_fallback(sql: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::parser::Parser;
+
+    // ==================== split_statements_with_dialect tests ====================
+
+    #[test]
+    fn test_split_statements_with_dialect_mysql() {
+        let sql = "SELECT * FROM users; INSERT INTO logs VALUES (1);";
+        let stmts = split_statements_with_dialect(sql, &MySqlDialect {});
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_split_statements_with_dialect_postgresql() {
+        use sqlparser::dialect::PostgreSqlDialect;
+        let sql = "SELECT * FROM users; UPDATE users SET name = 'test';";
+        let stmts = split_statements_with_dialect(sql, &PostgreSqlDialect {});
+        assert_eq!(stmts.len(), 2);
+    }
+
+    // ==================== split_statements_for_database tests ====================
+
+    #[test]
+    fn test_simple_split() {
+        let sql = "SELECT * FROM users; INSERT INTO logs VALUES (1);";
+        let stmts = split_statements_for_database(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_split_all_database_types() {
+        let sql = "SELECT 1; SELECT 2;";
+        for db_type in [
+            DatabaseType::MySQL,
+            DatabaseType::PostgreSQL,
+            DatabaseType::SQLite,
+            DatabaseType::MSSQL,
+            DatabaseType::Oracle,
+            DatabaseType::ClickHouse,
+        ] {
+            let stmts = split_statements_for_database(sql, db_type);
+            assert_eq!(stmts.len(), 2, "Failed for {:?}", db_type);
+        }
+    }
+
+    // ==================== fallback_split tests ====================
+
+    #[test]
+    fn test_fallback_split_default() {
+        let sql = "SELECT * FROM users; INSERT INTO t VALUES (1);";
+        let stmts = fallback_split(sql);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_mysql_delimiter() {
+        let sql = r#"
+DELIMITER $$
+CREATE PROCEDURE test()
+BEGIN
+    SELECT * FROM users;
+    INSERT INTO logs VALUES (1);
+END$$
+DELIMITER ;
+SELECT * FROM users;
+        "#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].contains("CREATE PROCEDURE"));
+        assert!(stmts[1].contains("SELECT * FROM users"));
+    }
+
+    #[test]
+    fn test_mysql_hash_comment() {
+        let sql = "# This is a comment\nSELECT * FROM users; INSERT INTO t VALUES (1);";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_mysql_backtick() {
+        let sql = "SELECT * FROM `table;name`; INSERT INTO t VALUES (1);";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_mysql_backslash_escape() {
+        let sql = r#"SELECT * FROM users WHERE name = 'it\'s'; INSERT INTO t VALUES (1);"#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_postgresql_dollar_quote() {
+        let sql = r#"
+CREATE FUNCTION test() RETURNS void AS $$
+BEGIN
+    RAISE NOTICE 'This ; is not a delimiter';
+END;
+$$ LANGUAGE plpgsql;
+SELECT * FROM users;
+        "#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::PostgreSQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_postgresql_named_dollar_quote() {
+        let sql = r#"
+CREATE FUNCTION test() RETURNS void AS $func$
+BEGIN
+    SELECT 'nested $$ quote';
+END;
+$func$ LANGUAGE plpgsql;
+SELECT 1;
+        "#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::PostgreSQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_mssql_go_command() {
+        let sql = r#"
+SELECT * FROM users
+GO
+INSERT INTO logs VALUES (1)
+GO
+        "#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MSSQL);
+        assert_eq!(stmts.len(), 2);
+        assert!(stmts[0].contains("SELECT"));
+        assert!(stmts[1].contains("INSERT"));
+    }
+
+    #[test]
+    fn test_oracle_slash_delimiter() {
+        let sql = "BEGIN\n    NULL;\nEND;\n/\nSELECT * FROM dual;";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::Oracle);
+        assert!(stmts.len() >= 1);
+    }
+
+    #[test]
+    fn test_string_with_semicolon() {
+        let sql = r#"SELECT * FROM users WHERE note = 'a;b;c'; INSERT INTO t VALUES (1);"#;
+        let stmts = split_statements_for_database(sql, DatabaseType::PostgreSQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_double_quoted_string() {
+        let sql = r#"SELECT * FROM users WHERE note = "a;b;c"; INSERT INTO t VALUES (1);"#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_escaped_quote() {
+        let sql = "SELECT * FROM users WHERE note = 'it''s ok'; INSERT INTO t VALUES (1);";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_line_comment() {
+        let sql = "-- Comment with ;\nSELECT * FROM users; INSERT INTO t VALUES (1);";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_block_comment() {
+        let sql = "/* Block ; comment */ SELECT * FROM users; INSERT INTO t VALUES (1);";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_nested_parentheses() {
+        let sql = "SELECT * FROM (SELECT id FROM users WHERE id IN (1, 2, 3)); INSERT INTO t VALUES (1);";
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn test_nested_begin_end() {
+        let sql = r#"
+BEGIN
+    BEGIN
+        SELECT 1;
+    END;
+    SELECT 2;
+END;
+SELECT 3;
+        "#;
+        let stmts = fallback_split_with_db_type(sql, DatabaseType::Oracle);
+        assert!(stmts.len() >= 1);
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let stmts = split_statements_for_database("", DatabaseType::MySQL);
+        assert!(stmts.is_empty());
+    }
+
+    #[test]
+    fn test_whitespace_only() {
+        let stmts = split_statements_for_database("   \n\t  ", DatabaseType::MySQL);
+        assert!(stmts.is_empty());
+    }
+
+    #[test]
+    fn test_single_statement_no_semicolon() {
+        let stmts = split_statements_for_database("SELECT * FROM users", DatabaseType::MySQL);
+        assert_eq!(stmts.len(), 1);
+    }
+
+    // ==================== can_use_sqlparser tests ====================
+
+    #[test]
+    fn test_can_use_sqlparser_default() {
+        assert!(can_use_sqlparser("SELECT * FROM users"));
+        assert!(!can_use_sqlparser("DELIMITER $$"));
+        assert!(!can_use_sqlparser("CREATE FUNCTION test()"));
+    }
+
+    #[test]
+    fn test_can_use_sqlparser_mysql() {
+        assert!(can_use_sqlparser_with_db_type("SELECT * FROM users", DatabaseType::MySQL));
+        assert!(!can_use_sqlparser_with_db_type("DELIMITER $$", DatabaseType::MySQL));
+        assert!(!can_use_sqlparser_with_db_type("CREATE FUNCTION test()", DatabaseType::MySQL));
+        assert!(!can_use_sqlparser_with_db_type("CREATE PROCEDURE test()", DatabaseType::MySQL));
+    }
+
+    #[test]
+    fn test_can_use_sqlparser_postgresql() {
+        assert!(can_use_sqlparser_with_db_type("SELECT * FROM users", DatabaseType::PostgreSQL));
+        assert!(!can_use_sqlparser_with_db_type("CREATE FUNCTION test() AS $$ BEGIN END; $$", DatabaseType::PostgreSQL));
+    }
+
+    #[test]
+    fn test_can_use_sqlparser_mssql() {
+        assert!(can_use_sqlparser_with_db_type("SELECT * FROM users", DatabaseType::MSSQL));
+        assert!(!can_use_sqlparser_with_db_type("SELECT * FROM users\nGO\nSELECT 1", DatabaseType::MSSQL));
+    }
+
+    #[test]
+    fn test_can_use_sqlparser_begin_end() {
+        assert!(!can_use_sqlparser_with_db_type("BEGIN SELECT 1; END;", DatabaseType::MySQL));
+        assert!(!can_use_sqlparser_with_db_type("BEGIN\nSELECT 1;\nEND ;", DatabaseType::Oracle));
+    }
+
+    #[test]
+    fn test_can_use_sqlparser_create_trigger() {
+        assert!(!can_use_sqlparser_with_db_type("CREATE TRIGGER test AFTER INSERT", DatabaseType::MySQL));
+    }
+
+    // ==================== is_query_stmt tests (AST-based) ====================
+
+    #[test]
+    fn test_is_query_stmt_select() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT * FROM users").unwrap();
+        assert!(is_query_stmt(&stmts[0]));
+    }
+
+    #[test]
+    fn test_is_query_stmt_show() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SHOW TABLES").unwrap();
+        assert!(is_query_stmt(&stmts[0]));
+    }
+
+    #[test]
+    fn test_is_query_stmt_explain() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "EXPLAIN SELECT * FROM users").unwrap();
+        assert!(is_query_stmt(&stmts[0]));
+    }
+
+    #[test]
+    fn test_is_query_stmt_insert() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "INSERT INTO users VALUES (1)").unwrap();
+        assert!(!is_query_stmt(&stmts[0]));
+    }
+
+    #[test]
+    fn test_is_query_stmt_update() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "UPDATE users SET name = 'test'").unwrap();
+        assert!(!is_query_stmt(&stmts[0]));
+    }
+
+    #[test]
+    fn test_is_query_stmt_delete() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "DELETE FROM users").unwrap();
+        assert!(!is_query_stmt(&stmts[0]));
+    }
+
+    // ==================== is_query_statement_fallback tests ====================
+
+    #[test]
+    fn test_is_query_statement_fallback_select() {
+        assert!(is_query_statement_fallback("SELECT * FROM users"));
+        assert!(is_query_statement_fallback("  select id from t  "));
+    }
+
+    #[test]
+    fn test_is_query_statement_fallback_show() {
+        assert!(is_query_statement_fallback("SHOW TABLES"));
+        assert!(is_query_statement_fallback("SHOW DATABASES"));
+    }
+
+    #[test]
+    fn test_is_query_statement_fallback_describe() {
+        assert!(is_query_statement_fallback("DESCRIBE users"));
+        assert!(is_query_statement_fallback("DESC users"));
+    }
+
+    #[test]
+    fn test_is_query_statement_fallback_explain() {
+        assert!(is_query_statement_fallback("EXPLAIN SELECT * FROM users"));
+    }
+
+    #[test]
+    fn test_is_query_statement_fallback_with() {
+        assert!(is_query_statement_fallback("WITH cte AS (SELECT 1) SELECT * FROM cte"));
+    }
+
+    #[test]
+    fn test_is_query_statement_fallback_pragma() {
+        assert!(is_query_statement_fallback("PRAGMA table_info(users)"));
+    }
+
+    #[test]
+    fn test_is_query_statement_fallback_non_query() {
+        assert!(!is_query_statement_fallback("INSERT INTO users VALUES (1)"));
+        assert!(!is_query_statement_fallback("UPDATE users SET name = 'test'"));
+        assert!(!is_query_statement_fallback("DELETE FROM users"));
+        assert!(!is_query_statement_fallback("CREATE TABLE t (id INT)"));
+    }
+
+    // ==================== classify_stmt tests (AST-based) ====================
+
+    #[test]
+    fn test_classify_stmt_query() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT * FROM users").unwrap();
+        assert_eq!(classify_stmt(&stmts[0]), StatementType::Query);
+    }
+
+    #[test]
+    fn test_classify_stmt_dml() {
+        let insert = Parser::parse_sql(&MySqlDialect {}, "INSERT INTO users VALUES (1)").unwrap();
+        assert_eq!(classify_stmt(&insert[0]), StatementType::Dml);
+
+        let update = Parser::parse_sql(&MySqlDialect {}, "UPDATE users SET name = 'test'").unwrap();
+        assert_eq!(classify_stmt(&update[0]), StatementType::Dml);
+
+        let delete = Parser::parse_sql(&MySqlDialect {}, "DELETE FROM users").unwrap();
+        assert_eq!(classify_stmt(&delete[0]), StatementType::Dml);
+    }
+
+    #[test]
+    fn test_classify_stmt_ddl() {
+        let create = Parser::parse_sql(&MySqlDialect {}, "CREATE TABLE t (id INT)").unwrap();
+        assert_eq!(classify_stmt(&create[0]), StatementType::Ddl);
+
+        let alter = Parser::parse_sql(&MySqlDialect {}, "ALTER TABLE t ADD COLUMN name VARCHAR(100)").unwrap();
+        assert_eq!(classify_stmt(&alter[0]), StatementType::Ddl);
+
+        let drop = Parser::parse_sql(&MySqlDialect {}, "DROP TABLE t").unwrap();
+        assert_eq!(classify_stmt(&drop[0]), StatementType::Ddl);
+    }
+
+    #[test]
+    fn test_classify_stmt_transaction() {
+        let commit = Parser::parse_sql(&MySqlDialect {}, "COMMIT").unwrap();
+        assert_eq!(classify_stmt(&commit[0]), StatementType::Transaction);
+
+        let rollback = Parser::parse_sql(&MySqlDialect {}, "ROLLBACK").unwrap();
+        assert_eq!(classify_stmt(&rollback[0]), StatementType::Transaction);
+    }
+
+    #[test]
+    fn test_classify_stmt_command() {
+        let use_stmt = Parser::parse_sql(&MySqlDialect {}, "USE mydb").unwrap();
+        assert_eq!(classify_stmt(&use_stmt[0]), StatementType::Command);
+
+        let set = Parser::parse_sql(&MySqlDialect {}, "SET autocommit = 1").unwrap();
+        assert_eq!(classify_stmt(&set[0]), StatementType::Command);
+    }
+
+    // ==================== classify_fallback tests ====================
+
+    #[test]
+    fn test_classify_fallback_query() {
+        assert_eq!(classify_fallback("SELECT * FROM users"), StatementType::Query);
+        assert_eq!(classify_fallback("SHOW TABLES"), StatementType::Query);
+        assert_eq!(classify_fallback("DESCRIBE users"), StatementType::Query);
+    }
+
+    #[test]
+    fn test_classify_fallback_dml() {
+        assert_eq!(classify_fallback("INSERT INTO users VALUES (1)"), StatementType::Dml);
+        assert_eq!(classify_fallback("UPDATE users SET name = 'test'"), StatementType::Dml);
+        assert_eq!(classify_fallback("DELETE FROM users"), StatementType::Dml);
+        assert_eq!(classify_fallback("REPLACE INTO users VALUES (1)"), StatementType::Dml);
+    }
+
+    #[test]
+    fn test_classify_fallback_ddl() {
+        assert_eq!(classify_fallback("CREATE TABLE users (id INT)"), StatementType::Ddl);
+        assert_eq!(classify_fallback("ALTER TABLE users ADD COLUMN name VARCHAR(100)"), StatementType::Ddl);
+        assert_eq!(classify_fallback("DROP TABLE users"), StatementType::Ddl);
+        assert_eq!(classify_fallback("TRUNCATE TABLE users"), StatementType::Ddl);
+        assert_eq!(classify_fallback("RENAME TABLE old TO new"), StatementType::Ddl);
+    }
+
+    #[test]
+    fn test_classify_fallback_transaction() {
+        assert_eq!(classify_fallback("BEGIN"), StatementType::Transaction);
+        assert_eq!(classify_fallback("COMMIT"), StatementType::Transaction);
+        assert_eq!(classify_fallback("ROLLBACK"), StatementType::Transaction);
+        assert_eq!(classify_fallback("START TRANSACTION"), StatementType::Transaction);
+    }
+
+    #[test]
+    fn test_classify_fallback_command() {
+        assert_eq!(classify_fallback("USE mydb"), StatementType::Command);
+        assert_eq!(classify_fallback("SET autocommit = 1"), StatementType::Command);
+    }
+
+    #[test]
+    fn test_classify_fallback_exec() {
+        assert_eq!(classify_fallback("CALL my_procedure()"), StatementType::Exec);
+        assert_eq!(classify_fallback("EXECUTE my_statement"), StatementType::Exec);
+    }
+
+    // ==================== analyze_query_editability tests (AST-based) ====================
+
+    #[test]
+    fn test_analyze_query_editability_simple() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT * FROM users").unwrap();
+        if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+            let result = analyze_query_editability(query);
+            assert!(result.is_some());
+            assert!(result.unwrap().contains("users"));
+        }
+    }
+
+    #[test]
+    fn test_analyze_query_editability_with_where() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT * FROM users WHERE id = 1").unwrap();
+        if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+            let result = analyze_query_editability(query);
+            assert!(result.is_some());
+        }
+    }
+
+    #[test]
+    fn test_analyze_query_editability_with_join() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT * FROM users JOIN orders ON users.id = orders.user_id").unwrap();
+        if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+            let result = analyze_query_editability(query);
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_analyze_query_editability_with_group_by() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT name, COUNT(*) FROM users GROUP BY name").unwrap();
+        if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+            let result = analyze_query_editability(query);
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_analyze_query_editability_with_distinct() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT DISTINCT name FROM users").unwrap();
+        if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+            let result = analyze_query_editability(query);
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_analyze_query_editability_with_aggregate() {
+        let stmts = Parser::parse_sql(&MySqlDialect {}, "SELECT COUNT(*) FROM users").unwrap();
+        if let sqlparser::ast::Statement::Query(query) = &stmts[0] {
+            let result = analyze_query_editability(query);
+            assert!(result.is_none());
+        }
+    }
+
+    // ==================== analyze_select_editability_fallback tests ====================
+
+    #[test]
+    fn test_analyze_select_editability_fallback_simple() {
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users"), Some("users".to_string()));
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_quoted() {
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM `users`"), Some("users".to_string()));
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM \"users\""), Some("users".to_string()));
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_with_where() {
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users WHERE id = 1"), Some("users".to_string()));
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_with_join() {
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users JOIN orders ON users.id = orders.user_id"), None);
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users INNER JOIN orders"), None);
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users LEFT JOIN orders"), None);
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_with_group_by() {
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users GROUP BY name"), None);
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_with_aggregate() {
+        assert_eq!(analyze_select_editability_fallback("SELECT COUNT(*) FROM users"), None);
+        assert_eq!(analyze_select_editability_fallback("SELECT SUM(amount) FROM orders"), None);
+        assert_eq!(analyze_select_editability_fallback("SELECT AVG(price) FROM products"), None);
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_with_distinct() {
+        assert_eq!(analyze_select_editability_fallback("SELECT DISTINCT * FROM users"), None);
+        assert_eq!(analyze_select_editability_fallback("SELECT DISTINCT name FROM users"), None);
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_with_union() {
+        assert_eq!(analyze_select_editability_fallback("SELECT * FROM users UNION SELECT * FROM admins"), None);
+    }
+
+    #[test]
+    fn test_analyze_select_editability_fallback_non_select() {
+        assert_eq!(analyze_select_editability_fallback("INSERT INTO users VALUES (1)"), None);
+        assert_eq!(analyze_select_editability_fallback("UPDATE users SET name = 'test'"), None);
+    }
 }

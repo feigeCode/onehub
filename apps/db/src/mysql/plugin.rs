@@ -887,3 +887,475 @@ impl Default for MySqlPlugin {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::DatabasePlugin;
+    use crate::types::{ColumnDefinition, IndexDefinition, TableDesign, TableOptions};
+
+    fn create_plugin() -> MySqlPlugin {
+        MySqlPlugin::new()
+    }
+
+    // ==================== Basic Plugin Info Tests ====================
+
+    #[test]
+    fn test_plugin_name() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.name(), DatabaseType::MySQL);
+    }
+
+    #[test]
+    fn test_identifier_quote() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.identifier_quote(), "`");
+    }
+
+    #[test]
+    fn test_quote_identifier() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.quote_identifier("table_name"), "`table_name`");
+        assert_eq!(plugin.quote_identifier("column"), "`column`");
+    }
+
+    // ==================== DDL SQL Generation Tests ====================
+
+    #[test]
+    fn test_drop_database() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_database("test_db");
+        assert!(sql.contains("DROP DATABASE"));
+        assert!(sql.contains("`test_db`"));
+    }
+
+    #[test]
+    fn test_drop_table() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_table("test_db", "users");
+        assert!(sql.contains("DROP TABLE"));
+        assert!(sql.contains("`test_db`"));
+        assert!(sql.contains("`users`"));
+    }
+
+    #[test]
+    fn test_truncate_table() {
+        let plugin = create_plugin();
+        let sql = plugin.truncate_table("test_db", "users");
+        assert!(sql.contains("TRUNCATE TABLE"));
+        assert!(sql.contains("`users`"));
+    }
+
+    #[test]
+    fn test_rename_table() {
+        let plugin = create_plugin();
+        let sql = plugin.rename_table("test_db", "old_name", "new_name");
+        assert!(sql.contains("RENAME TABLE"));
+        assert!(sql.contains("`old_name`"));
+        assert!(sql.contains("`new_name`"));
+    }
+
+    #[test]
+    fn test_drop_view() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_view("test_db", "my_view");
+        assert!(sql.contains("DROP VIEW"));
+        assert!(sql.contains("`my_view`"));
+    }
+
+    // ==================== Database Operations Tests ====================
+
+    #[test]
+    fn test_build_create_database_sql() {
+        let plugin = create_plugin();
+        let mut field_values = HashMap::new();
+        field_values.insert("charset".to_string(), "utf8mb4".to_string());
+        field_values.insert("collation".to_string(), "utf8mb4_unicode_ci".to_string());
+
+        let request = crate::plugin::DatabaseOperationRequest {
+            database_name: "new_db".to_string(),
+            field_values,
+        };
+
+        let sql = plugin.build_create_database_sql(&request);
+        assert!(sql.contains("CREATE DATABASE"));
+        assert!(sql.contains("`new_db`"));
+        assert!(sql.contains("utf8mb4"));
+        assert!(sql.contains("utf8mb4_unicode_ci"));
+    }
+
+    #[test]
+    fn test_build_modify_database_sql() {
+        let plugin = create_plugin();
+        let mut field_values = HashMap::new();
+        field_values.insert("charset".to_string(), "utf8mb4".to_string());
+        field_values.insert("collation".to_string(), "utf8mb4_bin".to_string());
+
+        let request = crate::plugin::DatabaseOperationRequest {
+            database_name: "my_db".to_string(),
+            field_values,
+        };
+
+        let sql = plugin.build_modify_database_sql(&request);
+        assert!(sql.contains("ALTER DATABASE"));
+        assert!(sql.contains("`my_db`"));
+        assert!(sql.contains("utf8mb4_bin"));
+    }
+
+    #[test]
+    fn test_build_drop_database_sql() {
+        let plugin = create_plugin();
+        let sql = plugin.build_drop_database_sql("old_db");
+        assert_eq!(sql, "DROP DATABASE `old_db`;");
+    }
+
+    // ==================== Column Definition Tests ====================
+
+    #[test]
+    fn test_build_column_def_simple() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("id")
+            .data_type("INT")
+            .nullable(false)
+            .primary_key(true)
+            .auto_increment(true);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("`id`"));
+        assert!(def.contains("INT"));
+        assert!(def.contains("NOT NULL"));
+        assert!(def.contains("AUTO_INCREMENT"));
+    }
+
+    #[test]
+    fn test_build_column_def_with_length() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("name")
+            .data_type("VARCHAR")
+            .length(255)
+            .nullable(true);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("`name`"));
+        assert!(def.contains("VARCHAR(255)"));
+        assert!(!def.contains("NOT NULL"));
+    }
+
+    #[test]
+    fn test_build_column_def_with_default() {
+        let plugin = create_plugin();
+        let mut col = ColumnDefinition::new("status")
+            .data_type("INT")
+            .default_value("0");
+        col.is_nullable = false;
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("DEFAULT 0"));
+        assert!(def.contains("NOT NULL"));
+    }
+
+    #[test]
+    fn test_build_column_def_with_comment() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("email")
+            .data_type("VARCHAR")
+            .length(100)
+            .comment("User email address");
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("COMMENT 'User email address'"));
+    }
+
+    #[test]
+    fn test_build_column_def_unsigned() {
+        let plugin = create_plugin();
+        let mut col = ColumnDefinition::new("age")
+            .data_type("INT");
+        col.is_unsigned = true;
+        col.is_nullable = false;
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("UNSIGNED"));
+    }
+
+    #[test]
+    fn test_build_column_def_decimal() {
+        let plugin = create_plugin();
+        let mut col = ColumnDefinition::new("price")
+            .data_type("DECIMAL");
+        col.length = Some(10);
+        col.scale = Some(2);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("DECIMAL(10,2)"));
+    }
+
+    // ==================== CREATE TABLE Tests ====================
+
+    #[test]
+    fn test_build_create_table_sql_simple() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("INT")
+                    .nullable(false)
+                    .primary_key(true)
+                    .auto_increment(true),
+                ColumnDefinition::new("name")
+                    .data_type("VARCHAR")
+                    .length(100),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("CREATE TABLE `users`"));
+        assert!(sql.contains("`id`"));
+        assert!(sql.contains("INT"));
+        assert!(sql.contains("AUTO_INCREMENT"));
+        assert!(sql.contains("`name`"));
+        assert!(sql.contains("VARCHAR(100)"));
+        assert!(sql.contains("PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_build_create_table_sql_with_options() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "products".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("INT")
+                    .nullable(false)
+                    .primary_key(true),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions {
+                engine: Some("InnoDB".to_string()),
+                charset: Some("utf8mb4".to_string()),
+                collation: Some("utf8mb4_unicode_ci".to_string()),
+                comment: "Product table".to_string(),
+                auto_increment: None,
+            },
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("ENGINE=InnoDB"));
+        assert!(sql.contains("DEFAULT CHARSET=utf8mb4"));
+        assert!(sql.contains("COLLATE=utf8mb4_unicode_ci"));
+        assert!(sql.contains("COMMENT='Product table'"));
+    }
+
+    #[test]
+    fn test_build_create_table_sql_with_indexes() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "orders".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("INT")
+                    .nullable(false)
+                    .primary_key(true),
+                ColumnDefinition::new("user_id")
+                    .data_type("INT")
+                    .nullable(false),
+                ColumnDefinition::new("email")
+                    .data_type("VARCHAR")
+                    .length(100),
+            ],
+            indexes: vec![
+                IndexDefinition::new("idx_user_id")
+                    .columns(vec!["user_id".to_string()])
+                    .unique(false),
+                IndexDefinition::new("idx_email")
+                    .columns(vec!["email".to_string()])
+                    .unique(true),
+            ],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("INDEX `idx_user_id`"));
+        assert!(sql.contains("UNIQUE INDEX `idx_email`"));
+    }
+
+    // ==================== ALTER TABLE Tests ====================
+
+    #[test]
+    fn test_build_alter_table_sql_add_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INT"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INT"),
+                ColumnDefinition::new("email").data_type("VARCHAR").length(100),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("ADD COLUMN"));
+        assert!(sql.contains("`email`"));
+    }
+
+    #[test]
+    fn test_build_alter_table_sql_drop_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INT"),
+                ColumnDefinition::new("old_column").data_type("VARCHAR").length(50),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INT"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("DROP COLUMN"));
+        assert!(sql.contains("`old_column`"));
+    }
+
+    #[test]
+    fn test_build_alter_table_sql_modify_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("name").data_type("VARCHAR").length(50),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "test_db".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("name").data_type("VARCHAR").length(100),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("MODIFY COLUMN"));
+        assert!(sql.contains("`name`"));
+        assert!(sql.contains("VARCHAR(100)"));
+    }
+
+    // ==================== Charset & Collation Tests ====================
+
+    #[test]
+    fn test_get_charsets() {
+        let plugin = create_plugin();
+        let charsets = plugin.get_charsets();
+
+        assert!(!charsets.is_empty());
+        assert!(charsets.iter().any(|c| c.name == "utf8mb4"));
+        assert!(charsets.iter().any(|c| c.name == "latin1"));
+        assert!(charsets.iter().any(|c| c.name == "gbk"));
+    }
+
+    #[test]
+    fn test_get_collations_utf8mb4() {
+        let plugin = create_plugin();
+        let collations = plugin.get_collations("utf8mb4");
+
+        assert!(!collations.is_empty());
+        assert!(collations.iter().any(|c| c.name == "utf8mb4_general_ci"));
+        assert!(collations.iter().any(|c| c.name == "utf8mb4_unicode_ci"));
+        assert!(collations.iter().any(|c| c.name == "utf8mb4_bin"));
+    }
+
+    #[test]
+    fn test_get_collations_latin1() {
+        let plugin = create_plugin();
+        let collations = plugin.get_collations("latin1");
+
+        assert!(!collations.is_empty());
+        assert!(collations.iter().any(|c| c.name == "latin1_swedish_ci"));
+    }
+
+    #[test]
+    fn test_get_collations_unknown() {
+        let plugin = create_plugin();
+        let collations = plugin.get_collations("unknown_charset");
+        assert!(collations.is_empty());
+    }
+
+    // ==================== Data Types Tests ====================
+
+    #[test]
+    fn test_get_data_types() {
+        let plugin = create_plugin();
+        let types = plugin.get_data_types();
+
+        assert!(!types.is_empty());
+        assert!(types.iter().any(|t| t.name == "INT"));
+        assert!(types.iter().any(|t| t.name == "VARCHAR"));
+        assert!(types.iter().any(|t| t.name == "TEXT"));
+        assert!(types.iter().any(|t| t.name == "DATETIME"));
+        assert!(types.iter().any(|t| t.name == "JSON"));
+    }
+
+    // ==================== Completion Info Tests ====================
+
+    #[test]
+    fn test_get_completion_info() {
+        let plugin = create_plugin();
+        let info = plugin.get_completion_info();
+
+        assert!(!info.keywords.is_empty());
+        assert!(!info.functions.is_empty());
+        assert!(!info.operators.is_empty());
+        assert!(!info.data_types.is_empty());
+        assert!(!info.snippets.is_empty());
+
+        assert!(info.keywords.iter().any(|(k, _)| *k == "AUTO_INCREMENT"));
+        assert!(info.functions.iter().any(|(f, _)| f.starts_with("GROUP_CONCAT")));
+        assert!(info.operators.iter().any(|(o, _)| *o == "REGEXP"));
+    }
+}

@@ -497,3 +497,292 @@ impl Default for SqlitePlugin {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::DatabasePlugin;
+    use crate::types::{ColumnDefinition, IndexDefinition, TableDesign, TableOptions};
+
+    fn create_plugin() -> SqlitePlugin {
+        SqlitePlugin::new()
+    }
+
+    // ==================== Basic Plugin Info Tests ====================
+
+    #[test]
+    fn test_plugin_name() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.name(), DatabaseType::SQLite);
+    }
+
+    #[test]
+    fn test_identifier_quote() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.identifier_quote(), "\"");
+    }
+
+    #[test]
+    fn test_quote_identifier() {
+        let plugin = create_plugin();
+        assert_eq!(plugin.quote_identifier("table_name"), "\"table_name\"");
+        assert_eq!(plugin.quote_identifier("column"), "\"column\"");
+    }
+
+    // ==================== DDL SQL Generation Tests ====================
+
+    #[test]
+    fn test_drop_table() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_table("main", "users");
+        assert!(sql.contains("DROP TABLE"));
+        assert!(sql.contains("\"users\""));
+    }
+
+    #[test]
+    fn test_truncate_table() {
+        let plugin = create_plugin();
+        let sql = plugin.truncate_table("main", "users");
+        assert!(sql.contains("DELETE FROM"));
+        assert!(sql.contains("\"users\""));
+    }
+
+    #[test]
+    fn test_rename_table() {
+        let plugin = create_plugin();
+        let sql = plugin.rename_table("main", "old_name", "new_name");
+        assert!(sql.contains("ALTER TABLE"));
+        assert!(sql.contains("RENAME TO"));
+        assert!(sql.contains("\"old_name\""));
+        assert!(sql.contains("\"new_name\""));
+    }
+
+    #[test]
+    fn test_drop_view() {
+        let plugin = create_plugin();
+        let sql = plugin.drop_view("main", "my_view");
+        assert!(sql.contains("DROP VIEW"));
+        assert!(sql.contains("\"my_view\""));
+    }
+
+    // ==================== Database Operations Tests ====================
+
+    #[test]
+    fn test_build_create_database_sql() {
+        let plugin = create_plugin();
+        let request = crate::plugin::DatabaseOperationRequest {
+            database_name: "test.db".to_string(),
+            field_values: std::collections::HashMap::new(),
+        };
+
+        let sql = plugin.build_create_database_sql(&request);
+        assert!(sql.contains("--"));
+    }
+
+    #[test]
+    fn test_build_drop_database_sql() {
+        let plugin = create_plugin();
+        let sql = plugin.build_drop_database_sql("test.db");
+        assert!(sql.contains("--"));
+    }
+
+    // ==================== Column Definition Tests ====================
+
+    #[test]
+    fn test_build_column_def_simple() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("id")
+            .data_type("INTEGER")
+            .nullable(false)
+            .primary_key(true);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("\"id\""));
+        assert!(def.contains("INTEGER"));
+        assert!(def.contains("NOT NULL"));
+    }
+
+    #[test]
+    fn test_build_column_def_text() {
+        let plugin = create_plugin();
+        let col = ColumnDefinition::new("name")
+            .data_type("TEXT")
+            .nullable(true);
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("\"name\""));
+        assert!(def.contains("TEXT"));
+        assert!(!def.contains("NOT NULL"));
+    }
+
+    #[test]
+    fn test_build_column_def_with_default() {
+        let plugin = create_plugin();
+        let mut col = ColumnDefinition::new("status")
+            .data_type("INTEGER")
+            .default_value("0");
+        col.is_nullable = false;
+
+        let def = plugin.build_column_def(&col);
+        assert!(def.contains("DEFAULT 0"));
+        assert!(def.contains("NOT NULL"));
+    }
+
+    // ==================== CREATE TABLE Tests ====================
+
+    #[test]
+    fn test_build_create_table_sql_simple() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "main".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("INTEGER")
+                    .nullable(false)
+                    .primary_key(true),
+                ColumnDefinition::new("name")
+                    .data_type("TEXT"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("CREATE TABLE \"users\""));
+        assert!(sql.contains("\"id\""));
+        assert!(sql.contains("INTEGER"));
+        assert!(sql.contains("\"name\""));
+        assert!(sql.contains("TEXT"));
+        assert!(sql.contains("PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_build_create_table_sql_with_indexes() {
+        let plugin = create_plugin();
+        let design = TableDesign {
+            database_name: "main".to_string(),
+            table_name: "orders".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id")
+                    .data_type("INTEGER")
+                    .nullable(false)
+                    .primary_key(true),
+                ColumnDefinition::new("user_id")
+                    .data_type("INTEGER")
+                    .nullable(false),
+                ColumnDefinition::new("email")
+                    .data_type("TEXT"),
+            ],
+            indexes: vec![
+                IndexDefinition::new("idx_user_id")
+                    .columns(vec!["user_id".to_string()])
+                    .unique(false),
+                IndexDefinition::new("idx_email")
+                    .columns(vec!["email".to_string()])
+                    .unique(true),
+            ],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_create_table_sql(&design);
+        assert!(sql.contains("INDEX \"idx_user_id\""));
+        assert!(sql.contains("UNIQUE INDEX \"idx_email\""));
+    }
+
+    // ==================== ALTER TABLE Tests ====================
+
+    #[test]
+    fn test_build_alter_table_sql_add_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "main".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INTEGER"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "main".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INTEGER"),
+                ColumnDefinition::new("email").data_type("TEXT"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("ADD COLUMN"));
+        assert!(sql.contains("\"email\""));
+    }
+
+    #[test]
+    fn test_build_alter_table_sql_drop_column() {
+        let plugin = create_plugin();
+
+        let original = TableDesign {
+            database_name: "main".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INTEGER"),
+                ColumnDefinition::new("old_column").data_type("TEXT"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let new = TableDesign {
+            database_name: "main".to_string(),
+            table_name: "users".to_string(),
+            columns: vec![
+                ColumnDefinition::new("id").data_type("INTEGER"),
+            ],
+            indexes: vec![],
+            foreign_keys: vec![],
+            options: TableOptions::default(),
+        };
+
+        let sql = plugin.build_alter_table_sql(&original, &new);
+        assert!(sql.contains("DROP COLUMN"));
+        assert!(sql.contains("\"old_column\""));
+    }
+
+    // ==================== Data Types Tests ====================
+
+    #[test]
+    fn test_get_data_types() {
+        let plugin = create_plugin();
+        let types = plugin.get_data_types();
+
+        assert!(!types.is_empty());
+        assert!(types.iter().any(|t| t.name == "INTEGER"));
+        assert!(types.iter().any(|t| t.name == "TEXT"));
+        assert!(types.iter().any(|t| t.name == "REAL"));
+        assert!(types.iter().any(|t| t.name == "BLOB"));
+    }
+
+    // ==================== Completion Info Tests ====================
+
+    #[test]
+    fn test_get_completion_info() {
+        let plugin = create_plugin();
+        let info = plugin.get_completion_info();
+
+        assert!(!info.keywords.is_empty());
+        assert!(!info.functions.is_empty());
+        assert!(!info.data_types.is_empty());
+        assert!(!info.snippets.is_empty());
+    }
+}
+
