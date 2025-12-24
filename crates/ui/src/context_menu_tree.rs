@@ -7,7 +7,7 @@ use gpui::{
     MouseButton, ParentElement, RenderOnce, StyleRefinement, Styled,
     UniformListScrollHandle, Window, Context, Render, px,
 };
-use crate::{h_flex, IconName, StyledExt};
+use crate::{h_flex, Icon, IconName, StyledExt, ActiveTheme};
 use crate::scroll::{ScrollableElement};
 use crate::tree::TreeItem;
 
@@ -318,18 +318,32 @@ impl RenderOnce for ContextMenuTree {
 
                             // 创建展开/收起箭头
                             let arrow = if has_children {
+                                let arrow_color = cx.theme().muted_foreground;
                                 div()
-                                    .w(px(16.))
-                                    .h(px(16.))
+                                    .w(px(18.))
+                                    .h(px(26.))  // 与行高一致
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
-                                    .child(if is_expanded {
-                                        IconName::ChevronDown
-                                    } else {
-                                        IconName::ChevronRight
-                                    })
+                                    .child(
+                                        div()
+                                            .w(px(18.))
+                                            .h(px(18.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded(px(3.))
+                                            .hover(|style| style.bg(cx.theme().secondary))
+                                            .child(
+                                                Icon::new(if is_expanded {
+                                                    IconName::ChevronDown
+                                                } else {
+                                                    IconName::ChevronRight
+                                                })
+                                                .text_color(arrow_color)
+                                            )
+                                    )
                                     .on_mouse_down(MouseButton::Left, {
                                         let state = state.clone();
                                         move |_, window, cx| {
@@ -339,11 +353,11 @@ impl RenderOnce for ContextMenuTree {
                                     })
                             } else {
                                 // 占位符，保持对齐
-                                div().w(px(16.)).h(px(16.))
+                                div().w(px(18.)).h(px(26.))
                             };
 
-                            // 计算缩进 (每层 12px)
-                            let indent = px(12.) * entry.depth as f32;
+                            // 计算缩进 (每层 16px)
+                            let indent = px(16.) * entry.depth as f32;
 
                             // 调用用户提供的 render_item 函数，返回 AnyElement
                             let item_content = (render_item)(ix, &entry.item, entry.depth, selected, window, cx);

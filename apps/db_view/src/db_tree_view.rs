@@ -894,6 +894,7 @@ impl DbTreeView {
                 | DbNodeType::TriggersFolder
                 | DbNodeType::SequencesFolder
                 | DbNodeType::QueriesFolder
+                | DbNodeType::ForeignKeysFolder
             );
 
             if needs_placeholder {
@@ -1245,7 +1246,7 @@ impl Render for DbTreeView {
         v_flex()
             .id("db-tree-view")
             .size_full()
-            .bg(cx.theme().background)
+            .bg(cx.theme().sidebar)
             .child({
                 let view_for_collapse = cx.entity();
                 h_flex()
@@ -1253,8 +1254,8 @@ impl Render for DbTreeView {
                     .p_1()
                     .gap_1()
                     .border_t_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
+                    .border_color(cx.theme().sidebar_border)
+                    .bg(cx.theme().sidebar)
                     .child(
                         div()
                             .flex_1()
@@ -1285,7 +1286,7 @@ impl Render for DbTreeView {
                 v_flex()
                     .flex_1()
                     .w_full()
-                    .bg(cx.theme().background)  // 树背景
+                    .bg(cx.theme().sidebar)  // 树背景
                     .child(
                         div()
                             .id("tree-scroll")
@@ -1396,11 +1397,12 @@ impl Render for DbTreeView {
                                         let node_id_for_filter = node_id.clone();
 
                                         // 选中状态的样式
-                                        let selection_bg = cx.theme().selection;
+                                        let selection_bg = cx.theme().sidebar_accent;
                                         let selection_bar_color = cx.theme().blue;
+                                        let selection_text_color = cx.theme().sidebar_accent_foreground;
                                         let hover_bg = cx.theme().secondary;
                                         let folder_text_color = cx.theme().muted_foreground;
-                                        let foreground_color = cx.theme().foreground;
+                                        let foreground_color = cx.theme().sidebar_foreground;
 
                                         // 使用 div 替代 ListItem 以精确控制样式
                                         let list_item = div()
@@ -1410,6 +1412,7 @@ impl Render for DbTreeView {
                                             .overflow_hidden()
                                             .h(px(26.))  // 行高 26px
                                             .relative()
+                                            .flex()
                                             .items_center()
                                             .text_sm()
                                             .text_color(foreground_color)
@@ -1421,11 +1424,11 @@ impl Render for DbTreeView {
                                                         .left_0()
                                                         .top_0()
                                                         .bottom_0()
-                                                        .w(px(2.))  // 左侧选中条 2px
+                                                        .w(px(3.))  // 左侧选中条 3px
                                                         .bg(selection_bar_color)
                                                 )
                                                 .bg(selection_bg)
-                                                .text_color(gpui::white())
+                                                .text_color(selection_text_color)
                                             })
                                             // hover 背景
                                             .when(!selected, |this| {
