@@ -41,14 +41,6 @@ impl DatabaseEventHandler {
     }
 
 
-    /// 显示警告通知
-    fn show_warning(window: &mut Window, message: impl Into<String>, cx: &mut App) {
-        window.push_notification(
-            Notification::warning(message.into()).autohide(true),
-            cx
-        );
-    }
-
     /// 在异步上下文中显示错误通知
     fn show_error_async(cx: &mut App, message: impl Into<String>) {
         if let Some(window) = cx.active_window() {

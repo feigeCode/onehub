@@ -15,6 +15,7 @@ use sqlparser::dialect::{
 };
 use sqlparser::parser::Parser;
 use std::collections::HashMap;
+use tracing::log::error;
 
 /// Standard SQL functions common to most databases
 pub const STANDARD_SQL_FUNCTIONS: &[(&str, &str)] = &[
@@ -168,10 +169,7 @@ pub trait DatabasePlugin: Send + Sync {
 
     /// Split a SQL script into individual statements using this database's dialect
     fn split_statements(&self, script: &str) -> Vec<String> {
-        match Parser::parse_sql(self.sql_dialect().as_ref(), script) {
-            Ok(statements) => statements.iter().map(|stmt| stmt.to_string()).collect(),
-            Err(_) => fallback_split(script),
-        }
+        split_statements_for_database(script, self.name())
     }
 
     /// Check if a SQL statement is a query (returns rows)
@@ -1694,81 +1692,328 @@ pub fn split_statements_with_dialect(script: &str, dialect: &dyn Dialect) -> Vec
         Ok(statements) => {
             statements.iter().map(|stmt| stmt.to_string()).collect()
         }
-        Err(_) => fallback_split(script),
+        Err(e) => {
+            error!("Error parsing SQL: {}", e);
+            fallback_split(script)
+        },
+    }
+}
+
+/// Check if the script can be parsed by sqlparser
+/// Returns false for scripts containing syntax that sqlparser doesn't support well
+pub fn can_use_sqlparser(script: &str) -> bool {
+    can_use_sqlparser_with_db_type(script, DatabaseType::MySQL)
+}
+
+pub fn can_use_sqlparser_with_db_type(script: &str, db_type: DatabaseType) -> bool {
+    let upper = script.to_uppercase();
+
+    let common_problematic = [
+        "CREATE OR REPLACE FUNCTION",
+        "CREATE OR REPLACE PROCEDURE",
+        "CREATE FUNCTION",
+        "CREATE PROCEDURE",
+        "CREATE TRIGGER",
+        "CREATE DEFINER",
+    ];
+
+    for keyword in &common_problematic {
+        if upper.contains(keyword) {
+            return false;
+        }
+    }
+
+    if upper.contains("BEGIN") && (upper.contains("END;") || upper.contains("END ;")) {
+        return false;
+    }
+
+    match db_type {
+        DatabaseType::MySQL => {
+            if upper.contains("DELIMITER") {
+                return false;
+            }
+        }
+        DatabaseType::PostgreSQL => {
+            if script.contains('$') && script.matches('$').count() >= 2 {
+                return false;
+            }
+        }
+        DatabaseType::MSSQL => {
+            let lines: Vec<&str> = script.lines().collect();
+            for line in lines {
+                if line.trim().to_uppercase() == "GO" {
+                    return false;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    true
+}
+
+pub fn split_statements_for_database(script: &str, db_type: DatabaseType) -> Vec<String> {
+    if !can_use_sqlparser_with_db_type(script, db_type) {
+        return fallback_split_with_db_type(script, db_type);
+    }
+
+    let dialect: Box<dyn Dialect> = match db_type {
+        DatabaseType::MySQL => Box::new(MySqlDialect {}),
+        DatabaseType::PostgreSQL => Box::new(PostgreSqlDialect {}),
+        DatabaseType::MSSQL => Box::new(MsSqlDialect {}),
+        DatabaseType::SQLite => Box::new(SQLiteDialect {}),
+        DatabaseType::ClickHouse => Box::new(ClickHouseDialect {}),
+        DatabaseType::Oracle => Box::new(OracleDialect {}),
+    };
+
+    match Parser::parse_sql(dialect.as_ref(), script) {
+        Ok(statements) => statements.iter().map(|stmt| stmt.to_string()).collect(),
+        Err(_) => fallback_split_with_db_type(script, db_type),
     }
 }
 
 pub fn fallback_split(script: &str) -> Vec<String> {
+    fallback_split_with_db_type(script, DatabaseType::MySQL)
+}
+
+pub fn fallback_split_with_db_type(script: &str, db_type: DatabaseType) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
-    let mut in_string = false;
-    let mut string_char = ' ';
-    let mut paren_depth = 0i32;
     let mut chars = script.chars().peekable();
 
+    let mut in_string = false;
+    let mut string_char = '\0';
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut dollar_quote: Option<String> = None;
+
+    let mut paren_depth = 0i32;
+    let mut begin_depth = 0i32;
+    let mut delimiter = ";".to_string();
+
     while let Some(ch) = chars.next() {
-        if in_string {
+        // ---------- 行注释 ----------
+        if in_line_comment {
             current.push(ch);
-            if ch == string_char {
-                if chars.peek() == Some(&string_char) {
-                    current.push(chars.next().unwrap());
-                } else {
-                    in_string = false;
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+
+        // ---------- 块注释 ----------
+        if in_block_comment {
+            current.push(ch);
+            if ch == '*' && chars.peek() == Some(&'/') {
+                if let Some(next_ch) = chars.next() {
+                    current.push(next_ch);
+                }
+                in_block_comment = false;
+            }
+            continue;
+        }
+
+        // ---------- Dollar Quote (PostgreSQL) ----------
+        if let Some(ref tag) = dollar_quote {
+            current.push(ch);
+            if ch == '$' {
+                let end_pos = current.len();
+                let start_pos = end_pos.saturating_sub(tag.len());
+                if current[start_pos..].ends_with(tag) {
+                    dollar_quote = None;
                 }
             }
             continue;
         }
 
-        match ch {
-            '\'' | '"' | '`' => {
-                in_string = true;
-                string_char = ch;
-                current.push(ch);
-            }
-            '(' => {
-                paren_depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                paren_depth = (paren_depth - 1).max(0);
-                current.push(ch);
-            }
-            '-' if chars.peek() == Some(&'-') => {
-                current.push(ch);
-                while let Some(c) = chars.next() {
-                    current.push(c);
-                    if c == '\n' { break; }
+        // ---------- 字符串 ----------
+        if in_string {
+            current.push(ch);
+            if ch == string_char {
+                if chars.peek() == Some(&string_char) {
+                    if let Some(next_ch) = chars.next() {
+                        current.push(next_ch);
+                    }
+                } else {
+                    in_string = false;
                 }
-            }
-            '/' if chars.peek() == Some(&'*') => {
-                current.push(ch);
-                current.push(chars.next().unwrap());
-                while let Some(c) = chars.next() {
-                    current.push(c);
-                    if c == '*' && chars.peek() == Some(&'/') {
-                        current.push(chars.next().unwrap());
-                        break;
+            } else if ch == '\\' && db_type == DatabaseType::MySQL {
+                if let Some(_) = chars.peek() {
+                    if let Some(next_ch) = chars.next() {
+                        current.push(next_ch);
                     }
                 }
             }
-            ';' if paren_depth == 0 => {
-                let trimmed = current.trim();
-                if !trimmed.is_empty() {
-                    statements.push(trimmed.to_string());
+            continue;
+        }
+
+        // ---------- 注释起始 ----------
+        if ch == '-' && chars.peek() == Some(&'-') {
+            current.push(ch);
+            if let Some(next_ch) = chars.next() {
+                current.push(next_ch);
+            }
+            in_line_comment = true;
+            continue;
+        }
+
+        if ch == '#' && db_type == DatabaseType::MySQL {
+            current.push(ch);
+            in_line_comment = true;
+            continue;
+        }
+
+        if ch == '/' && chars.peek() == Some(&'*') {
+            current.push(ch);
+            if let Some(next_ch) = chars.next() {
+                current.push(next_ch);
+            }
+            in_block_comment = true;
+            continue;
+        }
+
+        // ---------- Dollar Quote 起始 (PostgreSQL) ----------
+        if ch == '$' && db_type == DatabaseType::PostgreSQL {
+            if let Some(tag) = try_parse_dollar_quote(&mut chars) {
+                dollar_quote = Some(tag.clone());
+                current.push_str(&tag);
+                continue;
+            }
+        }
+
+        // ---------- 字符串起始 ----------
+        if ch == '\'' || ch == '"' {
+            in_string = true;
+            string_char = ch;
+            current.push(ch);
+            continue;
+        }
+
+        if ch == '`' && db_type == DatabaseType::MySQL {
+            in_string = true;
+            string_char = ch;
+            current.push(ch);
+            continue;
+        }
+
+        // ---------- 括号深度 ----------
+        if ch == '(' {
+            paren_depth += 1;
+            current.push(ch);
+            continue;
+        }
+
+        if ch == ')' {
+            paren_depth = (paren_depth - 1).max(0);
+            current.push(ch);
+            continue;
+        }
+
+        current.push(ch);
+
+        // ---------- BEGIN / END 深度 ----------
+        update_begin_depth(&current, &mut begin_depth);
+
+        // ---------- DELIMITER 命令 (MySQL) ----------
+        if db_type == DatabaseType::MySQL {
+            if let Some(new_delim) = try_parse_delimiter(&current) {
+                delimiter = new_delim;
+                current.clear();
+                continue;
+            }
+        }
+
+        // ---------- GO 命令 (SQL Server) ----------
+        if db_type == DatabaseType::MSSQL {
+            let trimmed = current.trim();
+            if trimmed.to_uppercase() == "GO" {
+                current.clear();
+                continue;
+            }
+        }
+
+        // ---------- 语句分割 ----------
+        if paren_depth == 0 && begin_depth == 0 {
+            if current.ends_with(&delimiter) {
+                let stmt = current
+                    .strip_suffix(&delimiter)
+                    .unwrap_or(&current)
+                    .trim();
+
+                if !stmt.is_empty() && !stmt.to_uppercase().starts_with("DELIMITER") {
+                    statements.push(stmt.to_string());
+                }
+                current.clear();
+            } else if db_type == DatabaseType::Oracle
+                && current.trim().ends_with('\n')
+                && current.trim_end().ends_with('/')
+            {
+                let stmt = current.trim().strip_suffix('/').unwrap_or(&current).trim();
+                if !stmt.is_empty() {
+                    statements.push(stmt.to_string());
                 }
                 current.clear();
             }
-            _ => current.push(ch),
         }
     }
 
     let trimmed = current.trim();
-    if !trimmed.is_empty() {
+    if !trimmed.is_empty() && !trimmed.to_uppercase().starts_with("DELIMITER") {
         statements.push(trimmed.to_string());
     }
 
     statements
 }
+
+fn try_parse_dollar_quote(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<String> {
+    let mut tag = String::from("$");
+    let mut lookahead = chars.clone();
+
+    while let Some(c) = lookahead.next() {
+        if c.is_alphanumeric() || c == '_' {
+            tag.push(c);
+        } else if c == '$' {
+            tag.push(c);
+            break;
+        } else {
+            return None;
+        }
+    }
+
+    if tag.len() >= 2 && tag.ends_with('$') {
+        for _ in 1..tag.len() {
+            chars.next();
+        }
+        Some(tag)
+    } else {
+        None
+    }
+}
+
+fn try_parse_delimiter(current: &str) -> Option<String> {
+    let trimmed = current.trim();
+    if trimmed.to_uppercase().starts_with("DELIMITER") {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            return Some(parts[1].to_string());
+        }
+    }
+    None
+}
+
+fn update_begin_depth(current: &str, begin_depth: &mut i32) {
+    let upper = current.to_uppercase();
+    let words: Vec<&str> = upper.split_whitespace().collect();
+
+    if let Some(last_word) = words.last() {
+        match *last_word {
+            "BEGIN" => *begin_depth += 1,
+            "END" | "END;" => *begin_depth = (*begin_depth - 1).max(0),
+            _ => {}
+        }
+    }
+}
+
 
 
 pub fn is_query_stmt(stmt: &Statement) -> bool {
