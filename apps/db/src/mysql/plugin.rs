@@ -878,8 +878,159 @@ impl DatabasePlugin for MySqlPlugin {
         format!("DROP DATABASE `{}`;", database_name)
     }
 
+    fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let mut statements: Vec<String> = Vec::new();
+        let table_name = self.quote_identifier(&new.table_name);
 
+        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let new_cols: std::collections::HashMap<&str, &ColumnDefinition> = new.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
 
+        for name in original_cols.keys() {
+            if !new_cols.contains_key(name) {
+                statements.push(format!(
+                    "ALTER TABLE {} DROP COLUMN {};",
+                    table_name,
+                    self.quote_identifier(name)
+                ));
+            }
+        }
+
+        for (idx, col) in new.columns.iter().enumerate() {
+            if let Some(orig_col) = original_cols.get(col.name.as_str()) {
+                if self.column_changed(orig_col, col) {
+                    let col_def = self.build_column_def(col);
+                    statements.push(format!(
+                        "ALTER TABLE {} MODIFY COLUMN {};",
+                        table_name, col_def
+                    ));
+                }
+            } else {
+                let col_def = self.build_column_def(col);
+                let position = if idx == 0 {
+                    " FIRST".to_string()
+                } else {
+                    format!(" AFTER {}", self.quote_identifier(&new.columns[idx - 1].name))
+                };
+
+                statements.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {}{};",
+                    table_name, col_def, position
+                ));
+            }
+        }
+
+        let original_indexes: std::collections::HashMap<&str, &IndexDefinition> = original.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+        let new_indexes: std::collections::HashMap<&str, &IndexDefinition> = new.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+
+        for (name, idx) in &original_indexes {
+            if !new_indexes.contains_key(name) {
+                if idx.is_primary {
+                    statements.push(format!(
+                        "ALTER TABLE {} DROP PRIMARY KEY;",
+                        table_name
+                    ));
+                } else {
+                    statements.push(format!(
+                        "ALTER TABLE {} DROP INDEX {};",
+                        table_name,
+                        self.quote_identifier(name)
+                    ));
+                }
+            }
+        }
+
+        for (name, idx) in &new_indexes {
+            if !original_indexes.contains_key(name) {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| self.quote_identifier(c))
+                    .collect();
+
+                if idx.is_primary {
+                    statements.push(format!(
+                        "ALTER TABLE {} ADD PRIMARY KEY ({});",
+                        table_name,
+                        idx_cols.join(", ")
+                    ));
+                } else {
+                    let idx_type = if idx.is_unique { "UNIQUE INDEX" } else { "INDEX" };
+                    statements.push(format!(
+                        "ALTER TABLE {} ADD {} {} ({});",
+                        table_name,
+                        idx_type,
+                        self.quote_identifier(name),
+                        idx_cols.join(", ")
+                    ));
+                }
+            }
+        }
+
+        let mut options_changed = false;
+        let mut option_parts: Vec<String> = Vec::new();
+
+        if original.options.engine != new.options.engine
+            && original.options.engine.is_some()
+            && new.options.engine.is_some()
+        {
+            if let Some(engine) = &new.options.engine {
+                option_parts.push(format!("ENGINE={}", engine));
+                options_changed = true;
+            }
+        }
+
+        if original.options.charset != new.options.charset
+            && original.options.charset.is_some()
+            && new.options.charset.is_some()
+        {
+            if let Some(charset) = &new.options.charset {
+                option_parts.push(format!("DEFAULT CHARSET={}", charset));
+                options_changed = true;
+            }
+        }
+
+        if original.options.collation != new.options.collation
+            && original.options.collation.is_some()
+            && new.options.collation.is_some()
+        {
+            if let Some(collation) = &new.options.collation {
+                option_parts.push(format!("COLLATE={}", collation));
+                options_changed = true;
+            }
+        }
+
+        if original.options.comment != new.options.comment
+            && !original.options.comment.is_empty()
+            && !new.options.comment.is_empty()
+        {
+            option_parts.push(format!("COMMENT='{}'", new.options.comment.replace("'", "''")));
+            options_changed = true;
+        }
+
+        if options_changed && !option_parts.is_empty() {
+            statements.push(format!(
+                "ALTER TABLE {} {};",
+                table_name,
+                option_parts.join(" ")
+            ));
+        }
+
+        if statements.is_empty() {
+            "-- No changes detected".to_string()
+        } else {
+            statements.join("\n")
+        }
+    }
 }
 
 impl Default for MySqlPlugin {

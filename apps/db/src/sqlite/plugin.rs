@@ -16,6 +16,222 @@ impl SqlitePlugin {
     pub fn new() -> Self {
         Self
     }
+
+    fn build_sqlite_simple_alter_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let mut statements: Vec<String> = Vec::new();
+        let table_name = self.quote_identifier(&new.table_name);
+
+        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+
+        for col in new.columns.iter() {
+            if !original_cols.contains_key(col.name.as_str()) {
+                let col_def = self.build_column_def(col);
+                statements.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {};",
+                    table_name, col_def
+                ));
+            }
+        }
+
+        let original_indexes: std::collections::HashMap<&str, &IndexDefinition> = original.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+        let new_indexes: std::collections::HashMap<&str, &IndexDefinition> = new.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+
+        for name in original_indexes.keys() {
+            if !new_indexes.contains_key(name) {
+                statements.push(format!(
+                    "DROP INDEX IF EXISTS {};",
+                    self.quote_identifier(name)
+                ));
+            }
+        }
+
+        for (name, idx) in &new_indexes {
+            if !original_indexes.contains_key(name) {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| self.quote_identifier(c))
+                    .collect();
+
+                let unique_str = if idx.is_unique { "UNIQUE " } else { "" };
+                statements.push(format!(
+                    "CREATE {}INDEX {} ON {} ({});",
+                    unique_str,
+                    self.quote_identifier(name),
+                    table_name,
+                    idx_cols.join(", ")
+                ));
+            }
+        }
+
+        if statements.is_empty() {
+            "-- No changes detected".to_string()
+        } else {
+            statements.join("\n")
+        }
+    }
+
+    fn build_sqlite_recreate_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let mut statements: Vec<String> = Vec::new();
+        let table_name = &new.table_name;
+        let temp_table_name = format!("{}_dg_tmp", table_name);
+
+        let mut column_defs: Vec<String> = Vec::new();
+        let mut primary_key_cols: Vec<String> = Vec::new();
+
+        for col in &new.columns {
+            let mut col_def = format!("{} {}", self.quote_identifier(&col.name), col.data_type);
+
+            if let Some(len) = col.length {
+                if let Some(scale) = col.scale {
+                    col_def = format!("{} {}({},{})", self.quote_identifier(&col.name), col.data_type, len, scale);
+                } else {
+                    col_def = format!("{} {}({})", self.quote_identifier(&col.name), col.data_type, len);
+                }
+            }
+
+            if col.is_primary_key && new.columns.iter().filter(|c| c.is_primary_key).count() == 1 {
+                col_def.push_str("\n        primary key");
+                if col.is_auto_increment {
+                    col_def.push_str(" autoincrement");
+                }
+            }
+
+            if col.is_primary_key {
+                primary_key_cols.push(col.name.clone());
+            }
+
+            if !col.is_nullable && !col.is_primary_key {
+                col_def.push_str(" not null");
+            }
+
+            if let Some(default) = &col.default_value {
+                col_def.push_str(&format!(" default {}", default));
+            }
+
+            column_defs.push(col_def);
+        }
+
+        for idx in &new.indexes {
+            if idx.is_unique && !idx.is_primary {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| self.quote_identifier(c))
+                    .collect();
+                column_defs.push(format!("unique ({})", idx_cols.join(", ")));
+            }
+        }
+
+        if primary_key_cols.len() > 1 {
+            let pk_cols: Vec<String> = primary_key_cols.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            column_defs.push(format!("primary key ({})", pk_cols.join(", ")));
+        }
+
+        statements.push(format!(
+            "create table {}\n(\n    {}\n);",
+            self.quote_identifier(&temp_table_name),
+            column_defs.join(",\n    ")
+        ));
+
+        let original_col_names: std::collections::HashSet<&str> = original.columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+
+        let common_columns: Vec<&str> = new.columns
+            .iter()
+            .filter(|c| original_col_names.contains(c.name.as_str()))
+            .map(|c| c.name.as_str())
+            .collect();
+
+        if !common_columns.is_empty() {
+            let col_list: Vec<String> = common_columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            let col_str = col_list.join(", ");
+
+            statements.push(format!(
+                "insert into {}({})\nselect {}\nfrom {};",
+                self.quote_identifier(&temp_table_name),
+                col_str,
+                col_str,
+                self.quote_identifier(table_name)
+            ));
+        }
+
+        statements.push(format!(
+            "drop table {};",
+            self.quote_identifier(table_name)
+        ));
+
+        statements.push(format!(
+            "alter table {}\n    rename to {};",
+            self.quote_identifier(&temp_table_name),
+            self.quote_identifier(table_name)
+        ));
+
+        for idx in &new.indexes {
+            if !idx.is_primary && !idx.is_unique {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| self.quote_identifier(c))
+                    .collect();
+
+                statements.push(format!(
+                    "create index {}\n    on {} ({});",
+                    self.quote_identifier(&idx.name),
+                    self.quote_identifier(table_name),
+                    idx_cols.join(", ")
+                ));
+            }
+        }
+
+        for idx in &new.indexes {
+            if idx.is_unique && !idx.is_primary {
+                let has_where = idx.columns.iter().any(|col_name| {
+                    new.columns.iter()
+                        .find(|c| &c.name == col_name)
+                        .map(|c| c.is_nullable)
+                        .unwrap_or(false)
+                });
+
+                if has_where {
+                    let idx_cols: Vec<String> = idx.columns.iter()
+                        .map(|c| self.quote_identifier(c))
+                        .collect();
+
+                    let nullable_cols: Vec<String> = idx.columns.iter()
+                        .filter(|col_name| {
+                            new.columns.iter()
+                                .find(|c| &c.name == *col_name)
+                                .map(|c| c.is_nullable)
+                                .unwrap_or(false)
+                        })
+                        .map(|c| format!("{} IS NOT NULL", self.quote_identifier(c)))
+                        .collect();
+
+                    if !nullable_cols.is_empty() {
+                        statements.push(format!(
+                            "create unique index {}\n    on {} ({})\n    where {};",
+                            self.quote_identifier(&idx.name),
+                            self.quote_identifier(table_name),
+                            idx_cols.join(", "),
+                            nullable_cols.join(" AND ")
+                        ));
+                    }
+                }
+            }
+        }
+
+        statements.join("\n\n")
+    }
 }
 
 #[async_trait]
@@ -353,6 +569,10 @@ impl DatabasePlugin for SqlitePlugin {
         })
     }
 
+    fn supports_functions(&self) -> bool {
+        false
+    }
+
     async fn list_functions(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<FunctionInfo>> {
         Ok(Vec::new())
     }
@@ -370,6 +590,10 @@ impl DatabasePlugin for SqlitePlugin {
             columns,
             rows: vec![],
         })
+    }
+
+    fn supports_procedures(&self) -> bool {
+        false
     }
 
     async fn list_procedures(&self, _connection: &dyn DbConnection, _database: &str) -> Result<Vec<FunctionInfo>> {
@@ -663,6 +887,38 @@ impl DatabasePlugin for SqlitePlugin {
             duration,
         })
     }
+
+    fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let new_cols: std::collections::HashMap<&str, &ColumnDefinition> = new.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+
+        let mut dropped_columns: Vec<&str> = Vec::new();
+        let mut modified_columns: Vec<&str> = Vec::new();
+
+        for (name, orig_col) in &original_cols {
+            if !new_cols.contains_key(name) {
+                dropped_columns.push(name);
+            } else if let Some(new_col) = new_cols.get(name) {
+                if self.column_changed(orig_col, new_col) {
+                    modified_columns.push(name);
+                }
+            }
+        }
+
+        let has_structure_change = !dropped_columns.is_empty() || !modified_columns.is_empty();
+
+        if has_structure_change {
+            self.build_sqlite_recreate_table_sql(original, new)
+        } else {
+            self.build_sqlite_simple_alter_sql(original, new)
+        }
+    }
 }
 
 impl Default for SqlitePlugin {
@@ -927,8 +1183,10 @@ mod tests {
         };
 
         let sql = plugin.build_alter_table_sql(&original, &new);
-        assert!(sql.contains("DROP COLUMN"));
-        assert!(sql.contains("\"old_column\""));
+        assert!(sql.contains("create table"));
+        assert!(sql.contains("_dg_tmp"));
+        assert!(sql.contains("drop table"));
+        assert!(sql.contains("rename to"));
     }
 
     // ==================== Data Types Tests ====================

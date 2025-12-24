@@ -401,11 +401,7 @@ impl DbConnection for MysqlDbConnection {
         let conn = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-        let statements: Vec<String> = plugin.split_statements(script)
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let statements: Vec<String> = plugin.split_statements(script);
 
         let total = statements.len();
 

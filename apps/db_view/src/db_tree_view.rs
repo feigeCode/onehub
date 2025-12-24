@@ -755,7 +755,7 @@ impl DbTreeView {
                         error!("DbTreeView lazy_load_children: failed to execute load_node_children for {}: {}", clone_node_id, e);
                         this.expanded_nodes.remove(&clone_node_id);
                         // 记录错误状态
-                        this.error_nodes.insert(clone_node_id.clone(), format!("操作失败: {}", e));
+                        this.error_nodes.insert(clone_node_id.clone(), e.to_string());
                         this.rebuild_tree(cx);
                     }
                 }

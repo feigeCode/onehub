@@ -514,6 +514,90 @@ impl DatabasePlugin for ClickHousePlugin {
     fn build_drop_database_sql(&self, database_name: &str) -> String {
         format!("DROP DATABASE IF EXISTS {}", self.quote_identifier(database_name))
     }
+
+    fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let mut statements: Vec<String> = Vec::new();
+        let table_name = self.quote_identifier(&new.table_name);
+
+        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let new_cols: std::collections::HashMap<&str, &ColumnDefinition> = new.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+
+        for name in original_cols.keys() {
+            if !new_cols.contains_key(name) {
+                statements.push(format!(
+                    "ALTER TABLE {} DROP COLUMN {};",
+                    table_name,
+                    self.quote_identifier(name)
+                ));
+            }
+        }
+
+        for col in new.columns.iter() {
+            if let Some(orig_col) = original_cols.get(col.name.as_str()) {
+                if self.column_changed(orig_col, col) {
+                    let type_str = self.build_type_string(col);
+                    statements.push(format!(
+                        "ALTER TABLE {} MODIFY COLUMN {} {};",
+                        table_name,
+                        self.quote_identifier(&col.name),
+                        type_str
+                    ));
+                }
+            } else {
+                let col_def = self.build_column_def(col);
+                statements.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {};",
+                    table_name, col_def
+                ));
+            }
+        }
+
+        let original_indexes: std::collections::HashMap<&str, &IndexDefinition> = original.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+        let new_indexes: std::collections::HashMap<&str, &IndexDefinition> = new.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+
+        for name in original_indexes.keys() {
+            if !new_indexes.contains_key(name) {
+                statements.push(format!(
+                    "ALTER TABLE {} DROP INDEX {};",
+                    table_name,
+                    self.quote_identifier(name)
+                ));
+            }
+        }
+
+        for (name, idx) in &new_indexes {
+            if !original_indexes.contains_key(name) {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| self.quote_identifier(c))
+                    .collect();
+
+                statements.push(format!(
+                    "ALTER TABLE {} ADD INDEX {} ({});",
+                    table_name,
+                    self.quote_identifier(name),
+                    idx_cols.join(", ")
+                ));
+            }
+        }
+
+        if statements.is_empty() {
+            "-- No changes detected".to_string()
+        } else {
+            statements.join("\n")
+        }
+    }
 }
 
 #[cfg(test)]

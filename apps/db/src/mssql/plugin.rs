@@ -1063,6 +1063,109 @@ impl DatabasePlugin for MsSqlPlugin {
             schema_name.replace("'", "''")
         ))
     }
+
+    fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
+        let mut statements: Vec<String> = Vec::new();
+        let table_name = format!("[{}]", new.table_name.replace("]", "]]"));
+
+        let original_cols: std::collections::HashMap<&str, &ColumnDefinition> = original.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+        let new_cols: std::collections::HashMap<&str, &ColumnDefinition> = new.columns
+            .iter()
+            .map(|c| (c.name.as_str(), c))
+            .collect();
+
+        for name in original_cols.keys() {
+            if !new_cols.contains_key(name) {
+                statements.push(format!(
+                    "ALTER TABLE {} DROP COLUMN [{}];",
+                    table_name,
+                    name.replace("]", "]]")
+                ));
+            }
+        }
+
+        for col in new.columns.iter() {
+            if let Some(orig_col) = original_cols.get(col.name.as_str()) {
+                if self.column_changed(orig_col, col) {
+                    let col_name = format!("[{}]", col.name.replace("]", "]]"));
+                    let type_str = self.build_type_string(col);
+                    let null_str = if col.is_nullable { "NULL" } else { "NOT NULL" };
+                    statements.push(format!(
+                        "ALTER TABLE {} ALTER COLUMN {} {} {};",
+                        table_name, col_name, type_str, null_str
+                    ));
+                }
+            } else {
+                let col_def = self.build_column_def(col);
+                statements.push(format!(
+                    "ALTER TABLE {} ADD {};",
+                    table_name, col_def
+                ));
+            }
+        }
+
+        let original_indexes: std::collections::HashMap<&str, &IndexDefinition> = original.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+        let new_indexes: std::collections::HashMap<&str, &IndexDefinition> = new.indexes
+            .iter()
+            .map(|i| (i.name.as_str(), i))
+            .collect();
+
+        for (name, idx) in &original_indexes {
+            if !new_indexes.contains_key(name) {
+                if idx.is_primary {
+                    statements.push(format!(
+                        "ALTER TABLE {} DROP CONSTRAINT [{}];",
+                        table_name,
+                        name.replace("]", "]]")
+                    ));
+                } else {
+                    statements.push(format!(
+                        "DROP INDEX [{}] ON {};",
+                        name.replace("]", "]]"),
+                        table_name
+                    ));
+                }
+            }
+        }
+
+        for (name, idx) in &new_indexes {
+            if !original_indexes.contains_key(name) {
+                let idx_cols: Vec<String> = idx.columns.iter()
+                    .map(|c| format!("[{}]", c.replace("]", "]]")))
+                    .collect();
+
+                if idx.is_primary {
+                    statements.push(format!(
+                        "ALTER TABLE {} ADD CONSTRAINT [{}] PRIMARY KEY ({});",
+                        table_name,
+                        name.replace("]", "]]"),
+                        idx_cols.join(", ")
+                    ));
+                } else {
+                    let unique_str = if idx.is_unique { "UNIQUE " } else { "" };
+                    statements.push(format!(
+                        "CREATE {}INDEX [{}] ON {} ({});",
+                        unique_str,
+                        name.replace("]", "]]"),
+                        table_name,
+                        idx_cols.join(", ")
+                    ));
+                }
+            }
+        }
+
+        if statements.is_empty() {
+            "-- No changes detected".to_string()
+        } else {
+            statements.join("\n")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1355,7 +1458,7 @@ mod tests {
         };
 
         let sql = plugin.build_alter_table_sql(&original, &new);
-        assert!(sql.contains("ADD COLUMN"));
+        assert!(sql.contains("ADD"));
         assert!(sql.contains("[email]"));
     }
 

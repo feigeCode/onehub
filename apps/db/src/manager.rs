@@ -1032,7 +1032,7 @@ impl GlobalDbState {
     ) -> anyhow::Result<Vec<DbNode>>
     {
         let mut config = self.get_config_async(&connection_id).await
-            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?.clone();
 
         // For Database and Schema nodes, we need to connect to the specific database
         // This is especially important for PostgreSQL which doesn't support database switching
