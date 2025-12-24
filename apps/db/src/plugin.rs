@@ -2054,6 +2054,7 @@ pub fn is_query_stmt(stmt: &Statement) -> bool {
             | Statement::ShowCollation { .. }
             | Statement::ExplainTable { .. }
             | Statement::Explain { .. }
+            | Statement::Pragma { .. }
     )
 }
 

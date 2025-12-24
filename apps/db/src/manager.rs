@@ -22,15 +22,20 @@ use tracing::{error, info, warn};
 /// Macro to reduce boilerplate for plugin operations with session management
 macro_rules! with_plugin_session {
     ($self:expr, $cx:expr, $connection_id:expr, |$plugin:ident, $conn:ident| $body:expr) => {{
-        let config = $self.get_config_async(&$connection_id).await
-            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", $connection_id))?;
+        let config = $self.get_config_async(&$connection_id).await;
+        if config.is_none() {
+            error!("with_plugin_session: Connection not found: {}", $connection_id);
+        }
+        let config = config.ok_or_else(|| anyhow::anyhow!("Connection not found: {}", $connection_id))?;
 
         let clone_self = $self.clone();
         Tokio::spawn_result($cx, async move {
             let $plugin = clone_self.get_plugin(&config.database_type)?;
+            info!("with_plugin_session: creating session for config_id={}", config.id);
             let session_id = clone_self.connection_manager
                 .create_session(config.clone(), &clone_self.db_manager)
                 .await?;
+            info!("with_plugin_session: session created: {}", session_id);
 
             let result = {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
@@ -592,7 +597,12 @@ impl GlobalDbState {
     /// Internal async method for get_config
     pub async fn get_config_async(&self, connection_id: &str) -> Option<DbConnectionConfig> {
         let connections = self.connections.read().await;
-        connections.get(connection_id).cloned()
+        let config = connections.get(connection_id).cloned();
+        if config.is_none() {
+            warn!("get_config_async: connection_id={} not found. Available connections: {:?}",
+                connection_id, connections.keys().collect::<Vec<_>>());
+        }
+        config
     }
     
     
@@ -707,6 +717,8 @@ impl GlobalDbState {
         &self,
         config: DbConnectionConfig,
     ) {
+        info!("register_connection: id={}, name={}, database_type={:?}",
+            config.id, config.name, config.database_type);
         let mut connections = self.connections.write().await;
         connections.insert(config.id.clone(), config);
     }
@@ -1004,6 +1016,7 @@ impl GlobalDbState {
         connection_id: String,
         request: crate::types::TableDataRequest,
     ) -> anyhow::Result<crate::types::TableDataResponse> {
+        info!("query_table_data: connection_id={}", connection_id);
         with_plugin_session!(self, cx, connection_id, |plugin, conn| {
             plugin.query_table_data(&*conn, &request).await
         })

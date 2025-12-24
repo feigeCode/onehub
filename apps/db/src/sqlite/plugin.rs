@@ -182,10 +182,17 @@ impl DatabasePlugin for SqlitePlugin {
 
     async fn list_columns(&self, connection: &dyn DbConnection, _database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
         let sql = format!("PRAGMA table_info(\"{}\")", table);
+        tracing::info!("SQLite list_columns: executing SQL: {}", sql);
 
         let result = connection.query(&sql, None, ExecOptions::default())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to list columns: {}", e))?;
+
+        tracing::info!("SQLite list_columns: result type: {:?}", match &result {
+            SqlResult::Query(_) => "Query",
+            SqlResult::Exec(_) => "Exec",
+            SqlResult::Error(e) => &e.message,
+        });
 
         if let SqlResult::Query(query_result) = result {
             Ok(query_result.rows.iter().map(|row| {
@@ -489,6 +496,172 @@ impl DatabasePlugin for SqlitePlugin {
 
     fn drop_view(&self, _database: &str, view: &str) -> String {
         format!("DROP VIEW IF EXISTS \"{}\"", view)
+    }
+
+    async fn query_table_data(
+        &self,
+        connection: &dyn DbConnection,
+        request: &crate::types::TableDataRequest,
+    ) -> anyhow::Result<crate::types::TableDataResponse> {
+        use crate::types::{TableColumnMeta, TableDataResponse, FieldType, FilterOperator, SortDirection};
+        use crate::executor::{ExecOptions, SqlResult};
+
+        let start_time = std::time::Instant::now();
+
+        // Get column metadata
+        let columns_info = self.list_columns(connection, &request.database, &request.table).await?;
+        let columns: Vec<TableColumnMeta> = columns_info
+            .iter()
+            .enumerate()
+            .map(|(i, c)| TableColumnMeta {
+                name: c.name.clone(),
+                db_type: c.data_type.clone(),
+                field_type: FieldType::from_db_type(&c.data_type),
+                nullable: c.is_nullable,
+                is_primary_key: c.is_primary_key,
+                index: i,
+            })
+            .collect();
+
+        let primary_key_indices: Vec<usize> = columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.index)
+            .collect();
+
+        // Get unique key indices from indexes
+        let unique_key_indices = if primary_key_indices.is_empty() {
+            let indexes = self.list_indexes(connection, &request.database, &request.table).await.unwrap_or_default();
+            indexes
+                .iter()
+                .find(|idx| idx.is_unique)
+                .map(|idx| {
+                    idx.columns
+                        .iter()
+                        .filter_map(|col_name| {
+                            columns.iter().find(|c| &c.name == col_name).map(|c| c.index)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Build WHERE clause
+        let where_clause = if let Some(raw_where) = &request.where_clause {
+            if raw_where.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", raw_where)
+            }
+        } else if request.filters.is_empty() {
+            String::new()
+        } else {
+            let conditions: Vec<String> = request
+                .filters
+                .iter()
+                .map(|f| {
+                    let col = format!("\"{}\"", f.column);
+                    match f.operator {
+                        FilterOperator::IsNull => format!("{} IS NULL", col),
+                        FilterOperator::IsNotNull => format!("{} IS NOT NULL", col),
+                        FilterOperator::In | FilterOperator::NotIn => {
+                            format!("{} {} ({})", col, f.operator.to_sql(), f.value)
+                        }
+                        FilterOperator::Like | FilterOperator::NotLike => {
+                            format!("{} {} '{}'", col, f.operator.to_sql(), f.value.replace('\'', "''"))
+                        }
+                        _ => format!("{} {} '{}'", col, f.operator.to_sql(), f.value.replace('\'', "''"))
+                    }
+                })
+                .collect();
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+
+        // Build ORDER BY clause
+        let order_clause = if let Some(raw_order) = &request.order_by_clause {
+            if raw_order.is_empty() {
+                String::new()
+            } else {
+                format!(" ORDER BY {}", raw_order)
+            }
+        } else if request.sorts.is_empty() {
+            String::new()
+        } else {
+            let sorts: Vec<String> = request
+                .sorts
+                .iter()
+                .map(|s| {
+                    let dir = match s.direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
+                    };
+                    format!("\"{}\" {}", s.column, dir)
+                })
+                .collect();
+            format!(" ORDER BY {}", sorts.join(", "))
+        };
+
+        // Calculate offset
+        let offset = (request.page.saturating_sub(1)) * request.page_size;
+
+        // SQLite: use table name only (no database prefix needed)
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM \"{}\"{}",
+            request.table, where_clause
+        );
+
+        // Get total count
+        let total_count = match connection.query(&count_sql, None, ExecOptions::default()).await? {
+            SqlResult::Query(result) => {
+                result.rows.first()
+                    .and_then(|r| r.first())
+                    .and_then(|v| v.as_ref())
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(0)
+            }
+            _ => 0,
+        };
+
+        // Build data query with pagination
+        let data_sql = if request.page_size == 0 {
+            format!(
+                "SELECT * FROM \"{}\"{}{}",
+                request.table,
+                where_clause,
+                order_clause
+            )
+        } else {
+            format!(
+                "SELECT * FROM \"{}\"{}{} LIMIT {} OFFSET {}",
+                request.table,
+                where_clause,
+                order_clause,
+                request.page_size,
+                offset
+            )
+        };
+
+        // Execute data query
+        let rows = match connection.query(&data_sql, None, ExecOptions::default()).await? {
+            SqlResult::Query(result) => result.rows,
+            _ => Vec::new(),
+        };
+
+        let duration = start_time.elapsed().as_millis();
+
+        Ok(TableDataResponse {
+            columns,
+            rows,
+            total_count,
+            page: request.page,
+            page_size: request.page_size,
+            primary_key_indices,
+            unique_key_indices,
+            executed_sql: data_sql,
+            duration,
+        })
     }
 }
 

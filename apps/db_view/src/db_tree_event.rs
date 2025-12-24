@@ -425,9 +425,12 @@ impl DatabaseEventHandler {
         cx: &mut App,
     ) {
         use crate::table_data_tab::TableDataTabContent;
+        use tracing::info;
 
         let connection_id = node.connection_id.clone();
         let table = node.name.clone();
+
+        info!("handle_open_table_data: connection_id={}, table={}", connection_id, table);
 
         let Some(ref metadata) = node.metadata else {
             Self::show_error(window, "无效的节点数据", cx);
@@ -447,6 +450,8 @@ impl DatabaseEventHandler {
 
         cx.spawn(async move |cx: &mut AsyncApp| {
             let config = global_state.get_config_async(&connection_id).await;
+            tracing::info!("handle_open_table_data: get_config_async result for connection_id={}: {:?}",
+                connection_id, config.as_ref().map(|c| &c.id));
 
             if let Some(config) = config {
                 let config_id = config.id.clone();

@@ -239,6 +239,9 @@ impl DataGrid {
         let filter_editor = self.filter_editor.clone();
         let page_size = self.table_data_info.read(cx).page_size;
 
+        tracing::info!("load_data_with_clauses: connection_id={}, database={}, table={}",
+            connection_id, database_name, table_name);
+
         cx.spawn(async move |cx: &mut AsyncApp| {
             let table_name_for_schema = table_name.clone();
 
@@ -253,9 +256,10 @@ impl DataGrid {
                     .with_order_by_clause(order_by_clause.clone())
             };
 
-            let result = global_state.query_table_data(cx, connection_id, request).await;
+            let result = global_state.query_table_data(cx, connection_id.clone(), request).await;
             match result {
                 Err(err) => {
+                    tracing::error!("load_data_with_clauses failed for connection_id={}: {}", connection_id, err);
                     cx.update(|cx| {
                         notification(cx, format!("Failed to get connection:{}", err));
                     }).ok();
