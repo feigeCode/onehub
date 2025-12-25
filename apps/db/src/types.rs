@@ -251,6 +251,14 @@ pub struct SequenceInfo {
     pub max_value: Option<i64>,
 }
 
+/// Check constraint information
+#[derive(Debug, Clone)]
+pub struct CheckInfo {
+    pub name: String,
+    pub table_name: String,
+    pub definition: Option<String>,
+}
+
 /// Data type information for table designer
 #[derive(Debug, Clone)]
 pub struct DataTypeInfo {

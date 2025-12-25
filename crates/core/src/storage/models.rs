@@ -182,7 +182,7 @@ impl ConnectionType {
 
     pub fn icon(&self) -> IconName {
         match self {
-            ConnectionType::All => IconName::AppsColor,
+            ConnectionType::All => IconName::Server,
             ConnectionType::Database => IconName::Database,
             ConnectionType::SshSftp => IconName::Terminal,
             ConnectionType::Redis => IconName::Redis,

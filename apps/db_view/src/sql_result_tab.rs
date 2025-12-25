@@ -419,20 +419,32 @@ impl SqlResultTabContainer {
         let mut new_tabs = Vec::new();
         let base_idx = self.all_results.read(cx).len();
 
+        let global_state = cx.global::<GlobalDbState>().clone();
+        let plugin = global_state.db_manager.get_plugin(&database_type).ok();
+
         for (i, result) in results.into_iter().enumerate() {
             let idx = base_idx + i;
             new_all_results.push(result.clone());
 
             if let SqlResult::Query(query_result) = result {
                 let db_name = database.clone().unwrap_or_default();
-                let table_name = query_result.table_name.clone().unwrap_or_else(|| format!("result_{}", idx));
+
+                let (editable, table_name) = if let Some(ref plugin) = plugin {
+                    match plugin.analyze_select_editability(&query_result.sql) {
+                        Some(parsed_table_name) => (true, parsed_table_name),
+                        None => (false, query_result.table_name.clone().unwrap_or_else(|| format!("result_{}", idx))),
+                    }
+                } else {
+                    (query_result.editable, query_result.table_name.clone().unwrap_or_else(|| format!("result_{}", idx)))
+                };
+
                 let config = DataGridConfig::new(
                     db_name,
                     table_name,
                     &connection_id,
                     database_type,
                 )
-                .editable(query_result.editable)
+                .editable(editable)
                 .show_toolbar(true)
                 .usage(DataGridUsage::SqlResult)
                 .sql(query_result.sql.clone());

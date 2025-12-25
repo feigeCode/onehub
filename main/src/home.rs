@@ -3,7 +3,7 @@ use std::any::Any;
 use anyhow::Error;
 use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, Context, ElementId, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Window};
 use gpui::prelude::FluentBuilder;
-use gpui_component::{button::{Button, ButtonVariants as _}, h_flex, input::{Input, InputEvent, InputState}, menu::PopupMenuItem, v_flex, ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt, Sizable, Size, ThemeMode, WindowExt};
+use gpui_component::{button::{Button, ButtonVariants as _}, h_flex, input::{Input, InputEvent, InputState}, menu::PopupMenuItem, v_flex, ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt, Sizable, Size, ThemeMode, WindowExt, tooltip::Tooltip};
 
 use one_core::storage::{ConnectionRepository, ConnectionType, DatabaseType, GlobalStorageState, StoredConnection, Workspace, WorkspaceRepository};
 use one_core::storage::traits::Repository;
@@ -512,7 +512,9 @@ impl HomePage {
         v_flex()
             .w(px(200.0))
             .h_full()
-            .bg(cx.theme().background)
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().border)
             .child(
                 // 侧边栏过滤选项
                 v_flex()
@@ -529,19 +531,21 @@ impl HomePage {
                                 .id(filter_type.label())
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap_3()
                                 .w_full()
                                 .px_3()
                                 .py_2()
                                 .cursor_pointer()
+                                .rounded_lg()
+                                .overflow_hidden()
                                 .when(is_selected, |this| {
-                                    this.bg(cx.theme().primary)
-                                        .rounded_lg()
-                                        .shadow_md()
+                                    this.bg(cx.theme().list_active)
+                                        .border_l_3()
+                                        .border_color(cx.theme().list_active_border)
                                 })
                                 .when(!is_selected, |this| {
-                                    this.bg(cx.theme().background)
-                                        .hover(|style| style.bg(cx.theme().accent).rounded_lg())
+                                    this.bg(cx.theme().sidebar)
+                                        .hover(|style| style.bg(cx.theme().sidebar_accent))
                                 })
                                 .on_click(cx.listener(move |this: &mut HomePage, _, _, cx| {
                                     this.selected_filter = filter_type_clone;
@@ -550,7 +554,7 @@ impl HomePage {
                                 .child(
                                     Icon::new(filter_type.icon())
                                         .color()
-                                        .when(filter_type == ConnectionType::SshSftp  && !is_selected, |this| {
+                                        .when(filter_type == ConnectionType::SshSftp, |this| {
                                             this.text_color(gpui::rgb(0x8b5cf6)).mono()
                                         })
                                         .with_size(Size::Large)
@@ -558,7 +562,8 @@ impl HomePage {
                                 .child(
                                     div()
                                         .text_sm()
-                                        .when(is_selected, |this| this.text_color(gpui::white()))
+                                        .text_color(cx.theme().foreground)
+                                        .when(is_selected, |this| this.font_weight(FontWeight::MEDIUM))
                                         .child(filter_type.label())
                                 )
                         })
@@ -672,7 +677,7 @@ impl HomePage {
             .p_6()
             .child({
                 let mut container = v_flex()
-                    .gap_6()
+                    .gap_8()
                     .w_full();
                 
                 // 工作区列表
@@ -702,21 +707,13 @@ impl HomePage {
     ) -> impl IntoElement {
         let workspace_id = workspace.id;
         v_flex()
-            .gap_2()
+            .gap_3()
             .child(
                 h_flex()
                     .items_center()
                     .gap_2()
                     .px_2()
                     .py_1()
-                    .rounded(px(6.0))
-                    .bg(cx.theme().muted)
-                    .text_color(cx.theme().chart_2)
-                    .hover(|style| {
-                        style
-                            .bg(cx.theme().accent.opacity(0.1))
-                            .text_color(cx.theme().primary)
-                    })
                     .child(
                         Icon::new(IconName::AppsColor).color().with_size(Size::Medium)
                     )
@@ -725,16 +722,13 @@ impl HomePage {
                             .id(ElementId::Name(SharedString::from(format!("workspace-name-{}", workspace_id.unwrap_or(0)))))
                             .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .hover(|style| {
-                                style.text_color(cx.theme().primary)
-                            })
+                            .text_color(cx.theme().foreground)
                             .child(workspace.name.clone())
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .hover(|style| {style.text_color(cx.theme().primary)})
                             .child(format!("({} 个连接)", connections.len()))
                     )
                     .child(
@@ -744,6 +738,7 @@ impl HomePage {
                         Button::new(SharedString::from(format!("edit-workspace-{}", workspace_id.unwrap_or(0))))
                             .icon(IconName::Edit)
                             .with_size(Size::Small)
+                            .ghost()
                             .tooltip("编辑工作区")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
@@ -779,7 +774,7 @@ impl HomePage {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
-            .gap_2()
+            .gap_3()
             .child(
                 h_flex()
                     .items_center()
@@ -788,7 +783,7 @@ impl HomePage {
                     .py_1()
                     .child(
                         div()
-                            .text_sm()
+                            .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(cx.theme().foreground)
                             .child("未分配工作区")
@@ -837,19 +832,24 @@ impl HomePage {
             self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
         });
 
-        div()
+        v_flex()
+            .justify_center()
             .id(SharedString::from(format!("conn-card-{}", conn.id.unwrap_or(0))))
             .w_full()
+            .h(px(80.))
             .rounded(px(8.0))
             .bg(cx.theme().background)
             .p_3()
             .border_1()
             .rounded_lg()
             .relative()
+            .overflow_hidden()
+            .shadow_sm()
             .group("")
             .when(is_selected, |this| {
-                this.border_color(cx.theme().primary)
-                    .shadow_md()
+                this.border_color(cx.theme().list_active_border)
+                    .shadow_lg()
+                    .border_l_3()
             })
             .when(!is_selected, |this| {
                 this.border_color(cx.theme().border)
@@ -857,8 +857,8 @@ impl HomePage {
             .cursor_pointer()
             .hover(|style| {
                 style
-                    .shadow_md()
-                    .border_color(cx.theme().primary)
+                    .shadow_lg()
+                    .border_color(cx.theme().list_active_border)
             })
             .on_double_click(cx.listener(move |this, _, w, cx| {
                 this.add_item_to_tab(&clone_conn, workspace.clone(), w, cx);
@@ -881,6 +881,7 @@ impl HomePage {
                         Button::new(SharedString::from(format!("edit-conn-{}", conn.id.unwrap_or(0))))
                             .icon(IconName::Edit)
                             .with_size(Size::Small)
+                            .ghost()
                             .tooltip("编辑连接")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
@@ -896,6 +897,7 @@ impl HomePage {
                         Button::new(SharedString::from(format!("delete-conn-{}", conn.id.unwrap_or(0))))
                             .icon(IconName::Remove)
                             .with_size(Size::Small)
+                            .danger()
                             .tooltip("删除连接")
                             .on_click(cx.listener(move |_this, _, window, cx| {
                                 cx.stop_propagation();
@@ -920,89 +922,77 @@ impl HomePage {
                     )
             )
             .child(
-                v_flex()
+                h_flex()
+                    .items_center()
+                    .gap_2()
                     .w_full()
                     .child(
-                        h_flex()
+                        div()
+                            .h(px(48.0))
+                            .rounded(px(8.0))
+                            .flex()
                             .items_center()
-                            .justify_between()
-                            .pb_2()
+                            .justify_center()
                             .child(
-                                h_flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            // .w(px(48.0))
-                                            .h(px(48.0))
-                                            .rounded(px(8.0))
-                                            // .bg(icon_bg)
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(
-                                                match conn.connection_type {
-                                                    ConnectionType::Database => {
-                                                        let icon = conn.to_db_connection()
-                                                            .map(|c| c.database_type.as_icon())
-                                                            .unwrap_or_else(|_| IconName::Database.color());
-                                                        icon.with_size(px(40.0))
-                                                            .text_color(gpui::white())
-                                                    },
-                                                    _ => {
-                                                        IconName::Redis.color()
-                                                            .with_size(px(40.0))
-                                                            .text_color(gpui::white())
-                                                    },
-                                                }
-                                            )
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_0p5()
-                                            .overflow_hidden()
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(cx.theme().foreground)
-                                                    .child(conn.name.clone())
-                                            )
-                                            .when_some(conn.to_db_connection().ok(), |this, params| {
-                                                let conn_info = if params.database_type == DatabaseType::SQLite {
-                                                    params.host.clone()
-                                                } else {
-                                                    format!("{}@{}:{}", params.username, params.host, params.port)
-                                                };
-                                                this.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(conn_info)
-                                                )
-                                            })
-                                    )
+                                match conn.connection_type {
+                                    ConnectionType::Database => {
+                                        let icon = conn.to_db_connection()
+                                            .map(|c| c.database_type.as_icon())
+                                            .unwrap_or_else(|_| IconName::Database.color());
+                                        icon.with_size(px(40.0))
+                                            .text_color(gpui::white())
+                                    },
+                                    _ => {
+                                        IconName::Redis.color()
+                                            .with_size(px(40.0))
+                                            .text_color(gpui::white())
+                                    },
+                                }
                             )
                     )
                     .child(
-                        div()
-                            .w_full()
-                            .h(px(1.0))
-                            .bg(cx.theme().border)
-                    )
-                    .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .when_some(conn.to_db_connection().ok().and_then(|p| p.database), |this, db| {
+                        v_flex()
+                            .flex_1()
+                            .gap_0p5()
+                            .overflow_hidden()
+                            .child({
+                                let name_tooltip: SharedString = conn.name.clone().into();
+                                div()
+                                    .id(SharedString::from(format!("conn-name-{}", conn.id.unwrap_or(0))))
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().foreground)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(name_tooltip.clone()).build(window, cx)
+                                    })
+                                    .child(conn.name.clone())
+                            })
+                            .when_some(conn.to_db_connection().ok(), |this, params| {
+                                let conn_info = if params.database_type == DatabaseType::SQLite {
+                                    params.host.clone()
+                                } else {
+                                    let database = match params.database {
+                                        Some(database) => format!("/{}", database),
+                                        None => "".to_string(),
+                                    };
+                                    format!("{}@{}:{}{}", params.username, params.host, params.port, database)
+                                };
+                                let tooltip_text: SharedString = conn_info.clone().into();
                                 this.child(
                                     div()
+                                        .id(SharedString::from(format!("conn-info-{}", conn.id.unwrap_or(0))))
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("数据库: {}", db))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(tooltip_text.clone()).build(window, cx)
+                                        })
+                                        .child(conn_info)
                                 )
                             })
                     )

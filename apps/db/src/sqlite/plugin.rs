@@ -244,6 +244,10 @@ impl DatabasePlugin for SqlitePlugin {
         "\""
     }
 
+    fn sql_dialect(&self) -> Box<dyn sqlparser::dialect::Dialect> {
+        Box::new(sqlparser::dialect::SQLiteDialect {})
+    }
+
     fn get_completion_info(&self) -> SqlCompletionInfo {
         SqlCompletionInfo {
             keywords: vec![
@@ -694,6 +698,31 @@ impl DatabasePlugin for SqlitePlugin {
         ]
     }
 
+    fn build_column_definition(&self, column: &ColumnInfo, include_name: bool) -> String {
+        let mut def = String::new();
+
+        if include_name {
+            def.push_str(&self.quote_identifier(&column.name));
+            def.push(' ');
+        }
+
+        def.push_str(&column.data_type);
+
+        if !column.is_nullable {
+            def.push_str(" NOT NULL");
+        }
+
+        if let Some(default) = &column.default_value {
+            def.push_str(&format!(" DEFAULT {}", default));
+        }
+
+        if column.is_primary_key {
+            def.push_str(" PRIMARY KEY");
+        }
+
+        def
+    }
+
     fn build_create_database_sql(&self, _request: &crate::plugin::DatabaseOperationRequest) -> String {
         "-- SQLite: database is created when opening a file".to_string()
     }
@@ -720,6 +749,100 @@ impl DatabasePlugin for SqlitePlugin {
 
     fn drop_view(&self, _database: &str, view: &str) -> String {
         format!("DROP VIEW IF EXISTS \"{}\"", view)
+    }
+
+    fn build_column_def(&self, col: &ColumnDefinition) -> String {
+        let mut def = String::new();
+        def.push_str(&self.quote_identifier(&col.name));
+        def.push(' ');
+
+        let mut type_str = col.data_type.clone();
+        if let Some(len) = col.length {
+            if let Some(scale) = col.scale {
+                type_str = format!("{}({},{})", col.data_type, len, scale);
+            } else {
+                type_str = format!("{}({})", col.data_type, len);
+            }
+        }
+        def.push_str(&type_str);
+
+        if !col.is_nullable {
+            def.push_str(" NOT NULL");
+        }
+
+        if let Some(default) = &col.default_value {
+            if !default.is_empty() {
+                def.push_str(&format!(" DEFAULT {}", default));
+            }
+        }
+
+        def
+    }
+
+    fn build_create_table_sql(&self, design: &TableDesign) -> String {
+        let mut sql = String::new();
+        sql.push_str("CREATE TABLE ");
+        sql.push_str(&self.quote_identifier(&design.table_name));
+        sql.push_str(" (\n");
+
+        let mut definitions: Vec<String> = Vec::new();
+
+        for col in &design.columns {
+            definitions.push(format!("  {}", self.build_column_def(col)));
+        }
+
+        let pk_columns: Vec<&str> = design.columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect();
+        if !pk_columns.is_empty() {
+            let pk_cols: Vec<String> = pk_columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            definitions.push(format!("  PRIMARY KEY ({})", pk_cols.join(", ")));
+        }
+
+        sql.push_str(&definitions.join(",\n"));
+        sql.push_str("\n);");
+
+        for idx in &design.indexes {
+            if idx.is_primary {
+                continue;
+            }
+            let idx_cols: Vec<String> = idx.columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            let unique_str = if idx.is_unique { "UNIQUE " } else { "" };
+            sql.push_str(&format!(
+                "\nCREATE {}INDEX {} ON {} ({});",
+                unique_str,
+                self.quote_identifier(&idx.name),
+                self.quote_identifier(&design.table_name),
+                idx_cols.join(", ")
+            ));
+        }
+
+        sql
+    }
+
+    fn build_limit_clause(&self) -> String {
+        String::new()
+    }
+
+    fn build_where_and_limit_clause(
+        &self,
+        request: &crate::types::TableSaveRequest,
+        original_data: &[String],
+    ) -> (String, String) {
+        let where_clause = self.build_table_change_where_clause(request, original_data);
+        let has_unique_key = !request.primary_key_indices.is_empty() || !request.unique_key_indices.is_empty();
+
+        if has_unique_key {
+            (where_clause, String::new())
+        } else {
+            (where_clause, " __SQLITE_ROWID_LIMIT__".to_string())
+        }
     }
 
     async fn query_table_data(

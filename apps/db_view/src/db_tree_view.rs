@@ -895,6 +895,7 @@ impl DbTreeView {
                 | DbNodeType::SequencesFolder
                 | DbNodeType::QueriesFolder
                 | DbNodeType::ForeignKeysFolder
+                | DbNodeType::ChecksFolder
             );
 
             if needs_placeholder {
@@ -999,7 +1000,7 @@ impl DbTreeView {
     }
 
     /// 根据节点类型获取图标
-    fn get_icon_for_node(&self, node_id: &str, is_expanded: bool, _cx: &mut Context<Self>) -> Icon {
+    fn get_icon_for_node(&self, node_id: &str, _is_expanded: bool, _cx: &mut Context<Self>) -> Icon {
         let node = self.db_nodes.get(node_id);
         match node.map(|n| &n.node_type) {
             Some(DbNodeType::Connection) => {

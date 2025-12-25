@@ -25,6 +25,14 @@ impl DatabasePlugin for MySqlPlugin {
         DatabaseType::MySQL
     }
 
+    fn identifier_quote(&self) -> &str {
+        "`"
+    }
+
+    fn sql_dialect(&self) -> Box<dyn sqlparser::dialect::Dialect> {
+        Box::new(sqlparser::dialect::MySqlDialect {})
+    }
+
     fn get_completion_info(&self) -> SqlCompletionInfo {
         SqlCompletionInfo {
             keywords: vec![
@@ -655,16 +663,16 @@ impl DatabasePlugin for MySqlPlugin {
 
     async fn list_triggers_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView> {
         use gpui::px;
-        
+
         let triggers = self.list_triggers(connection, database).await?;
-        
+
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
             Column::new("table", "Table").width(px(150.0)),
             Column::new("event", "Event").width(px(100.0)),
             Column::new("timing", "Timing").width(px(100.0)),
         ];
-        
+
         let rows: Vec<Vec<String>> = triggers.iter().map(|trigger| {
             vec![
                 trigger.name.clone(),
@@ -673,13 +681,43 @@ impl DatabasePlugin for MySqlPlugin {
                 trigger.timing.clone(),
             ]
         }).collect();
-        
+
         Ok(ObjectView {
             db_node_type: DbNodeType::Trigger,
             title: format!("{} trigger(s)", triggers.len()),
             columns,
             rows,
         })
+    }
+
+    async fn list_table_checks(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<CheckInfo>> {
+        let sql = format!(
+            "SELECT cc.CONSTRAINT_NAME, tc.TABLE_NAME, cc.CHECK_CLAUSE \
+             FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc \
+             JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
+                ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA \
+                AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME \
+             WHERE tc.CONSTRAINT_SCHEMA = '{}' AND tc.TABLE_NAME = '{}' \
+               AND tc.CONSTRAINT_TYPE = 'CHECK' \
+             ORDER BY cc.CONSTRAINT_NAME",
+            database, table
+        );
+
+        let result = connection.query(&sql, None, ExecOptions::default())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to list check constraints: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            Ok(query_result.rows.iter().map(|row| {
+                CheckInfo {
+                    name: row.first().and_then(|v| v.clone()).unwrap_or_default(),
+                    table_name: row.get(1).and_then(|v| v.clone()).unwrap_or_default(),
+                    definition: row.get(2).and_then(|v| v.clone()),
+                }
+            }).collect())
+        } else {
+            Err(anyhow::anyhow!("Unexpected result type"))
+        }
     }
 
 
@@ -851,6 +889,35 @@ impl DatabasePlugin for MySqlPlugin {
         ]
     }
 
+    fn build_column_definition(&self, column: &ColumnInfo, include_name: bool) -> String {
+        let mut def = String::new();
+
+        if include_name {
+            def.push_str(&self.quote_identifier(&column.name));
+            def.push(' ');
+        }
+
+        def.push_str(&column.data_type);
+
+        if !column.is_nullable {
+            def.push_str(" NOT NULL");
+        }
+
+        if let Some(default) = &column.default_value {
+            def.push_str(&format!(" DEFAULT {}", default));
+        }
+
+        if column.is_primary_key {
+            def.push_str(" PRIMARY KEY");
+        }
+
+        if let Some(comment) = &column.comment {
+            def.push_str(&format!(" COMMENT '{}'", comment.replace("'", "''")));
+        }
+
+        def
+    }
+
     // === Database Management Operations ===
     fn build_create_database_sql(&self, request: &crate::plugin::DatabaseOperationRequest) -> String {
         let db_name = &request.database_name;
@@ -876,6 +943,122 @@ impl DatabasePlugin for MySqlPlugin {
 
     fn build_drop_database_sql(&self, database_name: &str) -> String {
         format!("DROP DATABASE `{}`;", database_name)
+    }
+
+    fn rename_table(&self, _database: &str, old_name: &str, new_name: &str) -> String {
+        format!("RENAME TABLE {} TO {}", self.quote_identifier(old_name), self.quote_identifier(new_name))
+    }
+
+    fn build_column_def(&self, col: &ColumnDefinition) -> String {
+        let mut def = String::new();
+        def.push_str(&self.quote_identifier(&col.name));
+        def.push(' ');
+
+        let mut type_str = col.data_type.clone();
+        if let Some(len) = col.length {
+            if let Some(scale) = col.scale {
+                type_str = format!("{}({},{})", col.data_type, len, scale);
+            } else {
+                type_str = format!("{}({})", col.data_type, len);
+            }
+        }
+        def.push_str(&type_str);
+
+        if col.is_unsigned {
+            def.push_str(" UNSIGNED");
+        }
+
+        if !col.is_nullable {
+            def.push_str(" NOT NULL");
+        }
+
+        if col.is_auto_increment {
+            def.push_str(" AUTO_INCREMENT");
+        }
+
+        if let Some(default) = &col.default_value {
+            if !default.is_empty() {
+                def.push_str(&format!(" DEFAULT {}", default));
+            }
+        }
+
+        if !col.comment.is_empty() {
+            def.push_str(&format!(" COMMENT '{}'", col.comment.replace("'", "''")));
+        }
+
+        def
+    }
+
+    fn build_create_table_sql(&self, design: &TableDesign) -> String {
+        let mut sql = String::new();
+        sql.push_str("CREATE TABLE ");
+        sql.push_str(&self.quote_identifier(&design.table_name));
+        sql.push_str(" (\n");
+
+        let mut definitions: Vec<String> = Vec::new();
+
+        for col in &design.columns {
+            definitions.push(format!("  {}", self.build_column_def(col)));
+        }
+
+        let pk_columns: Vec<&str> = design.columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect();
+        if !pk_columns.is_empty() {
+            let pk_cols: Vec<String> = pk_columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            definitions.push(format!("  PRIMARY KEY ({})", pk_cols.join(", ")));
+        }
+
+        for idx in &design.indexes {
+            if idx.is_primary {
+                continue;
+            }
+            let idx_cols: Vec<String> = idx.columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            let idx_type = if idx.is_unique { "UNIQUE INDEX" } else { "INDEX" };
+            definitions.push(format!("  {} {} ({})",
+                idx_type,
+                self.quote_identifier(&idx.name),
+                idx_cols.join(", ")
+            ));
+        }
+
+        sql.push_str(&definitions.join(",\n"));
+        sql.push_str("\n)");
+
+        if let Some(engine) = &design.options.engine {
+            sql.push_str(&format!(" ENGINE={}", engine));
+        }
+        if let Some(charset) = &design.options.charset {
+            sql.push_str(&format!(" DEFAULT CHARSET={}", charset));
+        }
+        if let Some(collation) = &design.options.collation {
+            sql.push_str(&format!(" COLLATE={}", collation));
+        }
+        if !design.options.comment.is_empty() {
+            sql.push_str(&format!(" COMMENT='{}'", design.options.comment.replace("'", "''")));
+        }
+
+        sql.push(';');
+        sql
+    }
+
+    fn build_limit_clause(&self) -> String {
+        " LIMIT 1".to_string()
+    }
+
+    fn build_where_and_limit_clause(
+        &self,
+        request: &crate::types::TableSaveRequest,
+        original_data: &[String],
+    ) -> (String, String) {
+        let where_clause = self.build_table_change_where_clause(request, original_data);
+        (where_clause, self.build_limit_clause())
     }
 
     fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {

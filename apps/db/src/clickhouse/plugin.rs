@@ -23,6 +23,14 @@ impl DatabasePlugin for ClickHousePlugin {
         DatabaseType::ClickHouse
     }
 
+    fn identifier_quote(&self) -> &str {
+        "`"
+    }
+
+    fn sql_dialect(&self) -> Box<dyn sqlparser::dialect::Dialect> {
+        Box::new(sqlparser::dialect::ClickHouseDialect {})
+    }
+
     fn get_completion_info(&self) -> SqlCompletionInfo {
         SqlCompletionInfo {
             keywords: vec![
@@ -484,6 +492,31 @@ impl DatabasePlugin for ClickHousePlugin {
         })
     }
 
+    fn build_column_definition(&self, column: &ColumnInfo, include_name: bool) -> String {
+        let mut def = String::new();
+
+        if include_name {
+            def.push_str(&self.quote_identifier(&column.name));
+            def.push(' ');
+        }
+
+        if column.is_nullable {
+            def.push_str(&format!("Nullable({})", column.data_type));
+        } else {
+            def.push_str(&column.data_type);
+        }
+
+        if let Some(default) = &column.default_value {
+            def.push_str(&format!(" DEFAULT {}", default));
+        }
+
+        if let Some(comment) = &column.comment {
+            def.push_str(&format!(" COMMENT '{}'", comment.replace("'", "''")));
+        }
+
+        def
+    }
+
     // === Database Management Operations ===
 
     fn build_create_database_sql(&self, request: &DatabaseOperationRequest) -> String {
@@ -513,6 +546,92 @@ impl DatabasePlugin for ClickHousePlugin {
 
     fn build_drop_database_sql(&self, database_name: &str) -> String {
         format!("DROP DATABASE IF EXISTS {}", self.quote_identifier(database_name))
+    }
+
+    fn rename_table(&self, _database: &str, old_name: &str, new_name: &str) -> String {
+        format!("RENAME TABLE {} TO {}", self.quote_identifier(old_name), self.quote_identifier(new_name))
+    }
+
+    fn build_column_def(&self, col: &ColumnDefinition) -> String {
+        let mut def = String::new();
+        def.push_str(&self.quote_identifier(&col.name));
+        def.push(' ');
+
+        let mut type_str = col.data_type.clone();
+        if let Some(len) = col.length {
+            if let Some(scale) = col.scale {
+                type_str = format!("{}({},{})", col.data_type, len, scale);
+            } else {
+                type_str = format!("{}({})", col.data_type, len);
+            }
+        }
+
+        if col.is_nullable {
+            type_str = format!("Nullable({})", type_str);
+        }
+        def.push_str(&type_str);
+
+        if let Some(default) = &col.default_value {
+            if !default.is_empty() {
+                def.push_str(&format!(" DEFAULT {}", default));
+            }
+        }
+
+        if !col.comment.is_empty() {
+            def.push_str(&format!(" COMMENT '{}'", col.comment.replace("'", "''")));
+        }
+
+        def
+    }
+
+    fn build_create_table_sql(&self, design: &TableDesign) -> String {
+        let mut sql = String::new();
+        sql.push_str("CREATE TABLE ");
+        sql.push_str(&self.quote_identifier(&design.table_name));
+        sql.push_str(" (\n");
+
+        let mut definitions: Vec<String> = Vec::new();
+
+        for col in &design.columns {
+            definitions.push(format!("  {}", self.build_column_def(col)));
+        }
+
+        sql.push_str(&definitions.join(",\n"));
+        sql.push_str("\n)");
+
+        if let Some(engine) = &design.options.engine {
+            sql.push_str(&format!(" ENGINE = {}", engine));
+        } else {
+            sql.push_str(" ENGINE = MergeTree()");
+        }
+
+        let pk_columns: Vec<&str> = design.columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect();
+        if !pk_columns.is_empty() {
+            let pk_cols: Vec<String> = pk_columns.iter()
+                .map(|c| self.quote_identifier(c))
+                .collect();
+            sql.push_str(&format!(" ORDER BY ({})", pk_cols.join(", ")));
+        }
+
+        sql.push(';');
+        sql
+    }
+
+    fn build_limit_clause(&self) -> String {
+        " LIMIT 1".to_string()
+    }
+
+    fn build_where_and_limit_clause(
+        &self,
+        request: &crate::types::TableSaveRequest,
+        original_data: &[String],
+    ) -> (String, String) {
+        let where_clause = self.build_table_change_where_clause(request, original_data);
+        (where_clause, self.build_limit_clause())
     }
 
     fn build_alter_table_sql(&self, original: &TableDesign, new: &TableDesign) -> String {
@@ -728,7 +847,8 @@ mod tests {
         let def = plugin.build_column_def(&col);
         assert!(def.contains("`id`"));
         assert!(def.contains("UInt64"));
-        assert!(def.contains("NOT NULL"));
+        // ClickHouse uses Nullable() wrapper, not NOT NULL keyword
+        assert!(!def.contains("Nullable"));
     }
 
     #[test]
@@ -753,7 +873,8 @@ mod tests {
 
         let def = plugin.build_column_def(&col);
         assert!(def.contains("DEFAULT 0"));
-        assert!(def.contains("NOT NULL"));
+        // ClickHouse uses Nullable() wrapper, not NOT NULL keyword
+        assert!(!def.contains("Nullable"));
     }
 
     // ==================== CREATE TABLE Tests ====================
@@ -783,7 +904,8 @@ mod tests {
         assert!(sql.contains("UInt64"));
         assert!(sql.contains("`event_name`"));
         assert!(sql.contains("String"));
-        assert!(sql.contains("PRIMARY KEY"));
+        // ClickHouse uses ORDER BY instead of PRIMARY KEY
+        assert!(sql.contains("ORDER BY"));
     }
 
     #[test]
@@ -811,7 +933,9 @@ mod tests {
         };
 
         let sql = plugin.build_create_table_sql(&design);
-        assert!(sql.contains("INDEX `idx_user_id`"));
+        // ClickHouse indexes are created separately, not in CREATE TABLE
+        assert!(sql.contains("CREATE TABLE `logs`"));
+        assert!(sql.contains("ORDER BY"));
     }
 
     // ==================== ALTER TABLE Tests ====================

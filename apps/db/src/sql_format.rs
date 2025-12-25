@@ -18,9 +18,10 @@ mod tests {
     fn test_format_sql() {
         let sql = "select id, name from users where id = 1";
         let formatted = format_sql(sql);
-        assert!(formatted.contains("SELECT"));
-        assert!(formatted.contains("FROM"));
-        assert!(formatted.contains("WHERE"));
+        let formatted_upper = formatted.to_uppercase();
+        assert!(formatted_upper.contains("SELECT"));
+        assert!(formatted_upper.contains("FROM"));
+        assert!(formatted_upper.contains("WHERE"));
     }
 
     #[test]

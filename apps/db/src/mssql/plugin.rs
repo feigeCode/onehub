@@ -26,6 +26,18 @@ impl DatabasePlugin for MsSqlPlugin {
         DatabaseType::MSSQL
     }
 
+    fn identifier_quote(&self) -> &str {
+        "["
+    }
+
+    fn quote_identifier(&self, identifier: &str) -> String {
+        format!("[{}]", identifier.replace("]", "]]"))
+    }
+
+    fn sql_dialect(&self) -> Box<dyn sqlparser::dialect::Dialect> {
+        Box::new(sqlparser::dialect::MsSqlDialect {})
+    }
+
     fn supports_schema(&self) -> bool {
         true
     }
@@ -1020,6 +1032,33 @@ impl DatabasePlugin for MsSqlPlugin {
         }
     }
 
+    fn build_column_definition(&self, column: &ColumnInfo, include_name: bool) -> String {
+        let mut def = String::new();
+
+        if include_name {
+            def.push_str(&self.quote_identifier(&column.name));
+            def.push(' ');
+        }
+
+        def.push_str(&column.data_type);
+
+        if !column.is_nullable {
+            def.push_str(" NOT NULL");
+        } else {
+            def.push_str(" NULL");
+        }
+
+        if let Some(default) = &column.default_value {
+            def.push_str(&format!(" DEFAULT {}", default));
+        }
+
+        if column.is_primary_key {
+            def.push_str(" PRIMARY KEY");
+        }
+
+        def
+    }
+
     fn build_create_database_sql(&self, request: &crate::plugin::DatabaseOperationRequest) -> String {
         let db_name = &request.database_name;
         let collation = request.field_values.get("collation").map(|s| s.as_str());
@@ -1046,6 +1085,106 @@ impl DatabasePlugin for MsSqlPlugin {
 
     fn build_drop_database_sql(&self, database_name: &str) -> String {
         format!("DROP DATABASE [{}];", database_name.replace("]", "]]"))
+    }
+
+    fn rename_table(&self, _database: &str, old_name: &str, new_name: &str) -> String {
+        format!("EXEC sp_rename '{}', '{}'", old_name.replace("'", "''"), new_name.replace("'", "''"))
+    }
+
+    fn build_column_def(&self, col: &ColumnDefinition) -> String {
+        let mut def = String::new();
+        def.push_str(&format!("[{}]", col.name.replace("]", "]]")));
+        def.push(' ');
+
+        let mut type_str = col.data_type.clone();
+        if let Some(len) = col.length {
+            if let Some(scale) = col.scale {
+                type_str = format!("{}({},{})", col.data_type, len, scale);
+            } else if col.data_type.to_uppercase() == "NVARCHAR" || col.data_type.to_uppercase() == "VARCHAR" {
+                type_str = format!("{}({})", col.data_type, len);
+            } else {
+                type_str = format!("{}({})", col.data_type, len);
+            }
+        }
+        def.push_str(&type_str);
+
+        if col.is_auto_increment {
+            def.push_str(" IDENTITY(1,1)");
+        }
+
+        if !col.is_nullable {
+            def.push_str(" NOT NULL");
+        } else {
+            def.push_str(" NULL");
+        }
+
+        if let Some(default) = &col.default_value {
+            if !default.is_empty() {
+                def.push_str(&format!(" DEFAULT {}", default));
+            }
+        }
+
+        def
+    }
+
+    fn build_create_table_sql(&self, design: &TableDesign) -> String {
+        let mut sql = String::new();
+        sql.push_str("CREATE TABLE ");
+        sql.push_str(&format!("[{}]", design.table_name.replace("]", "]]")));
+        sql.push_str(" (\n");
+
+        let mut definitions: Vec<String> = Vec::new();
+
+        for col in &design.columns {
+            definitions.push(format!("  {}", self.build_column_def(col)));
+        }
+
+        let pk_columns: Vec<&str> = design.columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect();
+        if !pk_columns.is_empty() {
+            let pk_cols: Vec<String> = pk_columns.iter()
+                .map(|c| format!("[{}]", c.replace("]", "]]")))
+                .collect();
+            definitions.push(format!("  PRIMARY KEY ({})", pk_cols.join(", ")));
+        }
+
+        sql.push_str(&definitions.join(",\n"));
+        sql.push_str("\n);");
+
+        for idx in &design.indexes {
+            if idx.is_primary {
+                continue;
+            }
+            let idx_cols: Vec<String> = idx.columns.iter()
+                .map(|c| format!("[{}]", c.replace("]", "]]")))
+                .collect();
+            let unique_str = if idx.is_unique { "UNIQUE " } else { "" };
+            sql.push_str(&format!(
+                "\nCREATE {}INDEX [{}] ON [{}] ({});",
+                unique_str,
+                idx.name.replace("]", "]]"),
+                design.table_name.replace("]", "]]"),
+                idx_cols.join(", ")
+            ));
+        }
+
+        sql
+    }
+
+    fn build_limit_clause(&self) -> String {
+        String::new()
+    }
+
+    fn build_where_and_limit_clause(
+        &self,
+        request: &crate::types::TableSaveRequest,
+        original_data: &[String],
+    ) -> (String, String) {
+        let where_clause = self.build_table_change_where_clause(request, original_data);
+        (where_clause, String::new())
     }
 
     fn build_create_schema_sql(&self, schema_name: &str) -> String {

@@ -171,6 +171,7 @@ pub enum IconName {
     Remove,
     TableData,
     TableDesign,
+    Server
 }
 
 impl IconName {
@@ -330,6 +331,7 @@ impl IconNamed for IconName {
             Self::Remove => "icons/remove.svg",
             Self::TableData => "icons/table-data.svg",
             Self::TableDesign => "icons/table-design.svg",
+            Self::Server => "icons/server.svg",
         }
         .into()
     }

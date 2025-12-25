@@ -111,16 +111,7 @@ impl SqlCompletionInfo {
 pub trait DatabasePlugin: Send + Sync {
     fn name(&self) -> DatabaseType;
 
-    fn identifier_quote(&self) -> &str {
-        match self.name() {
-            DatabaseType::MySQL => "`",
-            DatabaseType::PostgreSQL => "\"",
-            DatabaseType::SQLite => "\"",
-            DatabaseType::MSSQL => "[",
-            DatabaseType::Oracle => "\"",
-            DatabaseType::ClickHouse => "`",
-        }
-    }
+    fn identifier_quote(&self) -> &str;
 
     /// Get database-specific SQL completion information
     fn get_completion_info(&self) -> SqlCompletionInfo {
@@ -128,13 +119,8 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     fn quote_identifier(&self, identifier: &str) -> String {
-        match self.name() {
-            DatabaseType::MSSQL => format!("[{}]", identifier.replace("]", "]]")),
-            _ => {
-                let quote = self.identifier_quote();
-                format!("{}{}{}", quote, identifier, quote)
-            }
-        }
+        let quote = self.identifier_quote();
+        format!("{}{}{}", quote, identifier, quote)
     }
 
     async fn create_connection(&self, config: DbConnectionConfig) -> Result<Box<dyn DbConnection + Send + Sync>, DbError>;
@@ -156,16 +142,7 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     /// Get the SQL dialect for this database type
-    fn sql_dialect(&self) -> Box<dyn Dialect> {
-        match self.name() {
-            DatabaseType::MySQL => Box::new(MySqlDialect {}),
-            DatabaseType::PostgreSQL => Box::new(PostgreSqlDialect {}),
-            DatabaseType::MSSQL => Box::new(MsSqlDialect {}),
-            DatabaseType::SQLite => Box::new(SQLiteDialect {}),
-            DatabaseType::ClickHouse => Box::new(ClickHouseDialect {}),
-            DatabaseType::Oracle => Box::new(OracleDialect {})
-        }
-    }
+    fn sql_dialect(&self) -> Box<dyn Dialect>;
 
     /// Split a SQL script into individual statements using this database's dialect
     fn split_statements(&self, script: &str) -> Vec<String> {
@@ -233,6 +210,11 @@ pub trait DatabasePlugin: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// List check constraints for a specific table
+    async fn list_table_checks(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<CheckInfo>> {
+        Ok(Vec::new())
+    }
+
     // === View Operations ===
     async fn list_views(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<ViewInfo>>;
     
@@ -267,36 +249,7 @@ pub trait DatabasePlugin: Send + Sync {
     async fn list_sequences_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView>;
 
     // === Helper Methods ===
-    fn build_column_definition(&self, column: &ColumnInfo, include_name: bool) -> String {
-        let mut def = String::new();
-
-        if include_name {
-            def.push_str(&self.quote_identifier(&column.name));
-            def.push(' ');
-        }
-
-        def.push_str(&column.data_type);
-
-        if !column.is_nullable {
-            def.push_str(" NOT NULL");
-        }
-
-        if let Some(default) = &column.default_value {
-            def.push_str(&format!(" DEFAULT {}", default));
-        }
-
-        if column.is_primary_key {
-            def.push_str(" PRIMARY KEY");
-        }
-
-        if let Some(comment) = &column.comment {
-            if self.name() == DatabaseType::MySQL {
-                def.push_str(&format!(" COMMENT '{}'", comment.replace("'", "''")));
-            }
-        }
-
-        def
-    }
+    fn build_column_definition(&self, column: &ColumnInfo, include_name: bool) -> String;
 
     // === Database Management Operations ===
     /// Build SQL for creating a new database
@@ -845,10 +798,49 @@ pub trait DatabasePlugin: Send + Sync {
                 }
                 children.push(triggers_folder);
 
+                // Checks folder
+                let checks = self.list_table_checks(connection, db, table).await.unwrap_or_default();
+                let check_count = checks.len();
+                let mut checks_folder = DbNode::new(
+                    format!("{}:checks_folder", id),
+                    format!("Checks ({})", check_count),
+                    DbNodeType::ChecksFolder,
+                    node.connection_id.clone(),
+                    node.database_type
+                ).with_parent_context(id)
+                .with_metadata(folder_metadata.clone());
+
+                if check_count > 0 {
+                    let check_nodes: Vec<DbNode> = checks
+                        .into_iter()
+                        .map(|check| {
+                            let mut metadata = HashMap::new();
+                            folder_metadata.iter().for_each(|(k, v)| {
+                                metadata.insert(k.clone(), v.clone());
+                            });
+                            if let Some(def) = &check.definition {
+                                metadata.insert("definition".to_string(), def.clone());
+                            }
+                            DbNode::new(
+                                format!("{}:checks_folder:{}", id, check.name),
+                                check.name,
+                                DbNodeType::Check,
+                                node.connection_id.clone(),
+                                node.database_type
+                            )
+                            .with_metadata(metadata)
+                            .with_parent_context(format!("{}:checks_folder", id))
+                        })
+                        .collect();
+                    checks_folder.set_children(check_nodes);
+                }
+                children.push(checks_folder);
+
                 Ok(children)
             }
             DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder |
-            DbNodeType::ForeignKeysFolder | DbNodeType::TriggersFolder => {
+            DbNodeType::ForeignKeysFolder | DbNodeType::TriggersFolder |
+            DbNodeType::ChecksFolder => {
                 if node.children_loaded {
                     Ok(node.children.clone())
                 } else {
@@ -1168,53 +1160,13 @@ pub trait DatabasePlugin: Send + Sync {
         }
     }
 
-    fn build_limit_clause(&self) -> String {
-        match self.name() {
-            DatabaseType::MySQL => " LIMIT 1".to_string(),
-            DatabaseType::PostgreSQL => " LIMIT 1".to_string(),
-            DatabaseType::SQLite => String::new(), // SQLite UPDATE/DELETE does not support LIMIT by default
-            DatabaseType::MSSQL => " FETCH FIRST 1 ROWS ONLY".to_string(),
-            DatabaseType::Oracle => String::new(),
-            DatabaseType::ClickHouse => " LIMIT 1".to_string(),
-        }
-    }
+    fn build_limit_clause(&self) -> String;
 
     fn build_where_and_limit_clause(
         &self,
         request: &TableSaveRequest,
         original_data: &[String],
-    ) -> (String, String) {
-        let where_clause = self.build_table_change_where_clause(request, original_data);
-        let has_unique_key = !request.primary_key_indices.is_empty() || !request.unique_key_indices.is_empty();
-
-        // Add LIMIT/ROWNUM constraint based on database type
-        match self.name() {
-            DatabaseType::Oracle => {
-                // Oracle uses ROWNUM in WHERE clause
-                let mut oracle_where = where_clause;
-                if oracle_where.is_empty() {
-                    oracle_where = "ROWNUM <= 1".to_string();
-                } else {
-                    oracle_where = format!("{} AND ROWNUM <= 1", oracle_where);
-                }
-                (oracle_where, String::new())
-            }
-            DatabaseType::SQLite => {
-                // SQLite doesn't support LIMIT in UPDATE/DELETE by default
-                // Use rowid subquery when no unique key exists
-                if has_unique_key {
-                    (where_clause, String::new())
-                } else {
-                    // Will be handled specially in build_table_change_sql
-                    (where_clause, " __SQLITE_ROWID_LIMIT__".to_string())
-                }
-            }
-            _ => {
-                // MySQL, PostgreSQL, MSSQL use LIMIT clause
-                (where_clause, self.build_limit_clause())
-            }
-        }
-    }
+    ) -> (String, String);
 
     fn build_table_change_where_clause(
         &self,
@@ -1296,21 +1248,7 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     /// Rename table
-    fn rename_table(&self, _database: &str, old_name: &str, new_name: &str) -> String {
-        match self.name() {
-            DatabaseType::MySQL | DatabaseType::ClickHouse => format!(
-                "RENAME TABLE {} TO {}",
-                self.quote_identifier(old_name),
-                self.quote_identifier(new_name)
-            ),
-            DatabaseType::PostgreSQL | DatabaseType::SQLite => format!(
-                "ALTER TABLE {} RENAME TO {}",
-                self.quote_identifier(old_name),
-                self.quote_identifier(new_name)
-            ),
-            DatabaseType::MSSQL | DatabaseType::Oracle => todo!(),
-        }
-    }
+    fn rename_table(&self, database: &str, old_name: &str, new_name: &str) -> String;
 
     /// Drop view
     fn drop_view(&self, _database: &str, view: &str) -> String {
@@ -1318,111 +1256,10 @@ pub trait DatabasePlugin: Send + Sync {
     }
 
     /// Build column definition from ColumnDefinition (for table designer)
-    fn build_column_def(&self, col: &ColumnDefinition) -> String {
-        let mut def = String::new();
-        def.push_str(&self.quote_identifier(&col.name));
-        def.push(' ');
-
-        let mut type_str = col.data_type.clone();
-        if let Some(len) = col.length {
-            if let Some(scale) = col.scale {
-                type_str = format!("{}({},{})", col.data_type, len, scale);
-            } else {
-                type_str = format!("{}({})", col.data_type, len);
-            }
-        }
-        def.push_str(&type_str);
-
-        if col.is_unsigned && self.name() == DatabaseType::MySQL {
-            def.push_str(" UNSIGNED");
-        }
-
-        if !col.is_nullable {
-            def.push_str(" NOT NULL");
-        }
-
-        if col.is_auto_increment {
-            match self.name() {
-                DatabaseType::MySQL => def.push_str(" AUTO_INCREMENT"),
-                DatabaseType::PostgreSQL => {},
-                _ => {}
-            }
-        }
-
-        if let Some(default) = &col.default_value {
-            if !default.is_empty() {
-                def.push_str(&format!(" DEFAULT {}", default));
-            }
-        }
-
-        if !col.comment.is_empty() && self.name() == DatabaseType::MySQL {
-            def.push_str(&format!(" COMMENT '{}'", col.comment.replace("'", "''")));
-        }
-
-        def
-    }
+    fn build_column_def(&self, col: &ColumnDefinition) -> String;
 
     /// Build CREATE TABLE SQL from TableDesign
-    fn build_create_table_sql(&self, design: &TableDesign) -> String {
-        let mut sql = String::new();
-        sql.push_str("CREATE TABLE ");
-        sql.push_str(&self.quote_identifier(&design.table_name));
-        sql.push_str(" (\n");
-
-        let mut definitions: Vec<String> = Vec::new();
-
-        for col in &design.columns {
-            definitions.push(format!("  {}", self.build_column_def(col)));
-        }
-
-        let pk_columns: Vec<&str> = design.columns
-            .iter()
-            .filter(|c| c.is_primary_key)
-            .map(|c| c.name.as_str())
-            .collect();
-        if !pk_columns.is_empty() {
-            let pk_cols: Vec<String> = pk_columns.iter()
-                .map(|c| self.quote_identifier(c))
-                .collect();
-            definitions.push(format!("  PRIMARY KEY ({})", pk_cols.join(", ")));
-        }
-
-        for idx in &design.indexes {
-            if idx.is_primary {
-                continue;
-            }
-            let idx_cols: Vec<String> = idx.columns.iter()
-                .map(|c| self.quote_identifier(c))
-                .collect();
-            let idx_type = if idx.is_unique { "UNIQUE INDEX" } else { "INDEX" };
-            definitions.push(format!("  {} {} ({})",
-                idx_type,
-                self.quote_identifier(&idx.name),
-                idx_cols.join(", ")
-            ));
-        }
-
-        sql.push_str(&definitions.join(",\n"));
-        sql.push_str("\n)");
-
-        if self.name() == DatabaseType::MySQL {
-            if let Some(engine) = &design.options.engine {
-                sql.push_str(&format!(" ENGINE={}", engine));
-            }
-            if let Some(charset) = &design.options.charset {
-                sql.push_str(&format!(" DEFAULT CHARSET={}", charset));
-            }
-            if let Some(collation) = &design.options.collation {
-                sql.push_str(&format!(" COLLATE={}", collation));
-            }
-            if !design.options.comment.is_empty() {
-                sql.push_str(&format!(" COMMENT='{}'", design.options.comment.replace("'", "''")));
-            }
-        }
-
-        sql.push(';');
-        sql
-    }
+    fn build_create_table_sql(&self, design: &TableDesign) -> String;
 
     /// Build ALTER TABLE SQL from original and new TableDesign
     /// Returns a series of ALTER TABLE statements for the differences
