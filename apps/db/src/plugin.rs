@@ -111,16 +111,12 @@ impl SqlCompletionInfo {
 pub trait DatabasePlugin: Send + Sync {
     fn name(&self) -> DatabaseType;
 
-    fn identifier_quote(&self) -> &str;
+    /// Quote an identifier (table name, column name, etc.) according to database syntax
+    fn quote_identifier(&self, identifier: &str) -> String;
 
     /// Get database-specific SQL completion information
     fn get_completion_info(&self) -> SqlCompletionInfo {
         SqlCompletionInfo::default()
-    }
-
-    fn quote_identifier(&self, identifier: &str) -> String {
-        let quote = self.identifier_quote();
-        format!("{}{}{}", quote, identifier, quote)
     }
 
     async fn create_connection(&self, config: DbConnectionConfig) -> Result<Box<dyn DbConnection + Send + Sync>, DbError>;
@@ -853,6 +849,11 @@ pub trait DatabasePlugin: Send + Sync {
 
  
 
+    /// Format pagination SQL clause. Override for databases with different syntax.
+    fn format_pagination(&self, limit: usize, offset: usize, _order_clause: &str) -> String {
+        format!(" LIMIT {} OFFSET {}", limit, offset)
+    }
+
     // === Table Data Operations ===
     /// Query table data with pagination, filtering and sorting
     async fn query_table_data(
@@ -861,7 +862,6 @@ pub trait DatabasePlugin: Send + Sync {
         request: &TableDataRequest,
     ) -> Result<TableDataResponse> {
         let start_time = std::time::Instant::now();
-        let quote = self.identifier_quote();
 
         // Get column metadata
         let columns_info = self.list_columns(connection, &request.database, &request.table).await?;
@@ -918,7 +918,7 @@ pub trait DatabasePlugin: Send + Sync {
                 .filters
                 .iter()
                 .map(|f| {
-                    let col = format!("{}{}{}", quote, f.column, quote);
+                    let col = self.quote_identifier(&f.column);
                     match f.operator {
                         FilterOperator::IsNull => format!("{} IS NULL", col),
                         FilterOperator::IsNotNull => format!("{} IS NOT NULL", col),
@@ -953,7 +953,7 @@ pub trait DatabasePlugin: Send + Sync {
                         SortDirection::Asc => "ASC",
                         SortDirection::Desc => "DESC",
                     };
-                    format!("{}{}{} {}", quote, s.column, quote, dir)
+                    format!("{} {}", self.quote_identifier(&s.column), dir)
                 })
                 .collect();
             format!(" ORDER BY {}", sorts.join(", "))
@@ -962,11 +962,17 @@ pub trait DatabasePlugin: Send + Sync {
         // Calculate offset
         let offset = (request.page.saturating_sub(1)) * request.page_size;
 
+        // Build table reference
+        let table_ref = format!(
+            "{}.{}",
+            self.quote_identifier(&request.database),
+            self.quote_identifier(&request.table)
+        );
+
         // Build count query
         let count_sql = format!(
-            "SELECT COUNT(*) FROM {}{}{}.{}{}{}{}",
-            quote, request.database, quote,
-            quote, request.table, quote,
+            "SELECT COUNT(*) FROM {}{}",
+            table_ref,
             where_clause
         );
 
@@ -986,22 +992,20 @@ pub trait DatabasePlugin: Send + Sync {
         let data_sql = if request.page_size == 0 {
             // Query all records without pagination
             format!(
-                "SELECT * FROM {}{}{}.{}{}{}{}{}",
-                quote, request.database, quote,
-                quote, request.table, quote,
+                "SELECT * FROM {}{}{}",
+                table_ref,
                 where_clause,
                 order_clause
             )
         } else {
             // Query with pagination
+            let pagination = self.format_pagination(request.page_size, offset, &order_clause);
             format!(
-                "SELECT * FROM {}{}{}.{}{}{}{}{} LIMIT {} OFFSET {}",
-                quote, request.database, quote,
-                quote, request.table, quote,
+                "SELECT * FROM {}{}{}{}",
+                table_ref,
                 where_clause,
                 order_clause,
-                request.page_size,
-                offset
+                pagination
             )
         };
 
@@ -1048,10 +1052,10 @@ pub trait DatabasePlugin: Send + Sync {
         request: &TableSaveRequest,
         change: &TableRowChange,
     ) -> Option<String> {
-        let quote = self.identifier_quote();
         let table_ident = format!(
-            "{}{}{}.{}{}{}",
-            quote, request.database, quote, quote, request.table, quote
+            "{}.{}",
+            self.quote_identifier(&request.database),
+            self.quote_identifier(&request.table)
         );
 
         match change {
@@ -1116,7 +1120,7 @@ pub trait DatabasePlugin: Send + Sync {
 
                 // Handle SQLite rowid subquery for tables without unique key
                 if limit_clause == " __SQLITE_ROWID_LIMIT__" {
-                    let simple_table = format!("{}{}{}", quote, request.table, quote);
+                    let simple_table = self.quote_identifier(&request.table);
                     Some(format!(
                         "UPDATE {} SET {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} LIMIT 1)",
                         table_ident,
@@ -1140,7 +1144,7 @@ pub trait DatabasePlugin: Send + Sync {
 
                 // Handle SQLite rowid subquery for tables without unique key
                 if limit_clause == " __SQLITE_ROWID_LIMIT__" {
-                    let simple_table = format!("{}{}{}", quote, request.table, quote);
+                    let simple_table = self.quote_identifier(&request.table);
                     Some(format!(
                         "DELETE FROM {} WHERE rowid IN (SELECT rowid FROM {} WHERE {} LIMIT 1)",
                         table_ident,

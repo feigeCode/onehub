@@ -26,10 +26,6 @@ impl DatabasePlugin for MsSqlPlugin {
         DatabaseType::MSSQL
     }
 
-    fn identifier_quote(&self) -> &str {
-        "["
-    }
-
     fn quote_identifier(&self, identifier: &str) -> String {
         format!("[{}]", identifier.replace("]", "]]"))
     }
@@ -44,6 +40,14 @@ impl DatabasePlugin for MsSqlPlugin {
 
     fn supports_sequences(&self) -> bool {
         true
+    }
+
+    fn format_pagination(&self, limit: usize, offset: usize, order_clause: &str) -> String {
+        if order_clause.is_empty() {
+            format!(" ORDER BY (SELECT NULL) OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", offset, limit)
+        } else {
+            format!(" OFFSET {} ROWS FETCH NEXT {} ROWS ONLY", offset, limit)
+        }
     }
 
     async fn list_schemas(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<String>> {
@@ -1327,16 +1331,11 @@ mod tests {
     }
 
     #[test]
-    fn test_identifier_quote() {
-        let plugin = create_plugin();
-        assert_eq!(plugin.identifier_quote(), "[");
-    }
-
-    #[test]
     fn test_quote_identifier() {
         let plugin = create_plugin();
         assert_eq!(plugin.quote_identifier("table_name"), "[table_name]");
         assert_eq!(plugin.quote_identifier("column"), "[column]");
+        assert_eq!(plugin.quote_identifier("col]umn"), "[col]]umn]");
     }
 
     #[test]
@@ -1349,6 +1348,19 @@ mod tests {
     fn test_supports_sequences() {
         let plugin = create_plugin();
         assert!(plugin.supports_sequences());
+    }
+
+    #[test]
+    fn test_format_pagination() {
+        let plugin = create_plugin();
+        assert_eq!(
+            plugin.format_pagination(10, 20, " ORDER BY id"),
+            " OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
+        assert_eq!(
+            plugin.format_pagination(500, 0, ""),
+            " ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY"
+        );
     }
 
     // ==================== DDL SQL Generation Tests ====================

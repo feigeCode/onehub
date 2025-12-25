@@ -240,8 +240,8 @@ impl DatabasePlugin for SqlitePlugin {
         DatabaseType::SQLite
     }
 
-    fn identifier_quote(&self) -> &str {
-        "\""
+    fn quote_identifier(&self, identifier: &str) -> String {
+        format!("\"{}\"", identifier.replace("\"", "\"\""))
     }
 
     fn sql_dialect(&self) -> Box<dyn sqlparser::dialect::Dialect> {
@@ -1069,16 +1069,11 @@ mod tests {
     }
 
     #[test]
-    fn test_identifier_quote() {
-        let plugin = create_plugin();
-        assert_eq!(plugin.identifier_quote(), "\"");
-    }
-
-    #[test]
     fn test_quote_identifier() {
         let plugin = create_plugin();
         assert_eq!(plugin.quote_identifier("table_name"), "\"table_name\"");
         assert_eq!(plugin.quote_identifier("column"), "\"column\"");
+        assert_eq!(plugin.quote_identifier("col\"umn"), "\"col\"\"umn\"");
     }
 
     // ==================== DDL SQL Generation Tests ====================
