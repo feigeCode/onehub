@@ -27,7 +27,7 @@ use db::{GlobalDbState, DbNode, DbNodeType};
 use gpui_component::label::Label;
 use crate::database_view_plugin::DatabaseViewPluginRegistry;
 use one_core::{
-    storage::{GlobalStorageState, StoredConnection},
+    storage::{ActiveConnections, GlobalStorageState, StoredConnection},
 };
 use one_core::storage::DatabaseType;
 use one_core::utils::debouncer::Debouncer;
@@ -540,6 +540,28 @@ impl DbTreeView {
         self.save_database_filter(connection_id, cx);
     }
 
+    /// 将新数据库添加到已选择列表（用于新建数据库后自动选中）
+    pub fn add_database_to_selection(&mut self, connection_id: &str, database_name: &str, cx: &mut Context<Self>) {
+        if database_name.is_empty() {
+            return;
+        }
+
+        let database_id = format!("{}:{}", connection_id, database_name);
+
+        match self.selected_databases.get_mut(connection_id) {
+            None => {
+                // 全选状态，不需要添加
+            }
+            Some(Some(set)) => {
+                set.insert(database_id);
+                self.save_database_filter(connection_id, cx);
+            }
+            Some(None) => {
+                // 全选状态，不需要添加
+            }
+        }
+    }
+
     /// 保存数据库筛选状态到存储
     fn save_database_filter(&self, connection_id: &str, cx: &mut Context<Self>) {
         let selected_dbs: Option<Vec<String>> = match self.selected_databases.get(connection_id) {
@@ -662,6 +684,10 @@ impl DbTreeView {
     }
     
     /// 递归清除节点的所有后代
+    ///
+    /// 注意：此方法不会清除展开状态(expanded_nodes)，因为展开状态是用户的UI状态，
+    /// 应该独立于节点数据。如果节点被删除，展开状态自然不会生效；
+    /// 如果节点仍然存在（刷新后重新加载），展开状态应该被保留。
     fn clear_node_descendants(&mut self, node_id: &str) {
         // 获取当前节点的所有子节点ID
         let child_ids: Vec<String> = if let Some(node) = self.db_nodes.get(node_id) {
@@ -669,17 +695,16 @@ impl DbTreeView {
         } else {
             return;
         };
-        
+
         // 递归清除每个子节点
         for child_id in child_ids {
             self.clear_node_descendants(&child_id);
-            
-            // 从所有集合中移除子节点
+
+            // 从所有集合中移除子节点（但保留展开状态）
             self.db_nodes.remove(&child_id);
             self.loaded_children.remove(&child_id);
             self.loading_nodes.remove(&child_id);
             self.error_nodes.remove(&child_id);
-            self.expanded_nodes.remove(&child_id);
         }
     }
 
@@ -710,7 +735,8 @@ impl DbTreeView {
         let global_storage_state = cx.global::<GlobalStorageState>().clone();
         let clone_node_id = node_id.clone();
         let connection_id = node.connection_id.clone();
-        
+        let node_type = node.node_type.clone();
+
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             // 使用 DatabasePlugin 的方法加载子节点，添加超时机制
             let children_result = global_state.load_node_children(cx, connection_id.clone(), node.clone(), global_storage_state.clone()).await;
@@ -725,6 +751,13 @@ impl DbTreeView {
                         // 标记为已加载，清除错误状态
                         this.loaded_children.insert(clone_node_id.clone());
                         this.error_nodes.remove(&clone_node_id);
+
+                        // 如果是 Connection 节点，设置为活跃状态
+                        if node_type == DbNodeType::Connection {
+                            if let Ok(conn_id) = connection_id.parse::<i64>() {
+                                cx.global_mut::<ActiveConnections>().add(conn_id);
+                            }
+                        }
 
                         // 更新节点的子节点
                         if let Some(parent_node) = this.db_nodes.get_mut(&clone_node_id) {
@@ -748,8 +781,21 @@ impl DbTreeView {
                             insert_nodes_recursive(&mut this.db_nodes, child);
                         }
 
+                        // 检查子节点是否在 expanded_nodes 中，如果是，递归加载它们的子节点
+                        // 这确保刷新后已展开的节点能恢复其子节点
+                        let children_to_expand: Vec<String> = children
+                            .iter()
+                            .filter(|child| this.expanded_nodes.contains(&child.id))
+                            .map(|child| child.id.clone())
+                            .collect();
+
                         // 重建树结构
                         this.rebuild_tree(cx);
+
+                        // 触发已展开子节点的懒加载
+                        for child_id in children_to_expand {
+                            this.lazy_load_children(child_id, cx);
+                        }
                     }
                     Err(e) => {
                         error!("DbTreeView lazy_load_children: failed to execute load_node_children for {}: {}", clone_node_id, e);
@@ -1148,7 +1194,12 @@ impl DbTreeView {
     /// 关闭连接并清理相关状态
     pub fn close_connection(&mut self, connection_id: &str, cx: &mut Context<Self>) {
         info!("Closing connection in DbTreeView: {}", connection_id);
-        
+
+        // 移除活跃状态
+        if let Ok(conn_id) = connection_id.parse::<i64>() {
+            cx.global_mut::<ActiveConnections>().remove(conn_id);
+        }
+
         // 清理连接节点的所有后代
         self.clear_node_descendants(connection_id);
         
@@ -1173,24 +1224,208 @@ impl DbTreeView {
     /// 关闭数据库并清理相关状态
     pub fn close_database(&mut self, database_node_id: &str, cx: &mut Context<Self>) {
         info!("Closing database in DbTreeView: {}", database_node_id);
-        
+
         // 清理数据库节点的所有后代
         self.clear_node_descendants(database_node_id);
-        
+
         // 将数据库节点重置为未展开状态
         if let Some(node) = self.db_nodes.get_mut(database_node_id) {
             node.children.clear();
             node.children_loaded = false;
         }
-        
+
         // 确保节点处于收起状态
         self.expanded_nodes.remove(database_node_id);
-        
+
         // 清理加载和错误状态
         self.loaded_children.remove(database_node_id);
         self.loading_nodes.remove(database_node_id);
         self.error_nodes.remove(database_node_id);
-        
+
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 添加数据库节点（用于新建数据库后直接更新树，避免刷新整个连接）
+    pub fn add_database_node(&mut self, connection_id: &str, database_name: &str, cx: &mut Context<Self>) {
+        info!("Adding database node: {} to connection: {}", database_name, connection_id);
+
+        // 获取连接节点信息
+        let (database_type, connection_id_str) = match self.db_nodes.get(connection_id) {
+            Some(conn_node) => (conn_node.database_type, conn_node.connection_id.clone()),
+            None => {
+                error!("Connection node not found: {}", connection_id);
+                return;
+            }
+        };
+
+        // 创建新的数据库节点
+        let db_node_id = format!("{}:{}", connection_id, database_name);
+        let db_node = DbNode::new(
+            db_node_id.clone(),
+            database_name.to_string(),
+            DbNodeType::Database,
+            connection_id_str,
+            database_type,
+        ).with_parent_context(connection_id.to_string());
+
+        // 添加到 db_nodes
+        self.db_nodes.insert(db_node_id.clone(), db_node.clone());
+
+        // 添加到连接节点的子节点列表
+        if let Some(conn_node) = self.db_nodes.get_mut(connection_id) {
+            conn_node.children.push(db_node);
+            conn_node.children.sort();
+        }
+
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 移除数据库节点（用于删除数据库后直接更新树，避免刷新整个连接）
+    pub fn remove_database_node(&mut self, connection_id: &str, database_name: &str, cx: &mut Context<Self>) {
+        info!("Removing database node: {} from connection: {}", database_name, connection_id);
+
+        let db_node_id = format!("{}:{}", connection_id, database_name);
+
+        // 清理数据库节点的所有后代
+        self.clear_node_descendants(&db_node_id);
+
+        // 从 db_nodes 中移除
+        self.db_nodes.remove(&db_node_id);
+
+        // 清理相关状态
+        self.loaded_children.remove(&db_node_id);
+        self.loading_nodes.remove(&db_node_id);
+        self.error_nodes.remove(&db_node_id);
+        self.expanded_nodes.remove(&db_node_id);
+
+        // 从连接节点的子节点列表中移除
+        if let Some(conn_node) = self.db_nodes.get_mut(connection_id) {
+            conn_node.children.retain(|child| child.id != db_node_id);
+        }
+
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 添加 Schema 节点（用于新建 Schema 后直接更新树）
+    pub fn add_schema_node(&mut self, connection_id: &str, database_name: &str, schema_name: &str, cx: &mut Context<Self>) {
+        info!("Adding schema node: {} to database: {}", schema_name, database_name);
+
+        let db_node_id = format!("{}:{}", connection_id, database_name);
+
+        // 获取数据库节点信息
+        let database_type = match self.db_nodes.get(&db_node_id) {
+            Some(db_node) => db_node.database_type,
+            None => {
+                error!("Database node not found: {}", db_node_id);
+                return;
+            }
+        };
+
+        // 创建新的 Schema 节点
+        let schema_node_id = format!("{}:{}:{}", connection_id, database_name, schema_name);
+        let schema_node = DbNode::new(
+            schema_node_id.clone(),
+            schema_name.to_string(),
+            DbNodeType::Schema,
+            connection_id.to_string(),
+            database_type,
+        ).with_parent_context(db_node_id.clone());
+
+        // 添加到 db_nodes
+        self.db_nodes.insert(schema_node_id.clone(), schema_node.clone());
+
+        // 添加到数据库节点的子节点列表
+        if let Some(db_node) = self.db_nodes.get_mut(&db_node_id) {
+            db_node.children.push(schema_node);
+            db_node.children.sort();
+        }
+
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 移除 Schema 节点（用于删除 Schema 后直接更新树）
+    pub fn remove_schema_node(&mut self, connection_id: &str, database_name: &str, schema_name: &str, cx: &mut Context<Self>) {
+        info!("Removing schema node: {} from database: {}", schema_name, database_name);
+
+        let db_node_id = format!("{}:{}", connection_id, database_name);
+        let schema_node_id = format!("{}:{}:{}", connection_id, database_name, schema_name);
+
+        // 清理 Schema 节点的所有后代
+        self.clear_node_descendants(&schema_node_id);
+
+        // 从 db_nodes 中移除
+        self.db_nodes.remove(&schema_node_id);
+
+        // 清理相关状态
+        self.loaded_children.remove(&schema_node_id);
+        self.loading_nodes.remove(&schema_node_id);
+        self.error_nodes.remove(&schema_node_id);
+        self.expanded_nodes.remove(&schema_node_id);
+
+        // 从数据库节点的子节点列表中移除
+        if let Some(db_node) = self.db_nodes.get_mut(&db_node_id) {
+            db_node.children.retain(|child| child.id != schema_node_id);
+        }
+
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 移除表节点（用于删除表后直接更新树）
+    pub fn remove_table_node(&mut self, node_id: &str, cx: &mut Context<Self>) {
+        info!("Removing table node: {}", node_id);
+
+        // 清理表节点的所有后代
+        self.clear_node_descendants(node_id);
+
+        // 获取父节点ID并从父节点的子节点列表中移除
+        if let Some(table_node) = self.db_nodes.get(node_id).cloned() {
+            if let Some(parent_context) = &table_node.parent_context {
+                if let Some(parent_node) = self.db_nodes.get_mut(parent_context) {
+                    parent_node.children.retain(|child| child.id != node_id);
+                }
+            }
+        }
+
+        // 从 db_nodes 中移除
+        self.db_nodes.remove(node_id);
+
+        // 清理相关状态
+        self.loaded_children.remove(node_id);
+        self.loading_nodes.remove(node_id);
+        self.error_nodes.remove(node_id);
+        self.expanded_nodes.remove(node_id);
+
+        // 重建树以反映变化
+        self.rebuild_tree(cx);
+    }
+
+    /// 移除视图节点（用于删除视图后直接更新树）
+    pub fn remove_view_node(&mut self, node_id: &str, cx: &mut Context<Self>) {
+        info!("Removing view node: {}", node_id);
+
+        // 获取父节点ID并从父节点的子节点列表中移除
+        if let Some(view_node) = self.db_nodes.get(node_id).cloned() {
+            if let Some(parent_context) = &view_node.parent_context {
+                if let Some(parent_node) = self.db_nodes.get_mut(parent_context) {
+                    parent_node.children.retain(|child| child.id != node_id);
+                }
+            }
+        }
+
+        // 从 db_nodes 中移除
+        self.db_nodes.remove(node_id);
+
+        // 清理相关状态
+        self.loaded_children.remove(node_id);
+        self.loading_nodes.remove(node_id);
+        self.error_nodes.remove(node_id);
+        self.expanded_nodes.remove(node_id);
+
         // 重建树以反映变化
         self.rebuild_tree(cx);
     }
@@ -1345,10 +1580,13 @@ impl Render for DbTreeView {
                                             );
 
                                             // 同步节点展开状态
+                                            // 注意：requires_double_click 的节点（Connection/Database/Schema）的展开状态
+                                            // 由双击事件和 lazy_load_children 管理，不应该在渲染时被覆盖
                                             if item.is_expanded() && !requires_double_click {
                                                 // 只有非双击展开的节点才同步展开状态
                                                 this.expanded_nodes.insert(item.id.to_string());
-                                            } else if !item.is_expanded() {
+                                            } else if !item.is_expanded() && !requires_double_click {
+                                                // 只有非双击展开的节点才移除展开状态
                                                 this.expanded_nodes.remove(item.id.as_ref());
                                             }
 

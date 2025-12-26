@@ -400,7 +400,7 @@ impl DatabasePlugin for SqlitePlugin {
         })
     }
 
-    async fn list_columns(&self, connection: &dyn DbConnection, _database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    async fn list_columns(&self, connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let sql = format!("PRAGMA table_info(\"{}\")", table);
         tracing::info!("SQLite list_columns: executing SQL: {}", sql);
 
@@ -430,10 +430,10 @@ impl DatabasePlugin for SqlitePlugin {
         }
     }
 
-    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let columns_data = self.list_columns(connection, database, table).await?;
+        let columns_data = self.list_columns(connection, database, schema, table).await?;
 
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
@@ -461,7 +461,7 @@ impl DatabasePlugin for SqlitePlugin {
         })
     }
 
-    async fn list_indexes(&self, connection: &dyn DbConnection, _database: &str, table: &str) -> Result<Vec<IndexInfo>> {
+    async fn list_indexes(&self, connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<IndexInfo>> {
         let sql = format!("PRAGMA index_list(\"{}\")", table);
 
         let result = connection.query(&sql, None, ExecOptions::default())
@@ -500,10 +500,10 @@ impl DatabasePlugin for SqlitePlugin {
         }
     }
 
-    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let indexes = self.list_indexes(connection, database, table).await?;
+        let indexes = self.list_indexes(connection, database, schema, table).await?;
 
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
@@ -856,7 +856,7 @@ impl DatabasePlugin for SqlitePlugin {
         let start_time = std::time::Instant::now();
 
         // Get column metadata
-        let columns_info = self.list_columns(connection, &request.database, &request.table).await?;
+        let columns_info = self.list_columns(connection, &request.database, None, &request.table).await?;
         let columns: Vec<TableColumnMeta> = columns_info
             .iter()
             .enumerate()
@@ -878,7 +878,7 @@ impl DatabasePlugin for SqlitePlugin {
 
         // Get unique key indices from indexes
         let unique_key_indices = if primary_key_indices.is_empty() {
-            let indexes = self.list_indexes(connection, &request.database, &request.table).await.unwrap_or_default();
+            let indexes = self.list_indexes(connection, &request.database, None, &request.table).await.unwrap_or_default();
             indexes
                 .iter()
                 .find(|idx| idx.is_unique)
@@ -1041,6 +1041,29 @@ impl DatabasePlugin for SqlitePlugin {
         } else {
             self.build_sqlite_simple_alter_sql(original, new)
         }
+    }
+
+    async fn export_table_create_sql(
+        &self,
+        connection: &dyn DbConnection,
+        _database: &str,
+        table: &str,
+    ) -> Result<String> {
+        let query = format!(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='{}'",
+            table.replace('\'', "''")
+        );
+        let result = connection.query(&query, None, ExecOptions::default()).await
+            .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            if let Some(row) = query_result.rows.first() {
+                if let Some(Some(create_sql)) = row.first() {
+                    return Ok(create_sql.clone());
+                }
+            }
+        }
+        Ok(String::new())
     }
 }
 

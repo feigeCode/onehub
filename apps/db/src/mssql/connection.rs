@@ -102,27 +102,14 @@ impl MssqlDbConnection {
     }
 
     fn rows_to_query_result(
+        columns: Vec<String>,
         rows: Vec<Row>,
         sql: String,
         elapsed_ms: u128,
         table_name: Option<String>,
     ) -> SqlResult {
-        if rows.is_empty() {
-            return SqlResult::Query(QueryResult {
-                sql,
-                columns: Vec::new(),
-                rows: Vec::new(),
-                elapsed_ms,
-                table_name: None,
-                editable: false,
-            });
-        }
-
-        let columns: Vec<String> = rows[0]
-            .columns()
-            .iter()
-            .map(|col| col.name().to_string())
-            .collect();
+        debug!("[MSSQL] Query returned {} rows, {} columns: {:?}",
+            rows.len(), columns.len(), columns);
 
         let all_rows: Vec<Vec<Option<String>>> = rows
             .iter()
@@ -166,11 +153,17 @@ impl MssqlDbConnection {
             let table_name = SqlStatementClassifier::analyze_select_editability(sql);
 
             match client.query(sql, &[]).await {
-                Ok(stream) => {
+                Ok(mut stream) => {
+                    let columns: Vec<String> = match stream.columns().await {
+                        Ok(Some(cols)) => cols.iter().map(|c| c.name().to_string()).collect(),
+                        _ => Vec::new(),
+                    };
+                    debug!("[MSSQL] Got {} columns from stream: {:?}", columns.len(), columns);
+
                     match stream.into_first_result().await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
-                            Ok(Self::rows_to_query_result(rows, sql_string, elapsed_ms, table_name))
+                            Ok(Self::rows_to_query_result(columns, rows, sql_string, elapsed_ms, table_name))
                         }
                         Err(e) => Ok(SqlResult::Error(SqlErrorInfo {
                             sql: sql_string,
@@ -392,13 +385,19 @@ impl DbConnection for MssqlDbConnection {
 
             debug!("[MSSQL] Sending query to server...");
             match client.query(query, &[]).await {
-                Ok(stream) => {
-                    debug!("[MSSQL] Query sent, fetching results...");
+                Ok(mut stream) => {
+                    let columns: Vec<String> = match stream.columns().await {
+                        Ok(Some(cols)) => cols.iter().map(|c| c.name().to_string()).collect(),
+                        _ => Vec::new(),
+                    };
+                    debug!("[MSSQL] Got {} columns from stream: {:?}", columns.len(), columns);
+
+                    debug!("[MSSQL] Fetching results...");
                     match stream.into_first_result().await {
                         Ok(rows) => {
                             let elapsed_ms = start.elapsed().as_millis();
                             debug!("[MSSQL] Query completed, {} rows in {}ms", rows.len(), elapsed_ms);
-                            Ok(Self::rows_to_query_result(rows, query_string, elapsed_ms, table_name))
+                            Ok(Self::rows_to_query_result(columns, rows, query_string, elapsed_ms, table_name))
                         }
                         Err(e) => {
                             error!("[MSSQL] Failed to fetch results: {}", e);

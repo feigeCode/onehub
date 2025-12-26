@@ -33,6 +33,8 @@ pub enum DataGridUsage {
 pub struct DataGridConfig {
     /// 数据库名称
     pub database_name: String,
+    /// Schema名称（用于支持schema的数据库如PostgreSQL、MSSQL）
+    pub schema_name: Option<String>,
     /// 表名称
     pub table_name: String,
     /// 数据库连接ID
@@ -58,6 +60,7 @@ impl DataGridConfig {
     ) -> Self {
         Self {
             database_name: database_name.into(),
+            schema_name: None,
             table_name: table_name.into(),
             connection_id: connection_id.into(),
             database_type,
@@ -66,6 +69,11 @@ impl DataGridConfig {
             usage: DataGridUsage::TableData,
             sql: None,
         }
+    }
+
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema_name = Some(schema.into());
+        self
     }
 
     pub fn editable(mut self, editable: bool) -> Self {
@@ -232,6 +240,7 @@ impl DataGrid {
         let connection_id = self.config.connection_id.clone();
         let table_name = self.config.table_name.clone();
         let database_name = self.config.database_name.clone();
+        let schema_name = self.config.schema_name.clone();
         let table = self.table.clone();
         let table_data_info = self.table_data_info.clone();
         let where_clause = self.filter_editor.read(cx).get_where_clause(cx);
@@ -245,7 +254,7 @@ impl DataGrid {
         cx.spawn(async move |cx: &mut AsyncApp| {
             let table_name_for_schema = table_name.clone();
 
-            let request = if page_size == 0 {
+            let mut request = if page_size == 0 {
                 TableDataRequest::new(&database_name, &table_name)
                     .with_where_clause(where_clause.clone())
                     .with_order_by_clause(order_by_clause.clone())
@@ -255,6 +264,9 @@ impl DataGrid {
                     .with_where_clause(where_clause.clone())
                     .with_order_by_clause(order_by_clause.clone())
             };
+            if let Some(schema) = schema_name {
+                request = request.with_schema(schema);
+            }
 
             let result = global_state.query_table_data(cx, connection_id.clone(), request).await;
             match result {
@@ -725,6 +737,7 @@ impl DataGrid {
 
         Some(TableSaveRequest {
             database: self.config.database_name.clone(),
+            schema: self.config.schema_name.clone(),
             table: self.config.table_name.clone(),
             column_names,
             primary_key_indices: pk_columns,
@@ -742,13 +755,17 @@ impl DataGrid {
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
+        let schema_name = self.config.schema_name.clone();
         let table_name = self.config.table_name.clone();
         let database_type = self.config.database_type;
         let this = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let request = TableDataRequest::new(&database_name, &table_name)
+            let mut request = TableDataRequest::new(&database_name, &table_name)
                 .with_page(1, 1);
+            if let Some(schema) = &schema_name {
+                request = request.with_schema(schema.clone());
+            }
 
             let key_result = global_state.query_table_data(cx, connection_id.clone(), request).await;
             let (pk_columns, uk_columns) = match key_result {
@@ -838,12 +855,16 @@ impl DataGrid {
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
+        let schema_name = self.config.schema_name.clone();
         let table_name = self.config.table_name.clone();
         let this = self.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let request = TableDataRequest::new(&database_name, &table_name)
+            let mut request = TableDataRequest::new(&database_name, &table_name)
                 .with_page(1, 1);
+            if let Some(schema) = &schema_name {
+                request = request.with_schema(schema.clone());
+            }
 
             let key_result = global_state.query_table_data(cx, connection_id.clone(), request).await;
             let (pk_columns, uk_columns) = match key_result {
@@ -1250,15 +1271,14 @@ impl Render for DataGrid {
                     .on_action(cx.listener(Self::handle_page_change_all))
             })
             .size_full()
-            .gap_2()
-            .pt_2()
+            .gap_0()
             .child(self.render_toolbar(window, cx))
             .child(
                 h_flex()
-                    .gap_2()
                     .items_center()
                     .w_full()
                     .px_2()
+                    .py_1()
                     .child(self.filter_editor.clone()),
             )
             .child(

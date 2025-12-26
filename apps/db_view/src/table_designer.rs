@@ -41,6 +41,7 @@ pub enum DesignerTab {
 pub struct TableDesignerConfig {
     pub connection_id: String,
     pub database_name: String,
+    pub schema_name: Option<String>,
     pub database_type: DatabaseType,
     pub table_name: Option<String>,
 }
@@ -54,9 +55,15 @@ impl TableDesignerConfig {
         Self {
             connection_id: connection_id.into(),
             database_name: database_name.into(),
+            schema_name: None,
             database_type,
             table_name: None,
         }
+    }
+
+    pub fn with_schema_name(mut self, name: impl Into<String>) -> Self {
+        self.schema_name = Some(name.into());
+        self
     }
 
     pub fn with_table_name(mut self, name: impl Into<String>) -> Self {
@@ -321,6 +328,7 @@ impl TableDesigner {
         let global_state = cx.global::<GlobalDbState>().clone();
         let connection_id = self.config.connection_id.clone();
         let database_name = self.config.database_name.clone();
+        let schema_name = self.config.schema_name.clone();
         let columns_editor = self.columns_editor.clone();
         let indexes_editor = self.indexes_editor.clone();
 
@@ -329,6 +337,7 @@ impl TableDesigner {
                 cx,
                 connection_id.clone(),
                 database_name.clone(),
+                schema_name.clone(),
                 table_name.clone(),
             ).await;
 
@@ -336,6 +345,7 @@ impl TableDesigner {
                 cx,
                 connection_id.clone(),
                 database_name.clone(),
+                schema_name.clone(),
                 table_name.clone(),
             ).await;
 

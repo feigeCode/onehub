@@ -5,7 +5,7 @@ use gpui::{div, px, AnyElement, App, AppContext, AsyncApp, Context, ElementId, E
 use gpui::prelude::FluentBuilder;
 use gpui_component::{button::{Button, ButtonVariants as _}, h_flex, input::{Input, InputEvent, InputState}, menu::PopupMenuItem, v_flex, ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt, Sizable, Size, ThemeMode, WindowExt, tooltip::Tooltip};
 
-use one_core::storage::{ConnectionRepository, ConnectionType, DatabaseType, GlobalStorageState, StoredConnection, Workspace, WorkspaceRepository};
+use one_core::storage::{ActiveConnections, ConnectionRepository, ConnectionType, DatabaseType, GlobalStorageState, StoredConnection, Workspace, WorkspaceRepository};
 use one_core::storage::traits::Repository;
 use one_core::tab_container::{TabContainer, TabContent, TabContentType, TabItem};
 use one_core::themes::SwitchThemeMode;
@@ -832,11 +832,15 @@ impl HomePage {
             self.workspaces.iter().find(|w| w.id == Some(id)).cloned()
         });
 
+        let is_active = conn.id.map_or(false, |id| {
+            cx.global::<ActiveConnections>().is_active(id)
+        });
+
         v_flex()
             .justify_center()
             .id(SharedString::from(format!("conn-card-{}", conn.id.unwrap_or(0))))
             .w_full()
-            .h(px(80.))
+            .h(px(90.))
             .rounded(px(8.0))
             .bg(cx.theme().background)
             .p_3()
@@ -868,6 +872,19 @@ impl HomePage {
                 this.selected_connection_id = conn_id;
                 cx.notify();
             }))
+            .when(is_active, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top(px(6.0))
+                        .left(px(6.0))
+                        .w(px(10.0))
+                        .h(px(10.0))
+                        .rounded_full()
+                        .bg(cx.theme().success)
+                        .shadow_lg()
+                )
+            })
             .child(
                 // hover时显示的编辑和删除按钮
                 h_flex()
@@ -953,6 +970,7 @@ impl HomePage {
                     .child(
                         v_flex()
                             .flex_1()
+                            .min_w_0()
                             .gap_0p5()
                             .overflow_hidden()
                             .child({
@@ -965,6 +983,7 @@ impl HomePage {
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .whitespace_nowrap()
+                                    .max_w_full()
                                     .tooltip(move |window, cx| {
                                         Tooltip::new(name_tooltip.clone()).build(window, cx)
                                     })
@@ -989,6 +1008,7 @@ impl HomePage {
                                         .overflow_hidden()
                                         .text_ellipsis()
                                         .whitespace_nowrap()
+                                        .max_w_full()
                                         .tooltip(move |window, cx| {
                                             Tooltip::new(tooltip_text.clone()).build(window, cx)
                                         })

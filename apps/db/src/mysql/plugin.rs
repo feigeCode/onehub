@@ -341,7 +341,7 @@ impl DatabasePlugin for MySqlPlugin {
         })
     }
 
-    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let sql = format!(
             "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, COLUMN_COMMENT \
              FROM INFORMATION_SCHEMA.COLUMNS \
@@ -370,10 +370,10 @@ impl DatabasePlugin for MySqlPlugin {
         }
     }
 
-    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
-        
-        let columns_data = self.list_columns(connection, database, table).await?;
+
+        let columns_data = self.list_columns(connection, database, schema, table).await?;
         
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
@@ -403,7 +403,7 @@ impl DatabasePlugin for MySqlPlugin {
         })
     }
 
-    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<IndexInfo>> {
+    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<IndexInfo>> {
         let sql = format!(
             "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, INDEX_TYPE \
              FROM INFORMATION_SCHEMA.STATISTICS \
@@ -441,10 +441,10 @@ impl DatabasePlugin for MySqlPlugin {
         }
     }
 
-    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
-        
-        let indexes = self.list_indexes(connection, database, table).await?;
+
+        let indexes = self.list_indexes(connection, database, schema, table).await?;
         
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
@@ -690,7 +690,7 @@ impl DatabasePlugin for MySqlPlugin {
         })
     }
 
-    async fn list_table_checks(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<CheckInfo>> {
+    async fn list_table_checks(&self, connection: &dyn DbConnection, database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<CheckInfo>> {
         let sql = format!(
             "SELECT cc.CONSTRAINT_NAME, tc.TABLE_NAME, cc.CHECK_CLAUSE \
              FROM INFORMATION_SCHEMA.CHECK_CONSTRAINTS cc \
@@ -1213,6 +1213,26 @@ impl DatabasePlugin for MySqlPlugin {
         } else {
             statements.join("\n")
         }
+    }
+
+    async fn export_table_create_sql(
+        &self,
+        connection: &dyn DbConnection,
+        _database: &str,
+        table: &str,
+    ) -> Result<String> {
+        let show_create = format!("SHOW CREATE TABLE {}", self.quote_identifier(table));
+        let result = connection.query(&show_create, None, ExecOptions::default()).await
+            .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
+
+        if let SqlResult::Query(query_result) = result {
+            if let Some(row) = query_result.rows.first() {
+                if let Some(Some(create_sql)) = row.get(1) {
+                    return Ok(create_sql.clone());
+                }
+            }
+        }
+        Ok(String::new())
     }
 }
 

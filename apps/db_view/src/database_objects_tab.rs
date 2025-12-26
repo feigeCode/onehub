@@ -294,8 +294,9 @@ impl DatabaseObjects {
                             Some(value) => value,
                             None => return Ok(None),
                         };
+                        let schema = metadata.get("schema").map(|s| s.as_str());
                         let table = metadata.get("table").map(|s| s.as_str()).unwrap_or(&node_clone.name);
-                        plugin.list_columns_view(&**conn, database, table).await.ok()
+                        plugin.list_columns_view(&**conn, database, schema, table).await.ok()
                     }
                     DbNodeType::ViewsFolder => {
                         let metadata = match node_clone.metadata.as_ref() {

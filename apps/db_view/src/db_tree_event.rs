@@ -399,10 +399,12 @@ impl DatabaseEventHandler {
 
         let connection_id = node.connection_id.clone();
         let database = Self::get_database_from_node(&node);
+        let database_type = node.database_type;
 
         let sql_editor = SqlEditorTabContent::new_with_config(
             format!("{} - Query", if database.is_empty() { "New Query" } else { &database }),
             connection_id,
+            database_type,
             None,
             if database.is_empty() { None } else { Some(database.clone()) },
             window,
@@ -436,16 +438,19 @@ impl DatabaseEventHandler {
             Self::show_error(window, "无效的节点数据", cx);
             return;
         };
-        let Some(database) = metadata.get("database") else {
+
+        let Some(database) = metadata.get("database").cloned() else {
             Self::show_error(window, "无法获取数据库名称", cx);
             return;
         };
+        let schema = metadata.get("schema").cloned();
 
-        let tab_id = format!("table-data-{}.{}", database, table);
+        let tab_id = format!("table-data-{}.{}.{}", database, schema.as_deref().unwrap_or(""), table);
 
         let connection_id_for_error = connection_id.clone();
         let tab_container_clone = tab_container.clone();
         let database_string = database.clone();
+        let schema_string = schema.clone();
         let table_string = table.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -458,6 +463,7 @@ impl DatabaseEventHandler {
                 let database_type = config.database_type;
                 let tab_id_for_lazy = tab_id.clone();
                 let database_for_lazy = database_string.clone();
+                let schema_for_lazy = schema_string.clone();
                 let table_for_lazy = table_string.clone();
 
                 let _ = cx.update(|cx| {
@@ -466,6 +472,7 @@ impl DatabaseEventHandler {
                             tab_container_clone.update(cx, |container, cx| {
                                 let tab_id_clone = tab_id_for_lazy.clone();
                                 let database_clone = database_for_lazy.clone();
+                                let schema_clone = schema_for_lazy.clone();
                                 let table_clone = table_for_lazy.clone();
                                 let config_id_clone = config_id.clone();
                                 container.activate_or_add_tab_lazy(
@@ -473,6 +480,7 @@ impl DatabaseEventHandler {
                                     move |window, cx| {
                                         let table_data = TableDataTabContent::new(
                                             database_clone.clone(),
+                                            schema_clone.clone(),
                                             table_clone.clone(),
                                             config_id_clone.clone(),
                                             database_type,
@@ -518,16 +526,19 @@ impl DatabaseEventHandler {
             Self::show_error(window, "无效的节点数据", cx);
             return;
         };
-        let Some(database) = metadata.get("database") else {
+
+        let Some(database) = metadata.get("database").cloned() else {
             Self::show_error(window, "无法获取数据库名称", cx);
             return;
         };
+        let schema = metadata.get("schema").cloned();
 
-        let tab_id = format!("view-data-{}.{}", database, view);
+        let tab_id = format!("view-data-{}.{}.{}", database, schema.as_deref().unwrap_or(""), view);
 
         let connection_id_for_error = connection_id.clone();
         let tab_container_clone = tab_container.clone();
         let database_string = database.clone();
+        let schema_string = schema.clone();
         let view_string = view.clone();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
@@ -538,6 +549,7 @@ impl DatabaseEventHandler {
                 let database_type = config.database_type;
                 let tab_id_for_lazy = tab_id.clone();
                 let database_for_lazy = database_string.clone();
+                let schema_for_lazy = schema_string.clone();
                 let view_for_lazy = view_string.clone();
 
                 let _ = cx.update(|cx| {
@@ -546,6 +558,7 @@ impl DatabaseEventHandler {
                             tab_container_clone.update(cx, |container, cx| {
                                 let tab_id_clone = tab_id_for_lazy.clone();
                                 let database_clone = database_for_lazy.clone();
+                                let schema_clone = schema_for_lazy.clone();
                                 let view_clone = view_for_lazy.clone();
                                 let config_id_clone = config_id.clone();
                                 container.activate_or_add_tab_lazy(
@@ -553,6 +566,7 @@ impl DatabaseEventHandler {
                                     move |window, cx| {
                                         let view_data = TableDataTabContent::new(
                                             database_clone.clone(),
+                                            schema_clone.clone(),
                                             view_clone.clone(),
                                             config_id_clone.clone(),
                                             database_type,
@@ -591,10 +605,14 @@ impl DatabaseEventHandler {
         let connection_id = node.connection_id.clone();
         let database_type = node.database_type;
 
-        let (database_name, table_name) = match node.node_type {
+        let (database_name, schema_name, table_name) = match node.node_type {
             DbNodeType::TablesFolder => {
                 let database = Self::get_database_from_node(&node);
-                (database, None)
+                let schema = node.metadata
+                    .as_ref()
+                    .and_then(|m| m.get("schema"))
+                    .cloned();
+                (database, schema, None)
             }
             DbNodeType::Table => {
                 let database = node.metadata
@@ -602,7 +620,11 @@ impl DatabaseEventHandler {
                     .and_then(|m| m.get("database"))
                     .cloned()
                     .unwrap_or_else(|| Self::get_database_from_node(&node));
-                (database, Some(node.name.clone()))
+                let schema = node.metadata
+                    .as_ref()
+                    .and_then(|m| m.get("schema"))
+                    .cloned();
+                (database, schema, Some(node.name.clone()))
             }
             _ => return,
         };
@@ -620,6 +642,9 @@ impl DatabaseEventHandler {
         };
 
         let mut config = TableDesignerConfig::new(connection_id, database_name, database_type);
+        if let Some(schema) = schema_name {
+            config = config.with_schema_name(schema);
+        }
         if let Some(table) = table_name {
             config = config.with_table_name(table);
         }
@@ -983,6 +1008,7 @@ impl DatabaseEventHandler {
                 })
                 .on_ok(move |_, _window, cx| {
                     let sql = editor_view_ok.read(cx).get_sql(cx);
+                    let database_name = editor_view_ok.read(cx).get_database_name(cx);
                     if sql.trim().is_empty() {
                         editor_view_ok.update(cx, |view, cx| {
                             view.set_save_error("SQL 语句不能为空".to_string(), cx);
@@ -1013,7 +1039,8 @@ impl DatabaseEventHandler {
                                             let _ = cx.update_window(window_id, |_entity, window, cx| {
                                                 window.close_dialog(cx);
                                                 tree_view.update(cx, |tree, cx| {
-                                                    tree.refresh_tree(connection_id.clone(), cx);
+                                                    tree.add_database_to_selection(&connection_id, &database_name, cx);
+                                                    tree.add_database_node(&connection_id, &database_name, cx);
                                                 });
                                                 window.push_notification(
                                                     Notification::success("数据库创建成功").autohide(true),
@@ -1261,18 +1288,18 @@ impl DatabaseEventHandler {
                     let conn_id = conn_id.clone();
                     let db_name = db_name.clone();
                     let db_name_log = db_name.clone();
+                    let db_name_for_remove = db_name.clone();
                     let tree = tree.clone();
                     let state = state.clone();
-                    let conn_id_for_refresh = conn_id.clone();
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let result = state.drop_database(cx, conn_id.clone(), db_name.clone()).await;
                         match result {
                             Ok(_) => {
-                                // 刷新父节点（连接节点）
+                                // 直接移除数据库节点，不刷新整个连接
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree, cx| {
-                                        tree.refresh_tree(conn_id_for_refresh, cx);
+                                        tree.remove_database_node(&conn_id, &db_name_for_remove, cx);
                                     });
                                     Self::show_success_async(cx, format!("数据库 {} 已删除", db_name_log));
                                 });
@@ -1437,9 +1464,10 @@ impl DatabaseEventHandler {
                     let meta = meta.clone();
                     let state = state.clone();
                     let schema_log = schema.clone();
+                    let schema_for_remove = schema.clone();
                     let tree = tree.clone();
                     let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
-                    let db_node_id = format!("{}:{}", conn_id, database);
+                    let database_for_remove = database.clone();
 
                     let sql = state.get_plugin(&database_type)
                         .map(|p| p.build_drop_schema_sql(&schema))
@@ -1461,7 +1489,7 @@ impl DatabaseEventHandler {
                                     SqlResult::Exec(_) => {
                                         let _ = cx.update(|cx| {
                                             tree.update(cx, |tree, cx| {
-                                                tree.refresh_tree(db_node_id, cx);
+                                                tree.remove_schema_node(&conn_id, &database_for_remove, &schema_for_remove, cx);
                                             });
                                             Self::show_success_async(cx, format!("模式 {} 已删除", schema_log));
                                         });
@@ -1495,11 +1523,13 @@ impl DatabaseEventHandler {
     ) {
         let connection_id = node.connection_id.clone();
         let table_name = node.name.clone();
+        let table_node_id = node.id.clone();
         let metadata = node.metadata.clone();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let conn_id = connection_id.clone();
             let tbl_name = table_name.clone();
+            let tbl_node_id = table_node_id.clone();
             let meta = metadata.clone();
             let state = global_state.clone();
             let tbl_name_display = table_name.clone();
@@ -1517,22 +1547,22 @@ impl DatabaseEventHandler {
                 .on_ok(move |_, _, cx| {
                     let conn_id = conn_id.clone();
                     let tbl_name = tbl_name.clone();
+                    let tbl_node_id = tbl_node_id.clone();
                     let meta = meta.clone();
                     let state = state.clone();
                     let tbl_name_log = tbl_name.clone();
                     let tree = tree.clone();
-                    let db_node_id = format!("{}:{}", conn_id, meta.as_ref().and_then(|m| m.get("database")).unwrap_or(&String::new()));
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
                         let task = state.drop_table(cx, conn_id.clone(), database, tbl_name.clone()).await;
-                        
+
                         match task {
                             Ok(_) => {
-                                // 刷新数据库节点
+                                // 直接移除表节点
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree, cx| {
-                                        tree.refresh_tree(db_node_id, cx);
+                                        tree.remove_table_node(&tbl_node_id, cx);
                                     });
                                     Self::show_success_async(cx, format!("表 {} 已删除", tbl_name_log));
                                 });
@@ -1725,11 +1755,13 @@ impl DatabaseEventHandler {
     ) {
         let connection_id = node.connection_id.clone();
         let view_name = node.name.clone();
+        let view_node_id = node.id.clone();
         let metadata = node.metadata.clone();
 
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let conn_id = connection_id.clone();
             let v_name = view_name.clone();
+            let v_node_id = view_node_id.clone();
             let meta = metadata.clone();
             let state = global_state.clone();
             let v_name_display = view_name.clone();
@@ -1747,22 +1779,22 @@ impl DatabaseEventHandler {
                 .on_ok(move |_, _, cx| {
                     let conn_id = conn_id.clone();
                     let v_name = v_name.clone();
+                    let v_node_id = v_node_id.clone();
                     let meta = meta.clone();
                     let state = state.clone();
                     let v_name_log = v_name.clone();
                     let tree = tree.clone();
-                    let db_node_id = format!("{}:{}", conn_id, meta.as_ref().and_then(|m| m.get("database")).unwrap_or(&String::new()));
 
                     cx.spawn(async move |cx: &mut AsyncApp| {
                         let database = meta.as_ref().and_then(|m| m.get("database")).map(|s| s.to_string()).unwrap_or_default();
                         let result = state.drop_view(cx, conn_id.clone(), database, v_name.clone()).await;
-                        
+
                         match result {
                             Ok(_) => {
-                                // 刷新数据库节点
+                                // 直接移除视图节点
                                 let _ = cx.update(|cx| {
                                     tree.update(cx, |tree, cx| {
-                                        tree.refresh_tree(db_node_id, cx);
+                                        tree.remove_view_node(&v_node_id, cx);
                                     });
                                     Self::show_success_async(cx, format!("视图 {} 已删除", v_name_log));
                                 });
@@ -1793,6 +1825,7 @@ impl DatabaseEventHandler {
         if let Some(qid) = query_id {
             let connection_id = node.connection_id.clone();
             let query_name = node.name.clone();
+            let database_type = node.database_type;
             let tab_id = format!("query-{}", qid);
 
             tab_container.update(cx, |container, cx| {
@@ -1803,6 +1836,7 @@ impl DatabaseEventHandler {
                             qid,
                             query_name.clone(),
                             connection_id.clone(),
+                            database_type,
                             window,
                             cx,
                         );

@@ -16,13 +16,14 @@ pub struct TableDataTabContent {
 impl TableDataTabContent {
     pub fn new(
         database_name: String,
+        schema_name: Option<String>,
         table_name: String,
         connection_id: impl Into<String>,
         database_type: one_core::storage::DatabaseType,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
-        let config = DataGridConfig::new(
+        let mut config = DataGridConfig::new(
             database_name.clone(),
             table_name.clone(),
             connection_id,
@@ -30,6 +31,10 @@ impl TableDataTabContent {
         )
         .editable(true)
         .show_toolbar(true);
+
+        if let Some(schema) = schema_name {
+            config = config.with_schema(schema);
+        }
 
         let data_grid = cx.new(|cx| DataGrid::new(config, window, cx));
 

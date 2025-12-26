@@ -192,7 +192,7 @@ impl DataExportView {
                 limit,
             };
 
-            match DataExporter::export(connection.as_ref(), export_config).await {
+            match DataExporter::export(plugin, connection.as_ref(),  export_config).await {
                 Ok(result) => {
                     // 写入文件
                     if let Err(e) = std::fs::write(&output_path_str, result.output) {

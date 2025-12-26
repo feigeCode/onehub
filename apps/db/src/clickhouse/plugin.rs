@@ -298,7 +298,7 @@ impl DatabasePlugin for ClickHousePlugin {
         })
     }
 
-    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
         let sql = format!(
             "SELECT name, type, default_kind, default_expression, comment, is_in_primary_key FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
             database.replace("'", "''"),
@@ -347,10 +347,10 @@ impl DatabasePlugin for ClickHousePlugin {
         }
     }
 
-    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let columns = self.list_columns(connection, database, table).await?;
+        let columns = self.list_columns(connection, database, schema, table).await?;
 
         let column_defs = vec![
             Column::new("name", "Name").width(px(150.0)),
@@ -381,13 +381,13 @@ impl DatabasePlugin for ClickHousePlugin {
         })
     }
 
-    async fn list_indexes(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<IndexInfo>> {
+    async fn list_indexes(&self, _connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, _table: &str) -> Result<Vec<IndexInfo>> {
         // ClickHouse doesn't have traditional indexes like MySQL
         // It has data skipping indexes, but they are not directly comparable
         Ok(Vec::new())
     }
 
-    async fn list_indexes_view(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<ObjectView> {
+    async fn list_indexes_view(&self, _connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, _table: &str) -> Result<ObjectView> {
         use gpui::px;
 
         Ok(ObjectView {

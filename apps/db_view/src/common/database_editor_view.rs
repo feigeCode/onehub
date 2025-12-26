@@ -1,15 +1,12 @@
-use db::{GlobalDbState, plugin::DatabaseOperationRequest, SqlResult};
-use gpui::{div, AnyView, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window};
+use db::{GlobalDbState, plugin::DatabaseOperationRequest};
+use gpui::{div, AnyView, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render, Styled, Subscription, Window};
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex, v_flex,
     highlighter::Language,
     input::{Input, InputState},
-    notification::Notification,
-    WindowExt,
 };
 use one_core::storage::DatabaseType;
-use crate::db_tree_view::DbTreeView;
 use super::DatabaseFormEvent;
 
 pub struct DatabaseEditorView {
@@ -19,6 +16,7 @@ pub struct DatabaseEditorView {
     current_tab: EditorTab,
     is_edit_mode: bool,
     error_message: Entity<Option<String>>,
+    database_name: Entity<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -47,12 +45,17 @@ impl DatabaseEditorView {
         });
         let focus_handle = cx.focus_handle();
         let error_message = cx.new(|_| None);
+        let database_name = cx.new(|_| String::new());
 
         let is_edit = is_edit_mode;
 
+        let database_name_clone = database_name.clone();
         let form_subscription = cx.subscribe_in(&form, window, move |this, _form, event, window, cx| {
             match event {
                 DatabaseFormEvent::FormChanged(request) => {
+                    database_name_clone.update(cx, |name, _| {
+                        *name = request.database_name.clone();
+                    });
                     this.update_sql_preview(request, database_type, is_edit, window, cx);
                 }
             }
@@ -65,6 +68,7 @@ impl DatabaseEditorView {
             current_tab: EditorTab::Form,
             is_edit_mode,
             error_message,
+            database_name,
             _subscriptions: vec![form_subscription],
         }
     }
@@ -92,6 +96,10 @@ impl DatabaseEditorView {
 
     pub fn get_sql(&self, cx: &App) -> String {
         self.sql_preview.read(cx).text().to_string()
+    }
+
+    pub fn get_database_name(&self, cx: &App) -> String {
+        self.database_name.read(cx).clone()
     }
 
     pub fn set_save_error(&mut self, error: String, cx: &mut Context<Self>) {

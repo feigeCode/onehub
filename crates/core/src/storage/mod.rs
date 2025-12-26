@@ -12,6 +12,7 @@ pub use repository::*;
 
 
 pub fn init(cx: &mut App){
+    cx.set_global(ActiveConnections::new());
     manager::init(cx);
     repository::init(cx);
 }

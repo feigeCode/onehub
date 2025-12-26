@@ -47,10 +47,10 @@ impl FormatHandler for JsonFormatHandler {
 
         // TRUNCATE表
         if config.truncate_before_import {
-            let truncate_sql = format!("TRUNCATE TABLE `{}`", table);
+            let truncate_sql = format!("TRUNCATE TABLE {}", plugin.quote_identifier(table));
             let results = connection.execute(plugin.clone(), &truncate_sql, ExecOptions::default()).await
                 .map_err(|e| anyhow!("Truncate failed: {}", e))?;
-            
+
             for result in results {
                 if let SqlResult::Error(err) = result {
                     errors.push(format!("Truncate failed: {}", err.message));
@@ -84,14 +84,12 @@ impl FormatHandler for JsonFormatHandler {
                 }
             };
 
-            let mut insert_sql = format!("INSERT INTO `{}` (", table);
+            let mut insert_sql = format!("INSERT INTO {} (", plugin.quote_identifier(table));
             for (i, col) in columns.iter().enumerate() {
                 if i > 0 {
                     insert_sql.push_str(", ");
                 }
-                insert_sql.push('`');
-                insert_sql.push_str(col);
-                insert_sql.push('`');
+                insert_sql.push_str(&plugin.quote_identifier(col));
             }
             insert_sql.push_str(") VALUES (");
 
@@ -153,6 +151,7 @@ impl FormatHandler for JsonFormatHandler {
 
     async fn export(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         connection: &dyn DbConnection,
         config: &ExportConfig,
     ) -> Result<ExportResult> {
@@ -161,13 +160,15 @@ impl FormatHandler for JsonFormatHandler {
         let mut total_rows = 0u64;
 
         for table in &config.tables {
-            let mut select_sql = format!("SELECT * FROM `{}`", table);
+            let table_ref = plugin.format_table_reference(&config.database, None, table);
+            let mut select_sql = format!("SELECT * FROM {}", table_ref);
             if let Some(where_clause) = &config.where_clause {
                 select_sql.push_str(" WHERE ");
                 select_sql.push_str(where_clause);
             }
             if let Some(limit) = config.limit {
-                select_sql.push_str(&format!(" LIMIT {}", limit));
+                let pagination = plugin.format_pagination(limit, 0, "");
+                select_sql.push_str(&pagination);
             }
 
             let result = connection.query(&select_sql, None, ExecOptions::default()).await

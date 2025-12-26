@@ -1,5 +1,6 @@
 use one_core::storage::traits::Repository;
 use one_core::gpui_tokio::Tokio;
+use one_core::storage::DatabaseType;
 use crate::sql_editor::SqlEditor;
 use crate::sql_result_tab::SqlResultTabContainer;
 use one_core::tab_container::{TabContent, TabContentType};
@@ -26,9 +27,12 @@ pub struct SqlEditorTab {
     title: SharedString,
     editor: Entity<SqlEditor>,
     connection_id: String,
+    database_type: DatabaseType,
     // Multiple result tabs
     sql_result_tab_container: Entity<SqlResultTabContainer> ,
     database_select: Entity<SelectState<SearchableVec<String>>>,
+    schema_select: Entity<SelectState<SearchableVec<String>>>,
+    supports_schema: bool,
     // Add focus handle
     focus_handle: FocusHandle,
 }
@@ -37,6 +41,7 @@ impl SqlEditorTab {
     pub fn new_with_config(
         title: impl Into<SharedString>,
         connection_id: impl Into<String>,
+        database_type: DatabaseType,
         query_id: Option<i64>,
         initial_database: Option<String>,
         window: &mut Window,
@@ -48,13 +53,23 @@ impl SqlEditorTab {
         let database_select = cx.new(|cx| {
             SelectState::new(SearchableVec::new(vec![]), None, window, cx)
         });
+        // Create schema select with empty items initially
+        let schema_select = cx.new(|cx| {
+            SelectState::new(SearchableVec::new(vec![]), None, window, cx)
+        });
+
+        let global_state = cx.global::<GlobalDbState>().clone();
+        let supports_schema = global_state.supports_schema(&database_type);
 
         let instance = Self {
             title: title.into(),
             editor: editor.clone(),
             connection_id: connection_id.into(),
+            database_type,
             sql_result_tab_container: cx.new(|cx| SqlResultTabContainer::new(window, cx)),
             database_select: database_select.clone(),
+            schema_select: schema_select.clone(),
+            supports_schema,
             focus_handle,
         };
 
@@ -75,10 +90,66 @@ impl SqlEditorTab {
                 let db = db_name.clone();
                 let instance = this.clone();
                 cx.spawn(async move |cx| {
+                    // Load schemas if supported
+                    if instance.supports_schema {
+                        instance.load_schemas_for_db(global_state.clone(), &db, cx).await;
+                    }
                     instance.update_schema_for_db(global_state, &db, cx).await;
                 }).detach();
             }
         }).detach();
+
+        // Bind schema select event
+        let this_for_schema = self.clone();
+        cx.subscribe(&self.schema_select, move |_select, event, cx| {
+            let global_state = cx.global::<GlobalDbState>().clone();
+            if let SelectEvent::Confirm(Some(_schema_name)) = event {
+                let instance = this_for_schema.clone();
+                // Get current database
+                let database = instance.database_select.read(cx).selected_value().cloned();
+                if let Some(db) = database {
+                    cx.spawn(async move |cx| {
+                        instance.update_schema_for_db(global_state, &db, cx).await;
+                    }).detach();
+                }
+            }
+        }).detach();
+    }
+
+    /// Load schemas for a database
+    async fn load_schemas_for_db(&self, global_state: GlobalDbState, database: &str, cx: &mut AsyncApp) {
+        let connection_id = self.connection_id.clone();
+        let schema_select = self.schema_select.clone();
+        let db = database.to_string();
+
+        let schemas = match global_state.list_schemas(cx, connection_id.clone(), db.clone()).await {
+            Ok(result) => result,
+            Err(e) => {
+                error!("Failed to load schemas for {}: {}", db, e);
+                return;
+            }
+        };
+
+        let _ = cx.update(|cx| {
+            if let Some(window_id) = cx.active_window() {
+                let _ = cx.update_window(window_id, |_entity, window, cx| {
+                    schema_select.update(cx, |state, cx| {
+                        if schemas.is_empty() {
+                            let items = SearchableVec::new(vec!["No schemas available".to_string()]);
+                            state.set_items(items, window, cx);
+                            state.set_selected_index(None, window, cx);
+                        } else {
+                            let items = SearchableVec::new(schemas.clone());
+                            state.set_items(items, window, cx);
+                            // Select first schema by default (usually 'public' or 'dbo')
+                            if !schemas.is_empty() {
+                                state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+                            }
+                        }
+                    });
+                });
+            }
+        });
     }
 
     pub fn set_sql(&self, sql: String, window: &mut Window, cx: &mut App) {
@@ -171,6 +242,10 @@ impl SqlEditorTab {
             }).ok();
 
             if let Some(ref db) = resolved_database {
+                // Load schemas if supported
+                if instance.supports_schema {
+                    instance.load_schemas_for_db(global_state.clone(), db, cx).await;
+                }
                 instance.update_schema_for_db(global_state, db, cx).await;
             }
         }).detach();
@@ -183,6 +258,15 @@ impl SqlEditorTab {
         let connection_id = self.connection_id.clone();
         let editor = self.editor.clone();
         let db = database.to_string();
+
+        // Get selected schema if supported
+        let selected_schema = if self.supports_schema {
+            self.schema_select.read_with(cx, |state, _cx| {
+                state.selected_value().cloned()
+            }).ok().flatten()
+        } else {
+            None
+        };
 
         let tables = match global_state.list_tables(cx, connection_id.clone(), db.clone()).await {
             Ok(result) => result,
@@ -218,7 +302,7 @@ impl SqlEditorTab {
 
         // Load columns for each table
         for table in &tables {
-            if let Ok(columns) = global_state.list_columns(cx, connection_id.clone(), db.clone(), table.name.clone()).await {
+            if let Ok(columns) = global_state.list_columns(cx, connection_id.clone(), db.clone(), selected_schema.clone(), table.name.clone()).await {
                 let column_items: Vec<(String, String)> = columns.iter()
                     .map(|c| (c.name.clone(), format!("{} - {}", c.data_type,
                                                       c.comment.as_ref().unwrap_or(&String::new()))))
@@ -520,6 +604,8 @@ impl Render for SqlEditorTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = self.editor.clone();
         let database_select = self.database_select.clone();
+        let schema_select = self.schema_select.clone();
+        let supports_schema = self.supports_schema;
 
         // Check if there are any results and if the panel is visible
         let has_results = self.sql_result_tab_container.read(cx).has_results(cx);
@@ -555,6 +641,15 @@ impl Render for SqlEditorTab {
                                             .placeholder("Select Database")
                                             .w(px(200.))
                                     )
+                                    .when(supports_schema, |this| {
+                                        this.child(
+                                            // Schema selector
+                                            Select::new(&schema_select)
+                                                .with_size(Size::Small)
+                                                .placeholder("Select Schema")
+                                                .w(px(150.))
+                                        )
+                                    })
                                     .child(
                                         Button::new("run-query")
                                             .with_size(Size::Small)
@@ -653,8 +748,11 @@ impl Clone for SqlEditorTab {
             title: self.title.clone(),
             editor: self.editor.clone(),
             connection_id: self.connection_id.clone(),
+            database_type: self.database_type,
             sql_result_tab_container: self.sql_result_tab_container.clone(),
             database_select: self.database_select.clone(),
+            schema_select: self.schema_select.clone(),
+            supports_schema: self.supports_schema,
             focus_handle: self.focus_handle.clone(),
         }
     }
@@ -681,20 +779,21 @@ impl SqlEditorTabContent {
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
-        // Create with empty connection_id - should not be used in practice
-        Self::new_with_config(title, "", None, None, window, cx)
+        // Create with empty connection_id and default database type - should not be used in practice
+        Self::new_with_config(title, "", DatabaseType::MySQL, None, None, window, cx)
     }
 
     pub fn new_with_config(
         title: impl Into<SharedString>,
         connection_id: impl Into<String>,
+        database_type: DatabaseType,
         query_id: Option<i64>,
         initial_database: Option<String>,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
         let title = title.into();
-        let sql_editor_tab = cx.new(|cx| SqlEditorTab::new_with_config(title.clone(), connection_id, query_id, initial_database, window, cx));
+        let sql_editor_tab = cx.new(|cx| SqlEditorTab::new_with_config(title.clone(), connection_id, database_type, query_id, initial_database, window, cx));
 
         Self {
             title,
@@ -706,10 +805,11 @@ impl SqlEditorTabContent {
         query_id: i64,
         title: impl Into<SharedString>,
         connection_id: impl Into<String>,
+        database_type: DatabaseType,
         window: &mut Window,
         cx: &mut App,
     ) -> Self {
-        Self::new_with_config(title, connection_id, Some(query_id), None, window, cx)
+        Self::new_with_config(title, connection_id, database_type, Some(query_id), None, window, cx)
     }
 }
 

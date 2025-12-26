@@ -42,6 +42,15 @@ impl DatabasePlugin for PostgresPlugin {
         true
     }
 
+    fn format_table_reference(&self, _database: &str, schema: Option<&str>, table: &str) -> String {
+        let schema_name = schema.unwrap_or("public");
+        format!(
+            "{}.{}",
+            self.quote_identifier(schema_name),
+            self.quote_identifier(table)
+        )
+    }
+
     async fn list_schemas(&self, connection: &dyn DbConnection, _database: &str) -> Result<Vec<String>> {
         let result = connection.query(
             "SELECT schema_name FROM information_schema.schemata \
@@ -479,18 +488,19 @@ impl DatabasePlugin for PostgresPlugin {
         })
     }
 
-    async fn list_columns(&self, connection: &dyn DbConnection, _database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    async fn list_columns(&self, connection: &dyn DbConnection, _database: &str, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
+        let schema_val = schema.unwrap_or("public");
         let sql = format!(
             "SELECT column_name, data_type, is_nullable, column_default, \
              (SELECT COUNT(*) FROM information_schema.key_column_usage kcu \
               WHERE kcu.table_name = c.table_name AND kcu.column_name = c.column_name \
-              AND kcu.table_schema = 'public' AND EXISTS \
+              AND kcu.table_schema = '{}' AND EXISTS \
               (SELECT 1 FROM information_schema.table_constraints tc \
                WHERE tc.constraint_name = kcu.constraint_name AND tc.constraint_type = 'PRIMARY KEY')) > 0 AS is_primary \
              FROM information_schema.columns c \
-             WHERE table_schema = 'public' AND table_name = '{}' \
+             WHERE table_schema = '{}' AND table_name = '{}' \
              ORDER BY ordinal_position",
-            table
+            schema_val.replace("'", "''"), schema_val.replace("'", "''"), table.replace("'", "''")
         );
 
         let result = connection.query(&sql, None, ExecOptions::default())
@@ -513,10 +523,10 @@ impl DatabasePlugin for PostgresPlugin {
         }
     }
 
-    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
-        
-        let columns_data = self.list_columns(connection, database, table).await?;
+
+        let columns_data = self.list_columns(connection, database, schema, table).await?;
         
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
@@ -544,7 +554,8 @@ impl DatabasePlugin for PostgresPlugin {
         })
     }
 
-    async fn list_indexes(&self, connection: &dyn DbConnection, _database: &str, table: &str) -> Result<Vec<IndexInfo>> {
+    async fn list_indexes(&self, connection: &dyn DbConnection, _database: &str, schema: Option<&str>, table: &str) -> Result<Vec<IndexInfo>> {
+        let schema_val = schema.unwrap_or("public");
         let sql = format!(
             "SELECT i.relname AS index_name, \
              a.attname AS column_name, \
@@ -552,10 +563,11 @@ impl DatabasePlugin for PostgresPlugin {
              FROM pg_class t \
              JOIN pg_index ix ON t.oid = ix.indrelid \
              JOIN pg_class i ON i.oid = ix.indexrelid \
+             JOIN pg_namespace n ON t.relnamespace = n.oid \
              JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey) \
-             WHERE t.relname = '{}' AND t.relkind = 'r' \
+             WHERE t.relname = '{}' AND t.relkind = 'r' AND n.nspname = '{}' \
              ORDER BY i.relname, a.attnum",
-            table
+            table.replace("'", "''"), schema_val.replace("'", "''")
         );
 
         let result = connection.query(&sql, None, ExecOptions::default())
@@ -586,10 +598,10 @@ impl DatabasePlugin for PostgresPlugin {
         }
     }
 
-    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
-        
-        let indexes = self.list_indexes(connection, database, table).await?;
+
+        let indexes = self.list_indexes(connection, database, schema, table).await?;
         
         let columns = vec![
             Column::new("name", "Name").width(px(180.0)),
@@ -818,7 +830,8 @@ impl DatabasePlugin for PostgresPlugin {
         })
     }
 
-    async fn list_table_checks(&self, connection: &dyn DbConnection, _database: &str, table: &str) -> Result<Vec<CheckInfo>> {
+    async fn list_table_checks(&self, connection: &dyn DbConnection, _database: &str, schema: Option<&str>, table: &str) -> Result<Vec<CheckInfo>> {
+        let schema_val = schema.unwrap_or("public");
         let sql = format!(
             "SELECT c.conname AS constraint_name, \
                     t.relname AS table_name, \
@@ -827,10 +840,10 @@ impl DatabasePlugin for PostgresPlugin {
              JOIN pg_class t ON c.conrelid = t.oid \
              JOIN pg_namespace n ON t.relnamespace = n.oid \
              WHERE c.contype = 'c' \
-               AND n.nspname = 'public' \
+               AND n.nspname = '{}' \
                AND t.relname = '{}' \
              ORDER BY c.conname",
-            table
+            schema_val.replace("'", "''"), table.replace("'", "''")
         );
 
         let result = connection.query(&sql, None, ExecOptions::default())
@@ -1265,6 +1278,15 @@ mod tests {
         assert_eq!(plugin.quote_identifier("table_name"), "\"table_name\"");
         assert_eq!(plugin.quote_identifier("column"), "\"column\"");
         assert_eq!(plugin.quote_identifier("col\"umn"), "\"col\"\"umn\"");
+    }
+
+    #[test]
+    fn test_format_table_reference() {
+        let plugin = create_plugin();
+        assert_eq!(
+            plugin.format_table_reference("public", None, "users"),
+            "\"public\".\"users\""
+        );
     }
 
     #[test]

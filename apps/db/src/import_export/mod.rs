@@ -146,6 +146,7 @@ pub trait FormatHandler: Send + Sync {
     /// 导出数据
     async fn export(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         connection: &dyn DbConnection,
         config: &ExportConfig,
     ) -> Result<ExportResult>;

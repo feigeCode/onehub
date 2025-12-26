@@ -1037,6 +1037,14 @@ impl GlobalDbState {
         // For Database and Schema nodes, we need to connect to the specific database
         // This is especially important for PostgreSQL which doesn't support database switching
         let target_database = match node.node_type {
+            DbNodeType::Connection => {
+                // For listing databases, use config database or fallback to "postgres" for PostgreSQL
+                if config.database.is_none() && config.database_type == DatabaseType::PostgreSQL {
+                    Some("postgres".to_string())
+                } else {
+                    None
+                }
+            }
             DbNodeType::Database => Some(node.name.clone()),
             DbNodeType::Schema => node.metadata.as_ref()
                 .and_then(|m| m.get("database"))
@@ -1065,8 +1073,9 @@ impl GlobalDbState {
                     .map_err(|e| anyhow::anyhow!("{}", e))
             };
 
-            clone_self.connection_manager.release_session(&session_id).await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            if let Err(e) = clone_self.connection_manager.release_session(&session_id).await {
+                tracing::warn!("Failed to release session {}: {}", session_id, e);
+            }
 
             result
         })?.await
@@ -1158,6 +1167,26 @@ impl GlobalDbState {
         })
     }
 
+    /// Check if database type supports schemas
+    pub fn supports_schema(&self, database_type: &DatabaseType) -> bool {
+        self.db_manager.get_plugin(database_type)
+            .map(|plugin| plugin.supports_schema())
+            .unwrap_or(false)
+    }
+
+    /// List schemas in a database
+    pub async fn list_schemas(
+        &self,
+        cx: &mut AsyncApp,
+        connection_id: String,
+        database: String,
+    ) -> anyhow::Result<Vec<String>>
+    {
+        with_plugin_session!(self, cx, connection_id, |plugin, conn| {
+            plugin.list_schemas(&*conn, &database).await
+        })
+    }
+
     /// List tables
     pub async fn list_tables(
         &self,
@@ -1190,11 +1219,12 @@ impl GlobalDbState {
         cx: &mut AsyncApp,
         connection_id: String,
         database: String,
+        schema: Option<String>,
         table: String,
     ) -> anyhow::Result<Vec<crate::types::ColumnInfo>>
     {
         with_plugin_session!(self, cx, connection_id, |plugin, conn| {
-            plugin.list_columns(&*conn, &database, &table).await
+            plugin.list_columns(&*conn, &database, schema.as_deref(), &table).await
         })
     }
 
@@ -1204,11 +1234,12 @@ impl GlobalDbState {
         cx: &mut AsyncApp,
         connection_id: String,
         database: String,
+        schema: Option<String>,
         table: String,
     ) -> anyhow::Result<crate::types::ObjectView>
     {
         with_plugin_session!(self, cx, connection_id, |plugin, conn| {
-            plugin.list_columns_view(&*conn, &database, &table).await
+            plugin.list_columns_view(&*conn, &database, schema.as_deref(), &table).await
         })
     }
 
@@ -1218,11 +1249,12 @@ impl GlobalDbState {
         cx: &mut AsyncApp,
         connection_id: String,
         database: String,
+        schema: Option<String>,
         table: String,
     ) -> anyhow::Result<Vec<crate::types::IndexInfo>>
     {
         with_plugin_session!(self, cx, connection_id, |plugin, conn| {
-            plugin.list_indexes(&*conn, &database, &table).await
+            plugin.list_indexes(&*conn, &database, schema.as_deref(), &table).await
         })
     }
 
@@ -1322,6 +1354,7 @@ impl GlobalDbState {
 
         let clone_self = self.clone();
         Tokio::spawn_result(cx, async move {
+            let plugin = clone_self.get_plugin(&db_config.database_type)?;
             let session_id = clone_self.connection_manager
                 .create_session(db_config.clone(), &clone_self.db_manager)
                 .await?;
@@ -1330,7 +1363,7 @@ impl GlobalDbState {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
                 let conn = guard.connection()
                     .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                DataExporter::export(conn, config).await
+                DataExporter::export(plugin, conn, config).await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             };
 

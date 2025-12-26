@@ -24,13 +24,12 @@ impl FormatHandler for SqlFormatHandler {
         let mut errors = Vec::new();
         let mut total_rows = 0u64;
 
-        // TRUNCATE表（如果需要）
         if config.truncate_before_import {
             if let Some(table) = &config.table {
-                let truncate_sql = format!("TRUNCATE TABLE `{}`", table);
+                let truncate_sql = format!("TRUNCATE TABLE {}", plugin.quote_identifier(table));
                 let results = connection.execute(plugin.clone(), &truncate_sql, ExecOptions::default()).await
                     .map_err(|e| anyhow::anyhow!("Truncate failed: {}", e))?;
-                
+
                 for result in results {
                     if let SqlResult::Error(err) = result {
                         errors.push(format!("Truncate failed: {}", err.message));
@@ -47,7 +46,6 @@ impl FormatHandler for SqlFormatHandler {
             }
         }
 
-        // 执行SQL脚本
         let exec_options = ExecOptions {
             stop_on_error: config.stop_on_error,
             transactional: config.use_transaction,
@@ -79,6 +77,7 @@ impl FormatHandler for SqlFormatHandler {
 
     async fn export(
         &self,
+        plugin: Arc<dyn DatabasePlugin>,
         connection: &dyn DbConnection,
         config: &ExportConfig,
     ) -> Result<ExportResult> {
@@ -87,68 +86,43 @@ impl FormatHandler for SqlFormatHandler {
         let mut total_rows = 0u64;
 
         for table in &config.tables {
-            // 导出表结构
             if config.include_schema {
-                let show_create = format!("SHOW CREATE TABLE `{}`", table);
-                let result = connection.query(&show_create, None, ExecOptions::default()).await
-                    .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
-
-                if let SqlResult::Query(query_result) = result {
-                    if let Some(row) = query_result.rows.first() {
-                        if let Some(Some(create_sql)) = row.get(1) {
+                match plugin.export_table_create_sql(connection, &config.database, table).await {
+                    Ok(schema_sql) => {
+                        if !schema_sql.is_empty() {
                             output.push_str("-- Table structure for ");
                             output.push_str(table);
                             output.push('\n');
-                            output.push_str(create_sql);
+                            output.push_str(&schema_sql);
                             output.push_str(";\n\n");
                         }
+                    }
+                    Err(e) => {
+                        output.push_str(&format!("-- Failed to export structure for {}: {}\n\n", table, e));
                     }
                 }
             }
 
-            // 导出数据
             if config.include_data {
-                let mut select_sql = format!("SELECT * FROM `{}`", table);
-                if let Some(where_clause) = &config.where_clause {
-                    select_sql.push_str(" WHERE ");
-                    select_sql.push_str(where_clause);
-                }
-                if let Some(limit) = config.limit {
-                    select_sql.push_str(&format!(" LIMIT {}", limit));
-                }
-
-                let result = connection.query(&select_sql, None, ExecOptions::default()).await
-                    .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
-
-                if let SqlResult::Query(query_result) = result {
-                    if !query_result.rows.is_empty() {
-                        output.push_str("-- Data for table ");
-                        output.push_str(table);
-                        output.push('\n');
-
-                        for row in &query_result.rows {
-                            output.push_str("INSERT INTO `");
+                match plugin.export_table_data_sql(
+                    connection,
+                    &config.database,
+                    table,
+                    config.where_clause.as_deref(),
+                    config.limit,
+                ).await {
+                    Ok(data_sql) => {
+                        if !data_sql.is_empty() {
+                            output.push_str("-- Data for table ");
                             output.push_str(table);
-                            output.push_str("` VALUES (");
-
-                            for (i, value) in row.iter().enumerate() {
-                                if i > 0 {
-                                    output.push_str(", ");
-                                }
-                                match value {
-                                    Some(v) => {
-                                        output.push('\'');
-                                        output.push_str(&v.replace('\'', "''"));
-                                        output.push('\'');
-                                    }
-                                    None => output.push_str("NULL"),
-                                }
-                            }
-
-                            output.push_str(");\n");
-                            total_rows += 1;
+                            output.push('\n');
+                            output.push_str(&data_sql);
+                            output.push('\n');
+                            total_rows += data_sql.lines().filter(|l| l.starts_with("INSERT")).count() as u64;
                         }
-                        output.push('\n');
+                    }
+                    Err(e) => {
+                        output.push_str(&format!("-- Failed to export data for {}: {}\n\n", table, e));
                     }
                 }
             }

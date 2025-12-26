@@ -370,12 +370,12 @@ impl DbConnection for MysqlDbConnection {
         let conn = guard.as_mut()
             .ok_or_else(|| DbError::ConnectionError("Not connected to database".to_string()))?;
 
-        let result: Option<String> = conn
+        let result: Option<Option<String>> = conn
             .query_first("SELECT DATABASE()")
             .await
             .map_err(|e| DbError::QueryError(format!("Failed to get current database: {}", e)))?;
 
-        Ok(result)
+        Ok(result.flatten())
     }
 
     async fn switch_database(&self, database: &str) -> Result<(), DbError> {

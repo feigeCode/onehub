@@ -50,6 +50,22 @@ impl DatabasePlugin for MsSqlPlugin {
         }
     }
 
+    fn format_table_reference(&self, database: &str, schema: Option<&str>, table: &str) -> String {
+        match schema {
+            Some(s) => format!(
+                "{}.{}.{}",
+                self.quote_identifier(database),
+                self.quote_identifier(s),
+                self.quote_identifier(table)
+            ),
+            None => format!(
+                "{}..{}",
+                self.quote_identifier(database),
+                self.quote_identifier(table)
+            ),
+        }
+    }
+
     async fn list_schemas(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<String>> {
         let sql = format!(
             r#"
@@ -440,7 +456,8 @@ impl DatabasePlugin for MsSqlPlugin {
         })
     }
 
-    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
+        let schema_val = schema.unwrap_or("dbo");
         let sql = format!(
             r#"
             SELECT
@@ -448,12 +465,12 @@ impl DatabasePlugin for MsSqlPlugin {
                 c.DATA_TYPE,
                 c.IS_NULLABLE,
                 c.COLUMN_DEFAULT,
-                COLUMNPROPERTY(OBJECT_ID('[{database}].[' + c.TABLE_SCHEMA + '].[{table}]'), c.COLUMN_NAME, 'IsIdentity') as is_identity,
+                COLUMNPROPERTY(OBJECT_ID('[{database}].[{schema}].[{table}]'), c.COLUMN_NAME, 'IsIdentity') as is_identity,
                 CAST(ep.value AS NVARCHAR(MAX)) as column_comment,
                 CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END as is_primary_key
             FROM [{database}].INFORMATION_SCHEMA.COLUMNS c
             LEFT JOIN [{database}].sys.extended_properties ep
-                ON ep.major_id = OBJECT_ID('[{database}].[' + c.TABLE_SCHEMA + '].[{table}]')
+                ON ep.major_id = OBJECT_ID('[{database}].[{schema}].[{table}]')
                 AND ep.minor_id = c.ORDINAL_POSITION
                 AND ep.name = 'MS_Description'
             LEFT JOIN (
@@ -463,12 +480,14 @@ impl DatabasePlugin for MsSqlPlugin {
                     ON tc.CONSTRAINT_NAME = ku.CONSTRAINT_NAME
                     AND tc.TABLE_SCHEMA = ku.TABLE_SCHEMA
                 WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                    AND tc.TABLE_SCHEMA = '{schema}'
                     AND tc.TABLE_NAME = '{table}'
             ) pk ON c.COLUMN_NAME = pk.COLUMN_NAME
-            WHERE c.TABLE_NAME = '{table}'
+            WHERE c.TABLE_SCHEMA = '{schema}' AND c.TABLE_NAME = '{table}'
             ORDER BY c.ORDINAL_POSITION
             "#,
             database = database.replace("]", "]]"),
+            schema = schema_val.replace("'", "''"),
             table = table.replace("'", "''")
         );
 
@@ -494,10 +513,10 @@ impl DatabasePlugin for MsSqlPlugin {
         }
     }
 
-    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let columns_data = self.list_columns(connection, database, table).await?;
+        let columns_data = self.list_columns(connection, database, schema, table).await?;
 
         let rows: Vec<Vec<String>> = columns_data.iter().map(|col| {
             vec![
@@ -525,7 +544,8 @@ impl DatabasePlugin for MsSqlPlugin {
         })
     }
 
-    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<IndexInfo>> {
+    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<Vec<IndexInfo>> {
+        let schema_val = schema.unwrap_or("dbo");
         let sql = format!(
             r#"
             SELECT
@@ -536,11 +556,12 @@ impl DatabasePlugin for MsSqlPlugin {
             FROM [{database}].sys.indexes i
             INNER JOIN [{database}].sys.index_columns ic
                 ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-            WHERE i.object_id = OBJECT_ID('[{database}]..[{table}]')
+            WHERE i.object_id = OBJECT_ID('[{database}].[{schema}].[{table}]')
                 AND i.type > 0
             ORDER BY i.name, ic.key_ordinal
             "#,
             database = database.replace("]", "]]"),
+            schema = schema_val.replace("'", "''"),
             table = table.replace("'", "''")
         );
 
@@ -845,10 +866,10 @@ impl DatabasePlugin for MsSqlPlugin {
         }
     }
 
-    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView> {
+    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let indexes = self.list_indexes(connection, database, table).await?;
+        let indexes = self.list_indexes(connection, database, schema, table).await?;
 
         let rows: Vec<Vec<String>> = indexes.iter().map(|idx| {
             vec![
@@ -1360,6 +1381,15 @@ mod tests {
         assert_eq!(
             plugin.format_pagination(500, 0, ""),
             " ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY"
+        );
+    }
+
+    #[test]
+    fn test_format_table_reference() {
+        let plugin = create_plugin();
+        assert_eq!(
+            plugin.format_table_reference("mydb",None, "users"),
+            "[mydb]..[users]"
         );
     }
 

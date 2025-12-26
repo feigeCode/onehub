@@ -10,7 +10,7 @@ use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
 use sqlparser::ast;
 use sqlparser::ast::{Expr, SetExpr, Statement, TableFactor};
 use sqlparser::dialect::{
-    ClickHouseDialect, Dialect, MsSqlDialect, MySqlDialect,
+    Dialect, MsSqlDialect,
     OracleDialect, PostgreSqlDialect, SQLiteDialect
 };
 use sqlparser::parser::Parser;
@@ -190,24 +190,24 @@ pub trait DatabasePlugin: Send + Sync {
     async fn list_tables(&self, connection: &dyn DbConnection, database: &str) -> Result<Vec<TableInfo>>;
 
     async fn list_tables_view(&self, connection: &dyn DbConnection, database: &str) -> Result<ObjectView>;
-    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<ColumnInfo>>;
-    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView>;
-    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<Vec<IndexInfo>>;
+    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>>;
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView>;
+    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<Vec<IndexInfo>>;
 
-    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, table: &str) -> Result<ObjectView>;
+    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView>;
 
     /// List foreign keys for a table
-    async fn list_foreign_keys(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<ForeignKeyDefinition>> {
+    async fn list_foreign_keys(&self, _connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, _table: &str) -> Result<Vec<ForeignKeyDefinition>> {
         Ok(Vec::new())
     }
 
     /// List triggers for a specific table
-    async fn list_table_triggers(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<TriggerInfo>> {
+    async fn list_table_triggers(&self, _connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, _table: &str) -> Result<Vec<TriggerInfo>> {
         Ok(Vec::new())
     }
 
     /// List check constraints for a specific table
-    async fn list_table_checks(&self, _connection: &dyn DbConnection, _database: &str, _table: &str) -> Result<Vec<CheckInfo>> {
+    async fn list_table_checks(&self, _connection: &dyn DbConnection, _database: &str, _schema: Option<&str>, _table: &str) -> Result<Vec<CheckInfo>> {
         Ok(Vec::new())
     }
 
@@ -632,6 +632,7 @@ pub trait DatabasePlugin: Send + Sync {
                 let Some(db) = metadata.get("database") else {
                     return Err(anyhow::anyhow!("表节点缺少 database 字段"));
                 };
+                let schema = metadata.get("schema").map(|s| s.as_str());
                 let table = &node.name;
                 let mut folder_metadata = HashMap::new();
                 folder_metadata.insert("table".to_string(), table.clone());
@@ -641,7 +642,7 @@ pub trait DatabasePlugin: Send + Sync {
                 let mut children = Vec::new();
 
                 // Columns folder
-                let columns = self.list_columns(connection, db, table).await?;
+                let columns = self.list_columns(connection, db, schema, table).await?;
                 let column_count = columns.len();
                 let mut columns_folder = DbNode::new(
                     format!("{}:columns_folder", id),
@@ -679,7 +680,7 @@ pub trait DatabasePlugin: Send + Sync {
                 children.push(columns_folder);
 
                 // Indexes folder (excluding primary key index)
-                let indexes = self.list_indexes(connection, db, table).await?;
+                let indexes = self.list_indexes(connection, db, schema, table).await?;
                 let non_primary_indexes: Vec<_> = indexes
                     .into_iter()
                     .filter(|idx| idx.name.to_uppercase() != "PRIMARY")
@@ -720,7 +721,7 @@ pub trait DatabasePlugin: Send + Sync {
                 children.push(indexes_folder);
 
                 // Foreign Keys folder
-                let foreign_keys = self.list_foreign_keys(connection, db, table).await.unwrap_or_default();
+                let foreign_keys = self.list_foreign_keys(connection, db, schema, table).await.unwrap_or_default();
                 let fk_count = foreign_keys.len();
                 let mut fk_folder = DbNode::new(
                     format!("{}:foreign_keys_folder", id),
@@ -758,7 +759,7 @@ pub trait DatabasePlugin: Send + Sync {
                 children.push(fk_folder);
 
                 // Triggers folder
-                let triggers = self.list_table_triggers(connection, db, table).await.unwrap_or_default();
+                let triggers = self.list_table_triggers(connection, db, schema, table).await.unwrap_or_default();
                 let trigger_count = triggers.len();
                 let mut triggers_folder = DbNode::new(
                     format!("{}:triggers_folder", id),
@@ -795,7 +796,7 @@ pub trait DatabasePlugin: Send + Sync {
                 children.push(triggers_folder);
 
                 // Checks folder
-                let checks = self.list_table_checks(connection, db, table).await.unwrap_or_default();
+                let checks = self.list_table_checks(connection, db, schema, table).await.unwrap_or_default();
                 let check_count = checks.len();
                 let mut checks_folder = DbNode::new(
                     format!("{}:checks_folder", id),
@@ -847,11 +848,23 @@ pub trait DatabasePlugin: Send + Sync {
         }
     }
 
- 
+
 
     /// Format pagination SQL clause. Override for databases with different syntax.
     fn format_pagination(&self, limit: usize, offset: usize, _order_clause: &str) -> String {
         format!(" LIMIT {} OFFSET {}", limit, offset)
+    }
+
+    /// Format table reference for queries. Override for databases with different syntax.
+    /// - MySQL: `database`.`table`
+    /// - PostgreSQL: "schema"."table" (uses schema, ignores database since connection is db-specific)
+    /// - MSSQL: [database]..[table] or [database].[schema].[table]
+    fn format_table_reference(&self, database: &str, _schema: Option<&str>, table: &str) -> String {
+        format!(
+            "{}.{}",
+            self.quote_identifier(database),
+            self.quote_identifier(table)
+        )
     }
 
     // === Table Data Operations ===
@@ -864,7 +877,7 @@ pub trait DatabasePlugin: Send + Sync {
         let start_time = std::time::Instant::now();
 
         // Get column metadata
-        let columns_info = self.list_columns(connection, &request.database, &request.table).await?;
+        let columns_info = self.list_columns(connection, &request.database, request.schema.as_deref(), &request.table).await?;
         let columns: Vec<TableColumnMeta> = columns_info
             .iter()
             .enumerate()
@@ -886,7 +899,7 @@ pub trait DatabasePlugin: Send + Sync {
 
         // Get unique key indices from indexes
         let unique_key_indices = if primary_key_indices.is_empty() {
-            let indexes = self.list_indexes(connection, &request.database, &request.table).await.unwrap_or_default();
+            let indexes = self.list_indexes(connection, &request.database, request.schema.as_deref(), &request.table).await.unwrap_or_default();
             // Find first unique index and get its column indices
             indexes
                 .iter()
@@ -963,10 +976,10 @@ pub trait DatabasePlugin: Send + Sync {
         let offset = (request.page.saturating_sub(1)) * request.page_size;
 
         // Build table reference
-        let table_ref = format!(
-            "{}.{}",
-            self.quote_identifier(&request.database),
-            self.quote_identifier(&request.table)
+        let table_ref = self.format_table_reference(
+            &request.database,
+            request.schema.as_deref(),
+            &request.table
         );
 
         // Build count query
@@ -1052,10 +1065,10 @@ pub trait DatabasePlugin: Send + Sync {
         request: &TableSaveRequest,
         change: &TableRowChange,
     ) -> Option<String> {
-        let table_ident = format!(
-            "{}.{}",
-            self.quote_identifier(&request.database),
-            self.quote_identifier(&request.table)
+        let table_ident = self.format_table_reference(
+            &request.database,
+            request.schema.as_deref(),
+            &request.table
         );
 
         match change {
@@ -1207,6 +1220,85 @@ pub trait DatabasePlugin: Send + Sync {
         }
 
         parts.join(" AND ")
+    }
+
+    // === Export Operations ===
+    /// Export table CREATE statement
+    async fn export_table_create_sql(
+        &self,
+        connection: &dyn DbConnection,
+        database: &str,
+        table: &str,
+    ) -> Result<String> {
+        let columns = self.list_columns(connection, database, None, table).await?;
+        if columns.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut sql = format!("CREATE TABLE {} (\n", self.quote_identifier(table));
+        for (i, col) in columns.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(",\n");
+            }
+            sql.push_str("    ");
+            sql.push_str(&self.build_column_definition(col, true));
+        }
+        sql.push_str("\n)");
+        Ok(sql)
+    }
+
+    /// Export table data as INSERT statements
+    async fn export_table_data_sql(
+        &self,
+        connection: &dyn DbConnection,
+        database: &str,
+        table: &str,
+        where_clause: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<String> {
+        let table_ref = self.format_table_reference(database, None, table);
+        let mut select_sql = format!("SELECT * FROM {}", table_ref);
+        if let Some(where_c) = where_clause {
+            select_sql.push_str(" WHERE ");
+            select_sql.push_str(where_c);
+        }
+        if let Some(lim) = limit {
+            let pagination = self.format_pagination(lim, 0, "");
+            select_sql.push_str(&pagination);
+        }
+
+        let result = connection.query(&select_sql, None, ExecOptions::default()).await
+            .map_err(|e| anyhow::anyhow!("Query failed: {}", e))?;
+
+        let mut output = String::new();
+        if let SqlResult::Query(query_result) = result {
+            if !query_result.rows.is_empty() {
+                let table_ident = self.quote_identifier(table);
+                for row in &query_result.rows {
+                    output.push_str("INSERT INTO ");
+                    output.push_str(&table_ident);
+                    output.push_str(" VALUES (");
+
+                    for (i, value) in row.iter().enumerate() {
+                        if i > 0 {
+                            output.push_str(", ");
+                        }
+                        match value {
+                            Some(v) => {
+                                output.push('\'');
+                                output.push_str(&v.replace('\'', "''"));
+                                output.push('\'');
+                            }
+                            None => output.push_str("NULL"),
+                        }
+                    }
+
+                    output.push_str(");\n");
+                }
+            }
+        }
+
+        Ok(output)
     }
 
     // === Charset and Collation ===
@@ -1885,7 +1977,7 @@ pub fn analyze_select_editability_fallback(sql: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::dialect::MySqlDialect;
+    use sqlparser::dialect::{ClickHouseDialect, MySqlDialect};
     use sqlparser::parser::Parser;
 
     // ==================== split_statements_with_dialect tests ====================

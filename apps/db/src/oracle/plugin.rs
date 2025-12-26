@@ -347,7 +347,8 @@ impl DatabasePlugin for OraclePlugin {
         })
     }
 
-    async fn list_columns(&self, connection: &dyn DbConnection, schema: &str, table: &str) -> Result<Vec<ColumnInfo>> {
+    async fn list_columns(&self, connection: &dyn DbConnection, database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<ColumnInfo>> {
+        let owner = database;
         let sql = format!(
             r#"
             SELECT
@@ -371,7 +372,7 @@ impl DatabasePlugin for OraclePlugin {
             WHERE c.owner = '{}' AND c.table_name = '{}'
             ORDER BY c.column_id
             "#,
-            schema.replace("'", "''"),
+            owner.replace("'", "''"),
             table.replace("'", "''")
         );
 
@@ -397,10 +398,10 @@ impl DatabasePlugin for OraclePlugin {
         }
     }
 
-    async fn list_columns_view(&self, connection: &dyn DbConnection, schema: &str, table: &str) -> Result<ObjectView> {
+    async fn list_columns_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let columns_data = self.list_columns(connection, schema, table).await?;
+        let columns_data = self.list_columns(connection, database, schema, table).await?;
 
         let rows: Vec<Vec<String>> = columns_data.iter().map(|col| {
             vec![
@@ -430,7 +431,8 @@ impl DatabasePlugin for OraclePlugin {
         })
     }
 
-    async fn list_indexes(&self, connection: &dyn DbConnection, schema: &str, table: &str) -> Result<Vec<IndexInfo>> {
+    async fn list_indexes(&self, connection: &dyn DbConnection, database: &str, _schema: Option<&str>, table: &str) -> Result<Vec<IndexInfo>> {
+        let owner = database;
         let sql = format!(
             r#"
             SELECT
@@ -443,7 +445,7 @@ impl DatabasePlugin for OraclePlugin {
             WHERE i.owner = '{}' AND i.table_name = '{}'
             ORDER BY i.index_name, ic.column_position
             "#,
-            schema.replace("'", "''"),
+            owner.replace("'", "''"),
             table.replace("'", "''")
         );
 
@@ -476,10 +478,10 @@ impl DatabasePlugin for OraclePlugin {
         }
     }
 
-    async fn list_indexes_view(&self, connection: &dyn DbConnection, schema: &str, table: &str) -> Result<ObjectView> {
+    async fn list_indexes_view(&self, connection: &dyn DbConnection, database: &str, schema: Option<&str>, table: &str) -> Result<ObjectView> {
         use gpui::px;
 
-        let indexes = self.list_indexes(connection, schema, table).await?;
+        let indexes = self.list_indexes(connection, database, schema, table).await?;
 
         let rows: Vec<Vec<String>> = indexes.iter().map(|idx| {
             vec![

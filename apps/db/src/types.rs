@@ -649,6 +649,7 @@ pub enum TableRowChange {
 #[derive(Debug, Clone)]
 pub struct TableSaveRequest {
     pub database: String,
+    pub schema: Option<String>,
     pub table: String,
     pub column_names: Vec<String>,
     pub primary_key_indices: Vec<usize>,
@@ -669,6 +670,8 @@ pub struct TableSaveResponse {
 pub struct TableDataRequest {
     /// Database name
     pub database: String,
+    /// Schema name (for databases that support schemas like PostgreSQL, MSSQL)
+    pub schema: Option<String>,
     /// Table name
     pub table: String,
     /// Page number (1-based)
@@ -689,6 +692,7 @@ impl TableDataRequest {
     pub fn new(database: impl Into<String>, table: impl Into<String>) -> Self {
         Self {
             database: database.into(),
+            schema: None,
             table: table.into(),
             page: 1,
             page_size: 100,
@@ -697,6 +701,11 @@ impl TableDataRequest {
             where_clause: None,
             order_by_clause: None,
         }
+    }
+
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
     }
 
     pub fn with_page(mut self, page: usize, page_size: usize) -> Self {
