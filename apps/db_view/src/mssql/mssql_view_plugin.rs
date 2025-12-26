@@ -2,7 +2,7 @@ use gpui::{App, AppContext, Entity, Window};
 use one_core::storage::DatabaseType;
 use crate::common::{DatabaseEditorView, SchemaEditorView};
 use crate::database_view_plugin::{DatabaseViewPlugin, TableDesignerCapabilities, NodeMenuCapabilities};
-use crate::db_connection_form::{DbConnectionForm, DbFormConfig};
+use crate::common::db_connection_form::{DbConnectionForm, DbFormConfig};
 use crate::mssql::database_form::MsSqlDatabaseForm;
 use crate::mssql::schema_form::MsSqlSchemaForm;
 

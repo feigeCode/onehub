@@ -1,15 +1,15 @@
 //! AI Chat Panel - 数据库 AI 助手对话面板
 
-use std::rc::Rc;
 use futures::StreamExt;
-use gpui::{div, px, prelude::FluentBuilder, AnyElement, App, AppContext, Context, Corner, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, InteractiveElement, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, AsyncApp};
+use gpui::{div, prelude::FluentBuilder, px, AnyElement, App, AppContext, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window};
 use gpui_component::{
     button::{Button, ButtonVariants},
     clipboard::Clipboard,
-    h_flex, list::{List, ListDelegate, ListState}, popover::Popover, text::TextView, v_flex,
-    v_virtual_list, VirtualListScrollHandle,
-    ActiveTheme, Icon, IconName, IndexPath, Selectable, Sizable, Size,
+    h_flex, list::{List, ListDelegate, ListState}, text::TextView, v_flex,
+    v_virtual_list, ActiveTheme,
+    Icon, IconName, IndexPath, Selectable, Sizable, Size, VirtualListScrollHandle,
 };
+use std::rc::Rc;
 use uuid::Uuid;
 
 use crate::ai_input::{AIInput, AIInputEvent};
@@ -981,17 +981,6 @@ impl AiChatPanel {
                 .track_scroll(&self.scroll_handle)
                 .gap_4()
             )
-    }
-
-    fn check_scroll_position(&mut self) {
-        use gpui_component::scroll::ScrollbarHandle;
-        let offset = self.scroll_handle.offset();
-        let content_size = self.scroll_handle.content_size();
-
-        // 检查是否在底部（允许 50px 的误差）
-        let scroll_bottom = offset.y.abs() + px(500.0); // 假设可见区域约 500px
-        let is_at_bottom = scroll_bottom >= content_size.height - px(50.0);
-        self.auto_scroll_enabled = is_at_bottom;
     }
 
     fn auto_scroll_to_bottom(&self) {

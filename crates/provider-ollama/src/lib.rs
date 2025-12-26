@@ -5,7 +5,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 use gpui::http_client::HttpClient;
-use serde::Deserialize;
 
 use one_core::llm::openai_client::OpenAIClient;
 use one_core::llm::provider::LlmProvider;
@@ -39,18 +38,6 @@ impl OllamaProvider {
             .clone()
             .unwrap_or_else(|| "http://localhost:11434/v1".to_string())
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    models: Vec<Model>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Model {
-    name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<i64>,
 }
 
 #[async_trait]

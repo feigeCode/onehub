@@ -122,7 +122,7 @@ impl ClickHouseDbConnection {
 #[derive(Debug, Clone, Row, Deserialize)]
 struct DynamicRow {
     #[serde(flatten)]
-    values_map: serde_json::Map<String, serde_json::Value>,
+    _values_map: serde_json::Map<String, serde_json::Value>,
     #[serde(skip)]
     column_names: Vec<String>,
     #[serde(skip)]
@@ -130,6 +130,7 @@ struct DynamicRow {
 }
 
 impl DynamicRow {
+    #[allow(dead_code)]
     fn from_map(map: serde_json::Map<String, serde_json::Value>) -> Self {
         let mut column_names = Vec::new();
         let mut values = Vec::new();
@@ -145,7 +146,7 @@ impl DynamicRow {
         }
 
         Self {
-            values_map: map,
+            _values_map: map,
             column_names,
             values,
         }

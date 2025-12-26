@@ -9,10 +9,7 @@ use one_core::storage::query_repository::QueryRepository;
 use one_core::storage::{DatabaseType, DbConnectionConfig, GlobalStorageState};
 use sqlparser::ast;
 use sqlparser::ast::{Expr, SetExpr, Statement, TableFactor};
-use sqlparser::dialect::{
-    Dialect, MsSqlDialect,
-    OracleDialect, PostgreSqlDialect, SQLiteDialect
-};
+use sqlparser::dialect::{Dialect};
 use sqlparser::parser::Parser;
 use std::collections::HashMap;
 use tracing::log::error;
@@ -1977,7 +1974,7 @@ pub fn analyze_select_editability_fallback(sql: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::dialect::{ClickHouseDialect, MySqlDialect};
+    use sqlparser::dialect::{ClickHouseDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect, OracleDialect};
     use sqlparser::parser::Parser;
 
     // ==================== split_statements_with_dialect tests ====================

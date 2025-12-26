@@ -9,15 +9,15 @@ use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _, Size, WindowExt,
 };
 
-use crate::multi_text_editor::create_multi_text_editor_with_content;
-use crate::results_delegate::{EditorTableDelegate, RowChange};
+use crate::table_data::multi_text_editor::create_multi_text_editor_with_content;
+use crate::table_data::results_delegate::{EditorTableDelegate, RowChange};
 use crate::sql_editor::SqlEditor;
-use crate::filter_editor::{ColumnSchema, FilterEditorEvent, TableFilterEditor, TableSchema};
+use crate::table_data::filter_editor::{ColumnSchema, FilterEditorEvent, TableFilterEditor, TableSchema};
 use db::{ExecOptions, GlobalDbState, SqlResult, TableCellChange, TableRowChange, TableSaveRequest, TableDataRequest};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::DropdownMenu;
 
-actions!(data_grid, [Page500, Page1000, Page2000, PageAll]);
+actions!(data_grid, [Page500, Page1000, Page2000, Page10000, Page100000]);
 
 /// 数据表格使用场景
 #[derive(Clone, Debug, PartialEq)]
@@ -177,16 +177,7 @@ impl DataGrid {
         let sub = cx.subscribe_in(&self.filter_editor, window, |this: &mut DataGrid, _, evt: &FilterEditorEvent, _, cx| {
             match evt {
                 FilterEditorEvent::QueryApply => {
-                    match this.config.usage {
-                        DataGridUsage::TableData => {
-                            this.load_data_with_clauses(1, cx);
-                        }
-                        DataGridUsage::SqlResult => {
-                            if let Some(sql) = &this.config.sql {
-                                this.load_data_with_sql_filtered(sql.clone(), cx);
-                            }
-                        }
-                    }
+                    this.load_data_with_clauses(1, cx);
                     cx.notify()
                 },
             }
@@ -391,85 +382,6 @@ impl DataGrid {
         }).detach();
     }
 
-    fn load_data_with_sql_filtered(&self, base_sql: String, cx: &mut App) {
-        let global_state = cx.global::<GlobalDbState>().clone();
-        let connection_id = self.config.connection_id.clone();
-        let database_name = self.config.database_name.clone();
-        let table = self.table.clone();
-        let filter_editor = self.filter_editor.clone();
-
-        let where_clause = self.filter_editor.read(cx).get_where_clause(cx);
-        let order_by_clause = self.filter_editor.read(cx).get_order_by_clause(cx);
-
-        let sql = if where_clause.is_empty() && order_by_clause.is_empty() {
-            base_sql
-        } else {
-            let base_sql_trimmed = base_sql.trim().trim_end_matches(';');
-            let mut sql = format!("SELECT * FROM ({}) AS _subquery", base_sql_trimmed);
-            if !where_clause.is_empty() {
-                sql.push_str(&format!(" WHERE {}", where_clause));
-            }
-            if !order_by_clause.is_empty() {
-                sql.push_str(&format!(" ORDER BY {}", order_by_clause));
-            }
-            sql
-        };
-
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            let result = global_state
-                .execute_script(cx, connection_id.clone(), sql.clone(), Some(database_name.clone()), None)
-                .await;
-
-            match result {
-                Err(err) => {
-                    cx.update(|cx| {
-                        notification(cx, format!("Failed to execute SQL: {}", err));
-                    }).ok();
-                }
-                Ok(results) => {
-                    for result in results {
-                        if let SqlResult::Query(query_result) = result {
-                            let columns: Vec<Column> = query_result.columns.iter()
-                                .map(|col| Column::new(col.clone(), col.clone()))
-                                .collect();
-
-                            let rows: Vec<Vec<String>> = query_result.rows.iter()
-                                .map(|row| {
-                                    row.iter()
-                                        .map(|cell| cell.clone().unwrap_or_else(|| "NULL".to_string()))
-                                        .collect()
-                                })
-                                .collect();
-
-                            let column_schemas: Vec<ColumnSchema> = query_result.columns.iter()
-                                .map(|col| ColumnSchema {
-                                    name: col.clone(),
-                                    data_type: String::new(),
-                                    is_nullable: true,
-                                })
-                                .collect();
-
-                            cx.update(|cx| {
-                                filter_editor.update(cx, |editor, cx| {
-                                    editor.set_schema(TableSchema {
-                                        table_name: "_subquery".to_string(),
-                                        columns: column_schemas,
-                                    }, cx);
-                                });
-
-                                table.update(cx, |state, cx| {
-                                    state.delegate_mut().update_data(columns, rows, cx);
-                                    state.refresh(cx);
-                                });
-                            }).ok();
-                            break;
-                        }
-                    }
-                }
-            }
-        }).detach();
-    }
-
     fn handle_prev_page(&self, cx: &mut App) {
         let page = self.table_data_info.read(cx).current_page;
         if page > 1 {
@@ -512,8 +424,12 @@ impl DataGrid {
         self.handle_page_size_change(2000, cx)
     }
 
-    fn handle_page_change_all(&mut self, _: &PageAll, _: &mut Window, cx: &mut Context<Self>) {
-        self.handle_page_size_change(0, cx)
+    fn handle_page_change_10000(&mut self, _: &Page10000, _: &mut Window, cx: &mut Context<Self>) {
+        self.handle_page_size_change(10000, cx)
+    }
+
+    fn handle_page_change_100000(&mut self, _: &Page100000, _: &mut Window, cx: &mut Context<Self>) {
+        self.handle_page_size_change(100000, cx)
     }
 
     fn handle_add_row(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1224,7 +1140,8 @@ impl DataGrid {
                                 menu.menu("500", Box::new(Page500))
                                     .menu("1000", Box::new(Page1000))
                                     .menu("2000", Box::new(Page2000))
-                                    .menu("全部", Box::new(PageAll))
+                                    .menu("10000", Box::new(Page10000))
+                                    .menu("100000", Box::new(Page100000))
                             })
                     })
                     .child(
@@ -1268,19 +1185,20 @@ impl Render for DataGrid {
                 this.on_action(cx.listener(Self::handle_page_change_500))
                     .on_action(cx.listener(Self::handle_page_change_1000))
                     .on_action(cx.listener(Self::handle_page_change_2000))
-                    .on_action(cx.listener(Self::handle_page_change_all))
+                    .on_action(cx.listener(Self::handle_page_change_10000))
+                    .on_action(cx.listener(Self::handle_page_change_100000))
             })
             .size_full()
             .gap_0()
             .child(self.render_toolbar(window, cx))
-            .child(
-                h_flex()
-                    .items_center()
-                    .w_full()
-                    .px_2()
-                    .py_1()
-                    .child(self.filter_editor.clone()),
-            )
+            .when(is_table_data, |this| {
+                this.child(h_flex()
+                               .items_center()
+                               .w_full()
+                               .px_2()
+                               .py_1()
+                               .child(self.filter_editor.clone()))
+            })
             .child(
                 div()
                     .flex_1()

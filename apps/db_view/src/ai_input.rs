@@ -1,12 +1,12 @@
 //! AI Input - 支持模型选择和智能输入的组件
 
+use gpui::prelude::FluentBuilder;
 use gpui::{
     div, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, Window,
 };
-use gpui::prelude::FluentBuilder;
 use gpui_component::{
-    button::{Button, ButtonVariant, ButtonVariants},
+    button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
     select::{Select, SelectItem, SelectState},
@@ -76,8 +76,8 @@ pub struct AIInput {
     focus_handle: FocusHandle,
     input_state: Entity<InputState>,
     provider_select: Entity<SelectState<Vec<ProviderItem>>>,
-    provider_subscription: Subscription,
-    input_subscription: Subscription,
+    _provider_subscription: Subscription,
+    _input_subscription: Subscription,
     providers: Vec<ProviderItem>,
     selected_provider: Option<String>,
     is_loading: bool,
@@ -133,8 +133,8 @@ impl AIInput {
             focus_handle,
             input_state,
             provider_select,
-            provider_subscription,
-            input_subscription,
+            _provider_subscription: provider_subscription,
+            _input_subscription:  input_subscription,
             providers,
             selected_provider: None,
             is_loading: false,

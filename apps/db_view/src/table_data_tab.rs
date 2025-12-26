@@ -2,10 +2,8 @@ use std::any::Any;
 use gpui::{AnyElement, App, AppContext, Entity, IntoElement, SharedString, Window};
 use gpui_component::{Icon, IconName};
 
-use crate::data_grid::{DataGrid, DataGridConfig};
+use crate::table_data::data_grid::{DataGrid, DataGridConfig};
 use one_core::tab_container::{TabContent, TabContentType};
-
-pub use crate::data_grid::{Page500, Page1000, Page2000, PageAll};
 
 pub struct TableDataTabContent {
     pub data_grid: Entity<DataGrid>,

@@ -6,7 +6,7 @@ use crate::sqlite::SqlitePlugin;
 use crate::clickhouse::ClickHousePlugin;
 use crate::mssql::MsSqlPlugin;
 use crate::oracle::OraclePlugin;
-use crate::import_export::{DataExporter, DataImporter, ExportConfig, ExportResult, ImportConfig, ImportResult};
+use crate::import_export::{DataExporter, DataImporter, ExportConfig, ExportResult, ImportConfig, ImportResult, ExportProgressSender};
 use crate::{DbNode, DbNodeType, ExecOptions, SqlResult, TableSaveResponse};
 use tokio::sync::mpsc;
 use one_core::gpui_tokio::Tokio;
@@ -1349,6 +1349,18 @@ impl GlobalDbState {
         config: ExportConfig,
     ) -> anyhow::Result<ExportResult>
     {
+        self.export_data_with_progress(cx, connection_id, config, None).await
+    }
+
+    /// Export data with progress callback
+    pub async fn export_data_with_progress(
+        &self,
+        cx: &mut AsyncApp,
+        connection_id: String,
+        config: ExportConfig,
+        progress_tx: Option<ExportProgressSender>,
+    ) -> anyhow::Result<ExportResult>
+    {
         let db_config = self.get_config_async(&connection_id).await
             .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
 
@@ -1363,7 +1375,7 @@ impl GlobalDbState {
                 let mut guard = clone_self.connection_manager.get_session_connection(&session_id).await?;
                 let conn = guard.connection()
                     .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
-                DataExporter::export(plugin, conn, config).await
+                DataExporter::export_with_progress(plugin, conn, config, progress_tx).await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             };
 
@@ -1372,6 +1384,36 @@ impl GlobalDbState {
 
             result
         })?.await
+    }
+
+    /// Export data with progress callback (sync version for background tasks)
+    pub async fn export_data_with_progress_sync(
+        &self,
+        connection_id: String,
+        config: ExportConfig,
+        progress_tx: Option<ExportProgressSender>,
+    ) -> anyhow::Result<ExportResult>
+    {
+        let db_config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
+        let plugin = self.get_plugin(&db_config.database_type)?;
+        let session_id = self.connection_manager
+            .create_session(db_config.clone(), &self.db_manager)
+            .await?;
+
+        let result = {
+            let mut guard = self.connection_manager.get_session_connection(&session_id).await?;
+            let conn = guard.connection()
+                .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+            DataExporter::export_with_progress(plugin, conn, config, progress_tx).await
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        };
+
+        self.connection_manager.release_session(&session_id).await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        result
     }
 
     /// Import data
@@ -1407,6 +1449,38 @@ impl GlobalDbState {
 
             result
         })?.await
+    }
+
+    /// Import data with progress callback (sync version for background tasks)
+    pub async fn import_data_with_progress_sync(
+        &self,
+        connection_id: String,
+        config: ImportConfig,
+        data: String,
+        file_name: &str,
+        progress_tx: Option<crate::import_export::ImportProgressSender>,
+    ) -> anyhow::Result<ImportResult>
+    {
+        let db_config = self.get_config_async(&connection_id).await
+            .ok_or_else(|| anyhow::anyhow!("Connection not found: {}", connection_id))?;
+
+        let plugin = self.get_plugin(&db_config.database_type)?;
+        let session_id = self.connection_manager
+            .create_session(db_config.clone(), &self.db_manager)
+            .await?;
+
+        let result = {
+            let mut guard = self.connection_manager.get_session_connection(&session_id).await?;
+            let conn = guard.connection()
+                .ok_or_else(|| anyhow::anyhow!("Session connection not found"))?;
+            DataImporter::import_with_progress(plugin, conn, config, data, file_name, progress_tx).await
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        };
+
+        self.connection_manager.release_session(&session_id).await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        result
     }
 }
 

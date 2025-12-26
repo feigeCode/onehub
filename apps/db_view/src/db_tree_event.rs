@@ -3,7 +3,7 @@
 
 // 2. 外部 crate 导入（按字母顺序）
 use db::{DbNode, DbNodeType, GlobalDbState, SqlResult};
-use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, Styled, Subscription, Window};
+use gpui::{div, px, App, AppContext, AsyncApp, Context, Entity, ParentElement, PathPromptOptions, Styled, Subscription, Window};
 use tracing::log::{error, warn};
 use gpui_component::{
     h_flex, v_flex, WindowExt,
@@ -724,34 +724,55 @@ impl DatabaseEventHandler {
                 }
             }).detach();
         } else {
-            // 数据库节点：使用原有的导入视图（支持 SQL）
-            use crate::import_export::data_import_view::DataImportView;
+            // 数据库节点：先选择文件，然后使用实时进度导入视图
+            use crate::import_export::sql_import_view::SqlImportView;
 
             let database = node.name.clone();
+
+            let future = cx.prompt_for_paths(PathPromptOptions {
+                files: true,
+                multiple: true,
+                directories: false,
+                prompt: Some("选择 SQL 文件".into()),
+            });
 
             let connection_id_for_error = connection_id.clone();
             let database_string = database.clone();
 
             cx.spawn(async move |cx: &mut AsyncApp| {
+                let paths_result = future.await;
+                let file_paths: Vec<std::path::PathBuf> = match paths_result {
+                    Ok(Ok(Some(paths))) => {
+                        if paths.is_empty() {
+                            return;
+                        }
+                        paths
+                    }
+                    _ => return,
+                };
+
                 let config = global_state.get_config_async(&connection_id).await;
 
                 if let Some(config) = config {
-                    let config_id = config.id;
+                    let config_id = config.id.clone();
+                    let server_info = format!("{}:{}", config.host, config.port);
                     let database_for_view = database_string.clone();
 
                     let _ = cx.update(|cx| {
                         if let Some(window_id) = cx.active_window() {
                             let _ = cx.update_window(window_id, |_entity, window, cx| {
-                                let import_view = DataImportView::new(
+                                let import_view = SqlImportView::new(
                                     config_id.clone(),
+                                    server_info.clone(),
                                     database_for_view.clone(),
+                                    file_paths.clone(),
                                     window,
                                     cx,
                                 );
 
                                 window.open_dialog(cx, move |dialog, _window, _cx| {
                                     dialog
-                                        .title("导入数据")
+                                        .title("导入 SQL 文件")
                                         .child(import_view.clone())
                                         .width(px(800.0))
                                         .on_cancel(|_, _window, _cx| true)
@@ -2047,7 +2068,7 @@ impl DatabaseEventHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
-        use crate::sql_run_view::SqlRunView;
+        use crate::import_export::sql_run_view::SqlRunView;
 
         let connection_id = node.connection_id.clone();
         let database = if node.node_type == DbNodeType::Database {
@@ -2074,29 +2095,74 @@ impl DatabaseEventHandler {
         _window: &mut Window,
         cx: &mut App,
     ) {
-        use crate::sql_dump_view::SqlDumpView;
+        use crate::import_export::sql_dump_view::SqlDumpView;
+        use std::path::PathBuf;
 
         let connection_id = node.connection_id.clone();
         let database = node.name.clone();
 
+        let future = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            multiple: false,
+            directories: true,
+            prompt: Some("选择导出目录".into()),
+        });
+
         let connection_id_for_error = connection_id.clone();
         let database_string = database.clone();
 
-        cx.spawn(async move |cx: &mut AsyncApp| {
+        cx.spawn(async move |mut cx| {
+            let paths_result = future.await;
+            let output_path: PathBuf = match paths_result {
+                Ok(Ok(Some(paths))) => {
+                    if let Some(path) = paths.first() {
+                        path.clone()
+                    } else {
+                        return;
+                    }
+                }
+                _ => return,
+            };
+
             let config = global_state.get_config_async(&connection_id).await;
 
             if let Some(config) = config {
-                let config_id = config.id;
+                let config_id = config.id.clone();
+                let server_info = format!("{}:{}", config.host, config.port);
                 let database_for_view = database_string.clone();
+
+                let tables_result = global_state.list_tables(&mut cx, connection_id.clone(), database_string.clone()).await;
+                let tables = match tables_result {
+                    Ok(table_infos) => table_infos.into_iter().map(|t| t.name).collect::<Vec<_>>(),
+                    Err(e) => {
+                        let _ = cx.update(|cx| {
+                            if let Some(window_id) = cx.active_window() {
+                                let _ = cx.update_window(window_id, |_entity, window, cx| {
+                                    Self::show_error(window, format!("获取表列表失败: {}", e), cx);
+                                });
+                            }
+                        });
+                        return;
+                    }
+                };
 
                 let _ = cx.update(|cx| {
                     if let Some(window_id) = cx.active_window() {
                         let _ = cx.update_window(window_id, |_entity, window, cx| {
-                            let dump_view = SqlDumpView::new(config_id.clone(), database_for_view.clone(), mode, window, cx);
+                            let dump_view = SqlDumpView::new(
+                                config_id.clone(),
+                                server_info.clone(),
+                                database_for_view.clone(),
+                                output_path.clone(),
+                                tables.clone(),
+                                mode,
+                                window,
+                                cx
+                            );
 
                             window.open_dialog(cx, move |dialog, _window, _cx| {
                                 dialog
-                                    .title("转储SQL文件")
+                                    .title("转储 SQL 文件")
                                     .child(dump_view.clone())
                                     .width(px(800.0))
                                     .on_cancel(|_, _window, _cx| true)

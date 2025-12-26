@@ -2,7 +2,7 @@ use gpui::{App, AppContext, Entity, Window};
 use one_core::storage::DatabaseType;
 use crate::common::DatabaseEditorView;
 use crate::database_view_plugin::{DatabaseViewPlugin, TableDesignerCapabilities, NodeMenuCapabilities};
-use crate::db_connection_form::{DbConnectionForm, DbFormConfig};
+use crate::common::db_connection_form::{DbConnectionForm, DbFormConfig};
 use crate::mysql::database_form::MySqlDatabaseForm;
 
 /// MySQL 数据库视图插件

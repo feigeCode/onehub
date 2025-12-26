@@ -893,7 +893,7 @@ impl ResultsDelegate {
 }
 
 impl TableDelegate for ResultsDelegate {
-    fn row_number_enabled(&self, cx: &App) -> bool {
+    fn row_number_enabled(&self, _cx: &App) -> bool {
         true
     }
     fn columns_count(&self, _cx: &App) -> usize {

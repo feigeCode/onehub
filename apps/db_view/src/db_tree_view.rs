@@ -6,7 +6,7 @@ use std::time::Duration;
 // 2. 外部 crate 导入（按字母顺序）
 use gpui::{App, AppContext, Context, Entity, IntoElement, InteractiveElement, ParentElement, Render, RenderOnce, Styled, Window, div, StatefulInteractiveElement, EventEmitter, SharedString, Focusable, FocusHandle, AsyncApp, px, prelude::FluentBuilder, Subscription, Task};
 use gpui_component::{
-    ActiveTheme, IconName, h_flex, list::ListItem,
+    ActiveTheme, IconName, h_flex,
     menu::{ContextMenuExt, PopupMenuItem},
     tree::TreeItem, v_flex, Icon, Sizable, Size,
     tooltip::Tooltip,

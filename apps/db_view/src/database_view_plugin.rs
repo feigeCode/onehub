@@ -4,7 +4,7 @@ use gpui::{App, Entity, Global, Window};
 use one_core::storage::DatabaseType;
 
 use crate::common::{DatabaseEditorView, SchemaEditorView};
-use crate::db_connection_form::DbConnectionForm;
+use crate::common::db_connection_form::DbConnectionForm;
 use crate::mysql::mysql_view_plugin::MySqlDatabaseViewPlugin;
 use crate::postgresql::postgresql_view_plugin::PostgreSqlDatabaseViewPlugin;
 use crate::mssql::mssql_view_plugin::MsSqlDatabaseViewPlugin;

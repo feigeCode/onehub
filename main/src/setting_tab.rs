@@ -12,9 +12,7 @@ struct AppSettings {
     auto_switch_theme: bool,
     font_family: SharedString,
     font_size: f64,
-    line_height: f64,
-    notifications_enabled: bool,
-    auto_update: bool,
+    _auto_update: bool,
     resettable: bool,
 }
 
@@ -24,9 +22,7 @@ impl Default for AppSettings {
             auto_switch_theme: false,
             font_family: "Arial".into(),
             font_size: 14.0,
-            line_height: 12.0,
-            notifications_enabled: true,
-            auto_update: true,
+            _auto_update: true,
             resettable: true,
         }
     }

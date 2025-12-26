@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use db::{FieldType, TableColumnMeta};
-use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, InteractiveElement as _, ParentElement as _, Styled, Subscription, Window};
+use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement as _, Styled, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::table::Column;
 use gpui_component::{h_flex, table::{ TableDelegate, TableState}};

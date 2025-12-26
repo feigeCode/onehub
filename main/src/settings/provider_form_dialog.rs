@@ -46,9 +46,6 @@ pub struct ProviderForm {
 }
 
 impl ProviderForm {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_config(None, window, cx)
-    }
 
     pub fn new_with_config(
         config: Option<ProviderConfig>,

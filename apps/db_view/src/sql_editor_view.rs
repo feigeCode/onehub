@@ -470,26 +470,6 @@ impl SqlEditorTab {
         });
     }
 
-    fn handle_export_query(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui::ClipboardItem;
-
-        let selected_text = self.editor.read(cx).get_selected_text_from_app(cx);
-        let sql = if selected_text.trim().is_empty() {
-            self.get_sql_text(cx)
-        } else {
-            selected_text
-        };
-
-        if sql.trim().is_empty() {
-            window.push_notification("No SQL to export", cx);
-            return;
-        }
-
-        // Copy SQL to clipboard
-        cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
-        window.push_notification("SQL copied to clipboard", cx);
-    }
-
     fn handle_clear_editor(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.editor.update(cx, |e, cx| e.set_value(String::new(), window, cx));
         window.push_notification("Editor cleared", cx);

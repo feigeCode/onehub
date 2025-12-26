@@ -2,6 +2,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 use crate::connection::DbConnection;
 
@@ -131,6 +132,83 @@ pub struct ExportResult {
     pub elapsed_ms: u128,
 }
 
+/// 导出进度事件
+#[derive(Debug, Clone)]
+pub enum ExportProgressEvent {
+    TableStart {
+        table: String,
+        table_index: usize,
+        total_tables: usize,
+    },
+    GettingStructure {
+        table: String,
+    },
+    StructureExported {
+        table: String,
+    },
+    FetchingData {
+        table: String,
+    },
+    DataExported {
+        table: String,
+        rows: u64,
+    },
+    TableFinished {
+        table: String,
+    },
+    Error {
+        table: String,
+        message: String,
+    },
+    Finished {
+        total_rows: u64,
+        elapsed_ms: u128,
+    },
+}
+
+/// 导出进度发送器类型
+pub type ExportProgressSender = mpsc::UnboundedSender<ExportProgressEvent>;
+
+/// 导入进度事件
+#[derive(Debug, Clone)]
+pub enum ImportProgressEvent {
+    FileStart {
+        file: String,
+        file_index: usize,
+        total_files: usize,
+    },
+    ReadingFile {
+        file: String,
+    },
+    ParsingFile {
+        file: String,
+    },
+    ExecutingStatement {
+        file: String,
+        statement_index: usize,
+        total_statements: usize,
+    },
+    StatementExecuted {
+        file: String,
+        rows_affected: u64,
+    },
+    FileFinished {
+        file: String,
+        rows_imported: u64,
+    },
+    Error {
+        file: String,
+        message: String,
+    },
+    Finished {
+        total_rows: u64,
+        elapsed_ms: u128,
+    },
+}
+
+/// 导入进度发送器类型
+pub type ImportProgressSender = mpsc::UnboundedSender<ImportProgressEvent>;
+
 /// 格式处理器trait
 #[async_trait]
 pub trait FormatHandler: Send + Sync {
@@ -143,6 +221,20 @@ pub trait FormatHandler: Send + Sync {
         data: &str,
     ) -> Result<ImportResult>;
 
+    /// 导入数据（带进度回调）
+    async fn import_with_progress(
+        &self,
+        plugin: Arc<dyn DatabasePlugin>,
+        connection: &dyn DbConnection,
+        config: &ImportConfig,
+        data: &str,
+        file_name: &str,
+        progress_tx: Option<ImportProgressSender>,
+    ) -> Result<ImportResult> {
+        let _ = (file_name, progress_tx);
+        self.import(plugin, connection, config, data).await
+    }
+
     /// 导出数据
     async fn export(
         &self,
@@ -150,4 +242,16 @@ pub trait FormatHandler: Send + Sync {
         connection: &dyn DbConnection,
         config: &ExportConfig,
     ) -> Result<ExportResult>;
+
+    /// 导出数据（带进度回调）
+    async fn export_with_progress(
+        &self,
+        plugin: Arc<dyn DatabasePlugin>,
+        connection: &dyn DbConnection,
+        config: &ExportConfig,
+        progress_tx: Option<ExportProgressSender>,
+    ) -> Result<ExportResult> {
+        let _ = progress_tx;
+        self.export(plugin, connection, config).await
+    }
 }

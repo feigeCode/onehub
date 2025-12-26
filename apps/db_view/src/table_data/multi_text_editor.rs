@@ -81,7 +81,7 @@ impl MultiTextEditor {
         }
     }
 
-    fn get_active_editor_mut(&mut self) -> &mut Entity<InputState> {
+    pub fn get_active_editor_mut(&mut self) -> &mut Entity<InputState> {
         match self.active_tab {
             EditorTab::Text => &mut self.text_editor,
             EditorTab::Json => &mut self.json_editor,

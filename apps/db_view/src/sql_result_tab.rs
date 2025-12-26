@@ -5,7 +5,7 @@ use gpui::prelude::FluentBuilder;
 use tracing::log::error;
 use gpui_component::{button::ButtonVariants, h_flex, list::{List, ListDelegate, ListItem, ListState}, progress::Progress, tab::{Tab, TabBar}, table::Column, v_flex, ActiveTheme, IconName, IndexPath, Sizable, Size, StyledExt};
 
-use crate::data_grid::{DataGrid, DataGridConfig, DataGridUsage};
+use crate::table_data::data_grid::{DataGrid, DataGridConfig, DataGridUsage};
 // 3. 当前 crate 导入（按模块分组）
 use db::{GlobalDbState, SqlResult};
 

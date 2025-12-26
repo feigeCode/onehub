@@ -1,5 +1,6 @@
 mod database_editor_view;
 mod schema_editor_view;
+pub mod db_connection_form;
 
 pub use database_editor_view::DatabaseEditorView;
 pub use schema_editor_view::SchemaEditorView;
