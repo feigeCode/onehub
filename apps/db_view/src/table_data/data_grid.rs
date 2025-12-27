@@ -157,8 +157,8 @@ impl DataGrid {
             _filter_sub: None,
         };
         result.bind_table_event(window, cx);
-        result.bind_filter_event(window, cx);
         if is_table_data {
+            result.bind_filter_event(window, cx);
             result.load_data_with_clauses(1, cx);
         }
         result
@@ -194,33 +194,12 @@ impl DataGrid {
     pub fn update_data(
         &self,
         columns: Vec<Column>,
-        rows: Vec<Vec<String>>,
+        rows: Vec<Vec<Option<String>>>,
         cx: &mut App,
     ) {
         self.table.update(cx, |state, cx| {
             state.delegate_mut().update_data(columns, rows, cx);
             state.refresh(cx);
-        });
-    }
-
-    pub fn set_filter_schema(&self, column_names: Vec<String>, cx: &mut App) {
-        let column_schemas: Vec<ColumnSchema> = column_names
-            .iter()
-            .map(|col| ColumnSchema {
-                name: col.clone(),
-                data_type: String::new(),
-                is_nullable: true,
-            })
-            .collect();
-
-        self.filter_editor.update(cx, |editor, cx| {
-            editor.set_schema(
-                TableSchema {
-                    table_name: self.config.table_name.clone(),
-                    columns: column_schemas,
-                },
-                cx,
-            );
         });
     }
 
@@ -243,7 +222,6 @@ impl DataGrid {
             connection_id, database_name, table_name);
 
         cx.spawn(async move |cx: &mut AsyncApp| {
-            let table_name_for_schema = table_name.clone();
 
             let mut request = if page_size == 0 {
                 TableDataRequest::new(&database_name, &table_name)
@@ -274,14 +252,10 @@ impl DataGrid {
                         .map(|col| Column::new(col.name.clone(), col.name.clone()))
                         .collect();
 
-                    let rows: Vec<Vec<String>> = response
+                    let rows: Vec<Vec<Option<String>>> = response
                         .rows
                         .iter()
-                        .map(|row| {
-                            row.iter()
-                                .map(|cell| cell.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "NULL".to_string()))
-                                .collect()
-                        })
+                        .map(|row| row.iter().cloned().collect())
                         .collect();
 
                     cx.update(|cx| {
@@ -307,7 +281,6 @@ impl DataGrid {
                     cx.update(|cx| {
                         filter_editor.update(cx, |editor, cx| {
                             editor.set_schema(TableSchema {
-                                table_name: table_name_for_schema.clone(),
                                 columns: column_schemas,
                             }, cx);
                         });
@@ -360,12 +333,8 @@ impl DataGrid {
                                 .map(|col| Column::new(col.clone(), col.clone()))
                                 .collect();
 
-                            let rows: Vec<Vec<String>> = query_result.rows.iter()
-                                .map(|row| {
-                                    row.iter()
-                                        .map(|cell| cell.clone().unwrap_or_else(|| "NULL".to_string()))
-                                        .collect()
-                                })
+                            let rows: Vec<Vec<Option<String>>> = query_result.rows.iter()
+                                .map(|row| row.iter().cloned().collect())
                                 .collect();
 
                             cx.update(|cx| {
@@ -490,7 +459,7 @@ impl DataGrid {
             .get(actual_row_ix)
             .and_then(|r| r.get(col_ix - 1))
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or(None);
 
         let column_name = self.table.read(cx)
             .delegate()
@@ -500,7 +469,7 @@ impl DataGrid {
             .unwrap_or_else(|| format!("列 {}", col_ix));
         let title = format!("编辑单元格 - {} (行 {})", column_name, row_ix + 1);
 
-        self.show_text_editor_dialog(current_content, &title, row_ix, col_ix, window, cx);
+        self.show_text_editor_dialog(current_content.unwrap_or_default(), &title, row_ix, col_ix, window, cx);
     }
 
     fn show_text_editor_dialog(
@@ -603,7 +572,9 @@ impl DataGrid {
         changes
             .into_iter()
             .filter_map(|change| match change {
-                RowChange::Added { data } => Some(TableRowChange::Added { data }),
+                RowChange::Added { data } => Some(TableRowChange::Added {
+                    data: data.into_iter().map(|opt| opt.unwrap_or_default()).collect()
+                }),
                 RowChange::Updated {
                     original_data,
                     changes,
@@ -617,8 +588,8 @@ impl DataGrid {
                             } else {
                                 c.col_name
                             },
-                            old_value: c.old_value,
-                            new_value: c.new_value,
+                            old_value: c.old_value.unwrap_or_default(),
+                            new_value: c.new_value.unwrap_or_default(),
                         })
                         .collect();
 
@@ -626,13 +597,15 @@ impl DataGrid {
                         None
                     } else {
                         Some(TableRowChange::Updated {
-                            original_data,
+                            original_data: original_data.into_iter().map(|opt| opt.unwrap_or_default()).collect(),
                             changes: converted,
                         })
                     }
                 }
                 RowChange::Deleted { original_data } => {
-                    Some(TableRowChange::Deleted { original_data })
+                    Some(TableRowChange::Deleted {
+                        original_data: original_data.into_iter().map(|opt| opt.unwrap_or_default()).collect()
+                    })
                 }
             })
             .collect()

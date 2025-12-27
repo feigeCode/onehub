@@ -4,7 +4,7 @@ use db::{FieldType, TableColumnMeta};
 use gpui::{div, px, App, AppContext, Context, Entity, IntoElement, ParentElement as _, Styled, Subscription, Window};
 use gpui_component::input::{InputEvent, InputState};
 use gpui_component::table::Column;
-use gpui_component::{h_flex, table::{ TableDelegate, TableState}};
+use gpui_component::{h_flex, table::{ TableDelegate, TableState}, ActiveTheme};
 use gpui_component::table::filter_panel::FilterValue;
 
 /// Represents a single cell change with old and new values
@@ -12,8 +12,8 @@ use gpui_component::table::filter_panel::FilterValue;
 pub struct CellChange {
     pub col_ix: usize,
     pub col_name: String,
-    pub old_value: String,
-    pub new_value: String,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
 }
 
 /// Represents the status of a row
@@ -35,19 +35,19 @@ pub enum RowChange {
     /// A new row was added
     Added {
         /// Data for the new row
-        data: Vec<String>,
+        data: Vec<Option<String>>,
     },
     /// An existing row was updated
     Updated {
         /// Original row data (for generating WHERE clause)
-        original_data: Vec<String>,
+        original_data: Vec<Option<String>>,
         /// Changed cells only
         changes: Vec<CellChange>,
     },
     /// A row was marked for deletion
     Deleted {
         /// Original data (for generating WHERE clause)
-        original_data: Vec<String>,
+        original_data: Vec<Option<String>>,
     },
 }
 
@@ -57,13 +57,13 @@ pub struct EditorTableDelegate {
     pub columns: Vec<Column>,
     /// Column metadata with type information
     pub column_meta: Vec<TableColumnMeta>,
-    pub rows: Vec<Vec<String>>,
+    pub rows: Vec<Vec<Option<String>>>,
     /// Original data snapshot for change detection
-    original_rows: Vec<Vec<String>>,
+    original_rows: Vec<Vec<Option<String>>>,
     /// Track row status: key is current row index
     row_status: HashMap<usize, RowStatus>,
     /// Track modified cells (row_ix, col_ix) -> (old_value, new_value)
-    cell_changes: HashMap<(usize, usize), (String, String)>,
+    cell_changes: HashMap<(usize, usize), (Option<String>, Option<String>)>,
     /// Track modified cells for UI highlighting
     pub modified_cells: HashSet<(usize, usize)>,
     /// Rows marked for deletion (original row indices)
@@ -73,7 +73,7 @@ pub struct EditorTableDelegate {
     /// Next row index for new rows (negative conceptually, but we use high numbers)
     next_new_row_id: usize,
     /// New rows data: key is the new_row_id
-    new_rows: HashMap<usize, Vec<String>>,
+    new_rows: HashMap<usize, Vec<Option<String>>>,
     /// Primary key column indices
     primary_key_columns: Vec<usize>,
     /// Unique key column indices (alternative when no primary key)
@@ -114,7 +114,7 @@ impl Clone for EditorTableDelegate {
 }
 
 impl EditorTableDelegate {
-    pub fn new(columns: Vec<Column>, rows: Vec<Vec<String>>, editable: bool, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> Self {
+    pub fn new(columns: Vec<Column>, rows: Vec<Vec<Option<String>>>, editable: bool, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> Self {
         let row_count = rows.len();
         let row_index_map: HashMap<usize, usize> = (0..row_count).map(|i| (i, i)).collect();
         Self {
@@ -135,6 +135,14 @@ impl EditorTableDelegate {
             filtered_row_indices: None,
             column_filters: HashMap::new(),
             editable,
+        }
+    }
+
+    fn values_equal(a: &Option<String>, b: &Option<String>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(s1), Some(s2)) => s1 == s2,
+            _ => false,
         }
     }
 
@@ -189,14 +197,17 @@ impl EditorTableDelegate {
             return false;
         };
 
+        // 空字符串转换为 None (NULL)
+        let new_opt_value: Option<String> = if new_value.is_empty() { None } else { Some(new_value) };
+
         // If value hasn't changed, don't record
-        if *cell == new_value {
+        if Self::values_equal(cell, &new_opt_value) {
             self.modified_cells.retain(|&(r, c)| r != row_ix || c != col_ix);
             return false;
         }
 
         let old_value = cell.clone();
-        *cell = new_value.clone();
+        *cell = new_opt_value.clone();
 
         // Mark cell as modified for UI
         self.modified_cells.insert((row_ix, col_ix));
@@ -205,8 +216,8 @@ impl EditorTableDelegate {
         if !self.is_new_row(row_ix) {
             self.cell_changes
                 .entry((row_ix, col_ix))
-                .and_modify(|(_, new)| *new = new_value.clone())
-                .or_insert((old_value, new_value));
+                .and_modify(|(_, new)| *new = new_opt_value.clone())
+                .or_insert((old_value, new_opt_value));
 
             // Update row status
             self.row_status.insert(row_ix, RowStatus::Modified);
@@ -215,14 +226,15 @@ impl EditorTableDelegate {
         true
     }
 
-    pub fn update_data(&mut self, columns: Vec<Column>, rows: Vec<Vec<String>>, _cx: &mut App) {
+    pub fn update_data(&mut self, columns: Vec<Column>, rows: Vec<Vec<Option<String>>>, _cx: &mut App) {
         // Calculate column widths based on content
         let mut col_widths: Vec<usize> = columns.iter().map(|c| c.name.len()).collect();
-        
+
         for row in &rows {
             for (col_ix, cell) in row.iter().enumerate() {
                 if col_ix < col_widths.len() {
-                    col_widths[col_ix] = col_widths[col_ix].max(cell.len());
+                    let len = cell.as_ref().map(|s| s.len()).unwrap_or(6); // "(NULL)" = 6
+                    col_widths[col_ix] = col_widths[col_ix].max(len);
                 }
             }
         }
@@ -246,7 +258,7 @@ impl EditorTableDelegate {
         self.original_rows = rows.clone();
         self.rows = rows.clone();
         self.row_index_map = (0..row_count).map(|i| (i, i)).collect();
-        
+
         // Clear all change tracking
         self.clear_changes();
     }
@@ -463,7 +475,10 @@ impl EditorTableDelegate {
             .filter(|(_, row)| {
                 // 所有筛选条件都必须满足（AND）
                 self.column_filters.iter().all(|(&col_ix, selected_values)| {
-                    let cell_value = row.get(col_ix).map(|s| s.as_str()).unwrap_or("NULL");
+                    let cell_value = row.get(col_ix)
+                        .and_then(|opt| opt.as_ref())
+                        .map(|s| s.as_str())
+                        .unwrap_or("NULL");
                     selected_values.contains(cell_value)
                 })
             })
@@ -523,16 +538,26 @@ impl TableDelegate for EditorTableDelegate {
         row: usize,
         col: usize,
         _window: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row);
 
-        self.rows
+        let value = self.rows
             .get(actual_row)
             .and_then(|r| r.get(col))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or(None);
+
+        match value {
+            None => {
+                div()
+                    .text_color(cx.theme().muted_foreground.opacity(0.5))
+                    .italic()
+                    .child("(NULL)")
+            }
+            Some(s) => div().child(s),
+        }
     }
 
     fn build_input(&self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut Context<TableState<Self>>) -> Option<(Entity<InputState>, Subscription)> {
@@ -552,11 +577,13 @@ impl TableDelegate for EditorTableDelegate {
             .get(actual_row)
             .and_then(|r| r.get(col_ix))
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or(None);
+        // NULL 值编辑时显示为空
+        let edit_value = value.unwrap_or_default();
         // Create input state with the current value (support multiline)
         let input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).multi_line(true).rows(1).auto_grow(1,1);
-            state.set_value(value, window, cx);
+            state.set_value(edit_value, window, cx);
             state.focus(window, cx);
             state
         });
@@ -582,13 +609,15 @@ impl TableDelegate for EditorTableDelegate {
     ) -> bool {
         // Map display row index to actual row index
         let actual_row = self.map_display_to_actual_row(row_ix);
+        // 空字符串转换为 None (NULL)
+        let new_opt_value: Option<String> = if new_value.is_empty() { None } else { Some(new_value) };
 
         // Check if cell is already modified
         if self.is_cell_modified(row_ix, col_ix, cx) {
             // Check if user reverted to original value
             if let Some(row) = self.original_rows.get(actual_row) {
                 if let Some(original_cell) = row.get(col_ix) {
-                    if *original_cell == new_value {
+                    if Self::values_equal(original_cell, &new_opt_value) {
                         // User reverted to original value - clear modification markers
                         self.modified_cells.retain(|&(r, c)| r != actual_row || c != col_ix);
                         self.cell_changes.remove(&(actual_row, col_ix));
@@ -596,7 +625,7 @@ impl TableDelegate for EditorTableDelegate {
                         // Update the cell value
                         if let Some(current_row) = self.rows.get_mut(actual_row) {
                             if let Some(cell) = current_row.get_mut(col_ix) {
-                                *cell = new_value;
+                                *cell = original_cell.clone();
                             }
                         }
 
@@ -617,20 +646,20 @@ impl TableDelegate for EditorTableDelegate {
             // Update the cell value
             if let Some(current_row) = self.rows.get_mut(actual_row) {
                 if let Some(cell) = current_row.get_mut(col_ix) {
-                    if *cell == new_value {
+                    if Self::values_equal(cell, &new_opt_value) {
                         // No actual change
                         return false;
                     }
 
                     let old_value = cell.clone();
-                    *cell = new_value.clone();
+                    *cell = new_opt_value.clone();
 
                     // Update cell_changes
                     if !self.is_new_row(actual_row) {
                         self.cell_changes
                             .entry((actual_row, col_ix))
-                            .and_modify(|(_, new)| *new = new_value.clone())
-                            .or_insert((old_value, new_value));
+                            .and_modify(|(_, new)| *new = new_opt_value.clone())
+                            .or_insert((old_value, new_opt_value));
                     }
                 }
             }
@@ -642,12 +671,12 @@ impl TableDelegate for EditorTableDelegate {
         if let Some(row) = self.rows.get_mut(actual_row) {
             if let Some(cell) = row.get_mut(col_ix) {
                 // Only mark as modified if value actually changed
-                if *cell == new_value {
+                if Self::values_equal(cell, &new_opt_value) {
                     return false;
                 }
 
                 let old_value = cell.clone();
-                *cell = new_value.clone();
+                *cell = new_opt_value.clone();
 
                 // Mark cell as modified for UI (use actual row index)
                 self.modified_cells.insert((actual_row, col_ix));
@@ -659,7 +688,7 @@ impl TableDelegate for EditorTableDelegate {
                     if let Some(new_row_id) = self.find_new_row_id(actual_row) {
                         if let Some(new_row_data) = self.new_rows.get_mut(&new_row_id) {
                             if let Some(cell) = new_row_data.get_mut(col_ix) {
-                                *cell = new_value;
+                                *cell = new_opt_value;
                             }
                         }
                     }
@@ -668,8 +697,8 @@ impl TableDelegate for EditorTableDelegate {
                     // If we already have a change for this cell, keep the original old_value
                     self.cell_changes
                         .entry((actual_row, col_ix))
-                        .and_modify(|(_, new)| *new = new_value.clone())
-                        .or_insert((old_value, new_value));
+                        .and_modify(|(_, new)| *new = new_opt_value.clone())
+                        .or_insert((old_value, new_opt_value));
 
                     // Update row status
                     self.row_status.insert(actual_row, RowStatus::Modified);
@@ -694,8 +723,8 @@ impl TableDelegate for EditorTableDelegate {
     }
 
     fn on_row_added(&mut self, _window: &mut Window, _cx: &mut Context<TableState<Self>>) -> usize {
-        // Add a new empty row
-        let new_row = vec!["".to_string(); self.columns.len()];
+        // Add a new empty row (None represents NULL/empty value)
+        let new_row: Vec<Option<String>> = vec![None; self.columns.len()];
         let row_ix = self.rows.len();
         self.rows.push(new_row.clone());
 
@@ -772,14 +801,17 @@ impl TableDelegate for EditorTableDelegate {
         for (_row_ix, row) in self.rows.iter().enumerate() {
             // 检查该行是否满足其他列的筛选条件
             let passes_other_filters = other_filters.iter().all(|(&other_col, selected_values)| {
-                let cell_value = row.get(other_col).map(|s| s.as_str()).unwrap_or("NULL");
+                let cell_value = row.get(other_col)
+                    .and_then(|opt| opt.as_ref())
+                    .map(|s| s.as_str())
+                    .unwrap_or("NULL");
                 selected_values.contains(cell_value)
             });
 
             if passes_other_filters {
                 let value = row
                     .get(col_ix)
-                    .cloned()
+                    .and_then(|opt| opt.clone())
                     .unwrap_or_else(|| "NULL".to_string());
                 *value_counts.entry(value).or_insert(0) += 1;
             }

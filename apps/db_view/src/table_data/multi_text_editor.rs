@@ -1,7 +1,8 @@
-use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Styled as _, Window};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, IntoElement, Render, Styled as _, Window};
 use serde_json::from_str;
 use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, TabSize};
+use gpui_component::tab::{Tab, TabBar};
 use gpui_component::v_flex;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,13 +16,6 @@ impl EditorTab {
         match self {
             EditorTab::Text => Language::from_str("text"),
             EditorTab::Json => Language::from_str("json"),
-        }
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            EditorTab::Text => "Text",
-            EditorTab::Json => "JSON",
         }
     }
 }
@@ -70,21 +64,10 @@ impl MultiTextEditor {
         cx.notify();
     }
 
-    pub fn active_tab(&self) -> EditorTab {
-        self.active_tab
-    }
-
     fn get_active_editor(&self) -> &Entity<InputState> {
         match self.active_tab {
             EditorTab::Text => &self.text_editor,
             EditorTab::Json => &self.json_editor,
-        }
-    }
-
-    pub fn get_active_editor_mut(&mut self) -> &mut Entity<InputState> {
-        match self.active_tab {
-            EditorTab::Text => &mut self.text_editor,
-            EditorTab::Json => &mut self.json_editor,
         }
     }
 
@@ -155,70 +138,29 @@ impl MultiTextEditor {
 
 impl Render for MultiTextEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui::{div, px, ElementId, InteractiveElement, ParentElement};
-        use gpui::prelude::{FluentBuilder, StatefulInteractiveElement};
-        use gpui_component::{button::Button, h_flex, ActiveTheme, IconName, Sizable, Size};
+        use gpui::ParentElement;
+        use gpui::prelude::FluentBuilder;
+        use gpui_component::{button::Button, h_flex, IconName, Sizable, Size};
 
         let active_tab = self.active_tab;
         let is_json_tab = active_tab == EditorTab::Json;
+        let active_index = if active_tab == EditorTab::Text { 0 } else { 1 };
 
         v_flex()
             .size_full()
             .child(
-                h_flex()
-                    .h(px(40.0))
-                    .bg(cx.theme().tab)
-                    .items_center()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
+                TabBar::new("editor-tabs")
+                    .with_size(Size::Small)
+                    .selected_index(active_index)
+                    .child(Tab::new().label("Text"))
+                    .child(Tab::new().label("JSON"))
+                    .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                        let tab = if *ix == 0 { EditorTab::Text } else { EditorTab::Json };
+                        this.switch_tab(tab, cx);
+                    }))
+                    .suffix(
                         h_flex()
-                            .gap_1()
-                            .pl_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .id(ElementId::Name(SharedString::from("tab-text")))
-                                    .px_3()
-                                    .py_2()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .when(active_tab == EditorTab::Text, |this| {
-                                        this.bg(cx.theme().tab_active)
-                                    })
-                                    .when(active_tab != EditorTab::Text, |this| {
-                                        this.hover(|style| style.bg(cx.theme().tab.opacity(0.8)))
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.switch_tab(EditorTab::Text, cx);
-                                    }))
-                                    .child("Text"),
-                            )
-                            .child(
-                                div()
-                                    .id(ElementId::Name(SharedString::from("tab-json")))
-                                    .px_3()
-                                    .py_2()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .when(active_tab == EditorTab::Json, |this| {
-                                        this.bg(cx.theme().tab_active)
-                                    })
-                                    .when(active_tab != EditorTab::Json, |this| {
-                                        this.hover(|style| style.bg(cx.theme().tab.opacity(0.8)))
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.switch_tab(EditorTab::Json, cx);
-                                    }))
-                                    .child("JSON"),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .justify_end()
                             .gap_2()
-                            .pr_2()
                             .when(is_json_tab, |this| {
                                 this.child(
                                     Button::new("format-json")

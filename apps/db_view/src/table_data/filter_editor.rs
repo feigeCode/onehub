@@ -12,7 +12,6 @@ use lsp_types::{
 
 #[derive(Clone)]
 pub struct TableSchema {
-    pub table_name: String,
     pub columns: Vec<ColumnSchema>,
 }
 
@@ -34,9 +33,6 @@ impl WhereCompletionProvider {
         Self { schema }
     }
 
-    pub fn set_schema(&mut self, schema: TableSchema){
-        self.schema = schema;
-    }
 }
 
 
@@ -439,10 +435,6 @@ impl OrderByCompletionProvider {
     pub fn new(schema: TableSchema) -> Self {
         Self { schema }
     }
-
-    pub fn set_schema(&mut self, schema: TableSchema) {
-        self.schema = schema;
-    }
 }
 
 
@@ -562,21 +554,11 @@ impl SimpleCodeEditor {
             _sub
         }
     }
-    pub fn input(&self) -> Entity<InputState> {
-        self.editor.clone()
-    }
-
-    pub fn get_text<T>(&self, cx: &Context<T>) -> String {
-        self.editor.read(cx).text().to_string()
-    }
 
     pub fn get_text_from_app(&self, app_cx: &App) -> String {
         self.editor.read(app_cx).text().to_string()
     }
 
-    pub fn set_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor.update(cx, |s, cx| s.set_value(text, window, cx));
-    }
 }
 
 impl EventEmitter<FilterEditorEvent> for  SimpleCodeEditor {
@@ -610,8 +592,7 @@ pub fn create_simple_editor(
 pub struct TableFilterEditor {
     where_editor: Entity<SimpleCodeEditor>,
     order_by_editor: Entity<SimpleCodeEditor>,
-    _where_sub: Subscription,
-    _order_by_sub: Subscription
+    _subs: Vec<Subscription>,
 }
 
 impl TableFilterEditor {
@@ -621,14 +602,14 @@ impl TableFilterEditor {
     ) -> Self {
         let where_editor = cx.new(|cx| create_simple_editor(window, cx));
         let order_by_editor = cx.new(|cx| create_simple_editor(window, cx));
-        let _where_sub = cx.subscribe_in(&where_editor, window, |_, _, evt: &FilterEditorEvent, _,cx| {
+        let where_sub = cx.subscribe_in(&where_editor, window, |_, _, evt: &FilterEditorEvent, _,cx| {
             match evt {
                 FilterEditorEvent::QueryApply => {
                     cx.emit(FilterEditorEvent::QueryApply);
                 },
             }
         });
-        let _order_by_sub = cx.subscribe_in(&order_by_editor, window, |_, _, evt: &FilterEditorEvent, _,cx| {
+        let order_by_sub = cx.subscribe_in(&order_by_editor, window, |_, _, evt: &FilterEditorEvent, _,cx| {
             match evt {
                 FilterEditorEvent::QueryApply => {
                     cx.emit(FilterEditorEvent::QueryApply);
@@ -640,8 +621,7 @@ impl TableFilterEditor {
         Self {
             where_editor,
             order_by_editor,
-            _where_sub,
-            _order_by_sub
+            _subs: vec![where_sub, order_by_sub],
         }
     }
 
@@ -653,17 +633,6 @@ impl TableFilterEditor {
         self.order_by_editor.read(cx).get_text_from_app(cx)
     }
 
-    pub fn set_where_clause(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.where_editor.update(cx, |editor, cx| {
-            editor.set_text(text, window, cx);
-        });
-    }
-
-    pub fn set_order_by_clause(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.order_by_editor.update(cx, |editor, cx| {
-            editor.set_text(text, window, cx);
-        });
-    }
 
     pub fn set_schema(&mut self, schema: TableSchema, cx: &mut Context<Self>) {
         let schema_clone = schema.clone();
