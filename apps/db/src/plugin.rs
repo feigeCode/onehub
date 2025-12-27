@@ -103,6 +103,32 @@ impl SqlCompletionInfo {
     }
 }
 
+pub(crate) struct FolderContext<'a> {
+    metadata: &'a HashMap<String, String>,
+    database: &'a str,
+    schema: Option<&'a str>,
+    table: Option<&'a str>,
+}
+
+impl<'a> FolderContext<'a> {
+    fn from_node(node: &'a DbNode, require_table: bool) -> Result<Self> {
+        let metadata = node.metadata.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{:?} 节点缺少 metadata", node.node_type))?;
+        let database = metadata.get("database")
+            .ok_or_else(|| anyhow::anyhow!("{:?} 节点缺少 database 字段", node.node_type))?
+            .as_str();
+        let schema = metadata.get("schema").map(|s| s.as_str());
+        let table = if require_table {
+            Some(metadata.get("table")
+                .ok_or_else(|| anyhow::anyhow!("{:?} 节点缺少 table 字段", node.node_type))?
+                .as_str())
+        } else {
+            metadata.get("table").map(|s| s.as_str())
+        };
+        Ok(Self { metadata, database, schema, table })
+    }
+}
+
 /// Database plugin trait for supporting multiple database types
 #[async_trait]
 pub trait DatabasePlugin: Send + Sync {
@@ -615,231 +641,257 @@ pub trait DatabasePlugin: Send + Sync {
             }
             DbNodeType::TablesFolder | DbNodeType::ViewsFolder |
             DbNodeType::FunctionsFolder | DbNodeType::ProceduresFolder |
-            DbNodeType::SequencesFolder | DbNodeType::QueriesFolder => {
+            DbNodeType::SequencesFolder => {
                 if node.children_loaded {
-                    Ok(node.children.clone())
-                } else {
-                    Ok(Vec::new())
+                    return Ok(node.children.clone());
                 }
+                self.load_schema_folder_children(connection, node, id).await
+            }
+            DbNodeType::QueriesFolder => {
+                if node.children_loaded {
+                    return Ok(node.children.clone());
+                }
+                self.load_queries_children(node, id, global_storage_state).await
             }
             DbNodeType::Table => {
-                let Some(ref metadata) = node.metadata else {
-                    return Err(anyhow::anyhow!("表节点缺少 metadata"));
-                };
-                let Some(db) = metadata.get("database") else {
-                    return Err(anyhow::anyhow!("表节点缺少 database 字段"));
-                };
-                let schema = metadata.get("schema").map(|s| s.as_str());
-                let table = &node.name;
-                let mut folder_metadata = HashMap::new();
-                folder_metadata.insert("table".to_string(), table.clone());
-                metadata.iter().for_each(|(k, v)| {
-                    folder_metadata.insert(k.clone(), v.clone());
-                });
-                let mut children = Vec::new();
-
-                // Columns folder
-                let columns = self.list_columns(connection, db, schema, table).await?;
-                let column_count = columns.len();
-                let mut columns_folder = DbNode::new(
-                    format!("{}:columns_folder", id),
-                    format!("Columns ({})", column_count),
-                    DbNodeType::ColumnsFolder,
-                    node.connection_id.clone(),
-                    node.database_type
-                ).with_parent_context(id)
-                    .with_metadata(folder_metadata.clone());
-
-                if column_count > 0 {
-                    let column_nodes: Vec<DbNode> = columns
-                        .into_iter()
-                        .map(|col| {
-                            let mut column_metadata = HashMap::new();
-                            folder_metadata.iter().for_each(|(k, v)| {
-                                column_metadata.insert(k.clone(), v.clone());
-                            });
-                            column_metadata.insert("type".to_string(),col.data_type);
-                            column_metadata.insert("is_nullable".to_string(), col.is_nullable.to_string());
-                            column_metadata.insert("is_primary_key".to_string(), col.is_primary_key.to_string());
-                            DbNode::new(
-                                format!("{}:columns_folder:{}", id, col.name),
-                                col.name,
-                                DbNodeType::Column,
-                                node.connection_id.clone(),
-                                node.database_type
-                            )
-                            .with_metadata(column_metadata)
-                            .with_parent_context(format!("{}:columns_folder", id))
-                        })
-                        .collect();
-                    columns_folder.set_children(column_nodes);
-                }
-                children.push(columns_folder);
-
-                // Indexes folder (excluding primary key index)
-                let indexes = self.list_indexes(connection, db, schema, table).await?;
-                let non_primary_indexes: Vec<_> = indexes
-                    .into_iter()
-                    .filter(|idx| idx.name.to_uppercase() != "PRIMARY")
-                    .collect();
-                let index_count = non_primary_indexes.len();
-                let mut indexes_folder = DbNode::new(
-                    format!("{}:indexes_folder", id),
-                    format!("Indexes ({})", index_count),
-                    DbNodeType::IndexesFolder,
-                    node.connection_id.clone(),
-                    node.database_type
-                ).with_parent_context(id)
-                .with_metadata(folder_metadata.clone());
-
-                if index_count > 0 {
-                    let index_nodes: Vec<DbNode> = non_primary_indexes
-                        .into_iter()
-                        .map(|idx| {
-                            let mut metadata = HashMap::new();
-                            folder_metadata.iter().for_each(|(k, v)| {
-                                metadata.insert(k.clone(), v.clone());
-                            });
-                            metadata.insert("unique".to_string(), idx.is_unique.to_string());
-                            metadata.insert("columns".to_string(), idx.columns.join(", "));
-                            DbNode::new(
-                                format!("{}:indexes_folder:{}", id, idx.name),
-                                idx.name,
-                                DbNodeType::Index,
-                                node.connection_id.clone(),
-                                node.database_type
-                            )
-                            .with_metadata(metadata)
-                            .with_parent_context(format!("{}:indexes_folder", id))
-                        })
-                        .collect();
-                    indexes_folder.set_children(index_nodes);
-                }
-                children.push(indexes_folder);
-
-                // Foreign Keys folder
-                let foreign_keys = self.list_foreign_keys(connection, db, schema, table).await.unwrap_or_default();
-                let fk_count = foreign_keys.len();
-                let mut fk_folder = DbNode::new(
-                    format!("{}:foreign_keys_folder", id),
-                    format!("Foreign Keys ({})", fk_count),
-                    DbNodeType::ForeignKeysFolder,
-                    node.connection_id.clone(),
-                    node.database_type
-                ).with_parent_context(id)
-                .with_metadata(folder_metadata.clone());
-
-                if fk_count > 0 {
-                    let fk_nodes: Vec<DbNode> = foreign_keys
-                        .into_iter()
-                        .map(|fk| {
-                            let mut metadata = HashMap::new();
-                            folder_metadata.iter().for_each(|(k, v)| {
-                                metadata.insert(k.clone(), v.clone());
-                            });
-                            metadata.insert("columns".to_string(), fk.columns.join(", "));
-                            metadata.insert("ref_table".to_string(), fk.ref_table.clone());
-                            metadata.insert("ref_columns".to_string(), fk.ref_columns.join(", "));
-                            DbNode::new(
-                                format!("{}:foreign_keys_folder:{}", id, fk.name),
-                                fk.name,
-                                DbNodeType::ForeignKey,
-                                node.connection_id.clone(),
-                                node.database_type
-                            )
-                            .with_metadata(metadata)
-                            .with_parent_context(format!("{}:foreign_keys_folder", id))
-                        })
-                        .collect();
-                    fk_folder.set_children(fk_nodes);
-                }
-                children.push(fk_folder);
-
-                // Triggers folder
-                let triggers = self.list_table_triggers(connection, db, schema, table).await.unwrap_or_default();
-                let trigger_count = triggers.len();
-                let mut triggers_folder = DbNode::new(
-                    format!("{}:triggers_folder", id),
-                    format!("Triggers ({})", trigger_count),
-                    DbNodeType::TriggersFolder,
-                    node.connection_id.clone(),
-                    node.database_type
-                ).with_parent_context(id)
-                .with_metadata(folder_metadata.clone());
-
-                if trigger_count > 0 {
-                    let trigger_nodes: Vec<DbNode> = triggers
-                        .into_iter()
-                        .map(|trigger| {
-                            let mut metadata = HashMap::new();
-                            folder_metadata.iter().for_each(|(k, v)| {
-                                metadata.insert(k.clone(), v.clone());
-                            });
-                            metadata.insert("event".to_string(), trigger.event.clone());
-                            metadata.insert("timing".to_string(), trigger.timing.clone());
-                            DbNode::new(
-                                format!("{}:triggers_folder:{}", id, trigger.name),
-                                trigger.name,
-                                DbNodeType::Trigger,
-                                node.connection_id.clone(),
-                                node.database_type
-                            )
-                            .with_metadata(metadata)
-                            .with_parent_context(format!("{}:triggers_folder", id))
-                        })
-                        .collect();
-                    triggers_folder.set_children(trigger_nodes);
-                }
-                children.push(triggers_folder);
-
-                // Checks folder
-                let checks = self.list_table_checks(connection, db, schema, table).await.unwrap_or_default();
-                let check_count = checks.len();
-                let mut checks_folder = DbNode::new(
-                    format!("{}:checks_folder", id),
-                    format!("Checks ({})", check_count),
-                    DbNodeType::ChecksFolder,
-                    node.connection_id.clone(),
-                    node.database_type
-                ).with_parent_context(id)
-                .with_metadata(folder_metadata.clone());
-
-                if check_count > 0 {
-                    let check_nodes: Vec<DbNode> = checks
-                        .into_iter()
-                        .map(|check| {
-                            let mut metadata = HashMap::new();
-                            folder_metadata.iter().for_each(|(k, v)| {
-                                metadata.insert(k.clone(), v.clone());
-                            });
-                            if let Some(def) = &check.definition {
-                                metadata.insert("definition".to_string(), def.clone());
-                            }
-                            DbNode::new(
-                                format!("{}:checks_folder:{}", id, check.name),
-                                check.name,
-                                DbNodeType::Check,
-                                node.connection_id.clone(),
-                                node.database_type
-                            )
-                            .with_metadata(metadata)
-                            .with_parent_context(format!("{}:checks_folder", id))
-                        })
-                        .collect();
-                    checks_folder.set_children(check_nodes);
-                }
-                children.push(checks_folder);
-
-                Ok(children)
+                self.load_table_children(connection, node, id).await
             }
             DbNodeType::ColumnsFolder | DbNodeType::IndexesFolder |
             DbNodeType::ForeignKeysFolder | DbNodeType::TriggersFolder |
             DbNodeType::ChecksFolder => {
                 if node.children_loaded {
-                    Ok(node.children.clone())
-                } else {
-                    Ok(Vec::new())
+                    return Ok(node.children.clone());
                 }
+                self.load_table_folder_children(connection, node, id).await
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    async fn load_schema_folder_children(&self, connection: &dyn DbConnection, node: &DbNode, id: &str) -> Result<Vec<DbNode>> {
+        let ctx = FolderContext::from_node(node, false)?;
+        match node.node_type {
+            DbNodeType::TablesFolder => {
+                let tables = self.list_tables(connection, ctx.database).await?;
+                let filtered: Vec<_> = match ctx.schema {
+                    Some(s) => tables.into_iter().filter(|t| t.schema.as_deref() == Some(s)).collect(),
+                    None => tables,
+                };
+                Ok(filtered.into_iter().map(|t| {
+                    let mut meta = ctx.metadata.clone();
+                    if let Some(comment) = &t.comment {
+                        if !comment.is_empty() {
+                            meta.insert("comment".to_string(), comment.clone());
+                        }
+                    }
+                    DbNode::new(format!("{}:{}", id, t.name), t.name.clone(), DbNodeType::Table, node.connection_id.clone(), node.database_type)
+                        .with_parent_context(id).with_metadata(meta)
+                }).collect())
+            }
+            DbNodeType::ViewsFolder => {
+                let views = self.list_views(connection, ctx.database).await?;
+                let filtered: Vec<_> = match ctx.schema {
+                    Some(s) => views.into_iter().filter(|v| v.schema.as_deref() == Some(s)).collect(),
+                    None => views,
+                };
+                Ok(filtered.into_iter().map(|v| {
+                    let mut meta = ctx.metadata.clone();
+                    if let Some(comment) = v.comment {
+                        meta.insert("comment".to_string(), comment);
+                    }
+                    DbNode::new(format!("{}:{}", id, v.name), v.name.clone(), DbNodeType::View, node.connection_id.clone(), node.database_type)
+                        .with_parent_context(id).with_metadata(meta)
+                }).collect())
+            }
+            DbNodeType::FunctionsFolder => {
+                let functions = self.list_functions(connection, ctx.database).await.unwrap_or_default();
+                Ok(functions.into_iter().map(|f| {
+                    DbNode::new(format!("{}:{}", id, f.name), f.name.clone(), DbNodeType::Function, node.connection_id.clone(), node.database_type)
+                        .with_parent_context(id).with_metadata(ctx.metadata.clone())
+                }).collect())
+            }
+            DbNodeType::ProceduresFolder => {
+                let procedures = self.list_procedures(connection, ctx.database).await.unwrap_or_default();
+                Ok(procedures.into_iter().map(|p| {
+                    DbNode::new(format!("{}:{}", id, p.name), p.name.clone(), DbNodeType::Procedure, node.connection_id.clone(), node.database_type)
+                        .with_parent_context(id).with_metadata(ctx.metadata.clone())
+                }).collect())
+            }
+            DbNodeType::SequencesFolder => {
+                let sequences = self.list_sequences(connection, ctx.database).await.unwrap_or_default();
+                let filtered: Vec<_> = match ctx.schema {
+                    Some(s) => sequences.into_iter().filter(|seq| seq.name.starts_with(&format!("{}.", s))).collect(),
+                    None => sequences,
+                };
+                Ok(filtered.into_iter().map(|seq| {
+                    let mut meta = ctx.metadata.clone();
+                    if let Some(v) = seq.start_value { meta.insert("start_value".to_string(), v.to_string()); }
+                    if let Some(v) = seq.increment { meta.insert("increment".to_string(), v.to_string()); }
+                    if let Some(v) = seq.min_value { meta.insert("min_value".to_string(), v.to_string()); }
+                    if let Some(v) = seq.max_value { meta.insert("max_value".to_string(), v.to_string()); }
+                    DbNode::new(format!("{}:{}", id, seq.name), seq.name.clone(), DbNodeType::Sequence, node.connection_id.clone(), node.database_type)
+                        .with_parent_context(id).with_metadata(meta)
+                }).collect())
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    async fn load_queries_children(&self, node: &DbNode, id: &str, global_storage_state: &GlobalStorageState) -> Result<Vec<DbNode>> {
+        let metadata = node.metadata.as_ref().cloned().unwrap_or_default();
+        let Some(conn_repo) = global_storage_state.storage.get::<QueryRepository>().await else {
+            return Ok(Vec::new());
+        };
+        let query_repo = (*conn_repo).clone();
+        let queries = query_repo.list_by_connection(&node.connection_id).await.unwrap_or_default();
+        Ok(queries.into_iter().filter_map(|q| {
+            let query_id = q.id?;
+            let mut meta = metadata.clone();
+            meta.insert("query_id".to_string(), query_id.to_string());
+            meta.insert("sql".to_string(), q.content.clone());
+            Some(DbNode::new(format!("{}:{}", id, query_id), q.name.clone(), DbNodeType::NamedQuery, node.connection_id.clone(), node.database_type)
+                .with_parent_context(id).with_metadata(meta))
+        }).collect())
+    }
+
+    async fn load_table_children(&self, connection: &dyn DbConnection, node: &DbNode, id: &str) -> Result<Vec<DbNode>> {
+        let metadata = node.metadata.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("表节点缺少 metadata"))?;
+        let db = metadata.get("database")
+            .ok_or_else(|| anyhow::anyhow!("表节点缺少 database 字段"))?;
+        let schema = metadata.get("schema").map(|s| s.as_str());
+        let table = &node.name;
+
+        let mut folder_metadata: HashMap<String, String> = metadata.clone();
+        folder_metadata.insert("table".to_string(), table.clone());
+
+        let mut children = Vec::new();
+
+        let columns = self.list_columns(connection, db, schema, table).await?;
+        children.push(self.build_table_subfolder(node, id, "columns_folder", "Columns", DbNodeType::ColumnsFolder, &folder_metadata,
+            columns.into_iter().map(|c| (c.name.clone(), DbNodeType::Column, {
+                let mut m = folder_metadata.clone();
+                m.insert("type".to_string(), c.data_type);
+                m.insert("is_nullable".to_string(), c.is_nullable.to_string());
+                m.insert("is_primary_key".to_string(), c.is_primary_key.to_string());
+                m
+            })).collect()));
+
+        let indexes: Vec<_> = self.list_indexes(connection, db, schema, table).await?
+            .into_iter().filter(|idx| idx.name.to_uppercase() != "PRIMARY").collect();
+        children.push(self.build_table_subfolder(node, id, "indexes_folder", "Indexes", DbNodeType::IndexesFolder, &folder_metadata,
+            indexes.into_iter().map(|idx| (idx.name.clone(), DbNodeType::Index, {
+                let mut m = folder_metadata.clone();
+                m.insert("unique".to_string(), idx.is_unique.to_string());
+                m.insert("columns".to_string(), idx.columns.join(", "));
+                m
+            })).collect()));
+
+        let foreign_keys = self.list_foreign_keys(connection, db, schema, table).await.unwrap_or_default();
+        children.push(self.build_table_subfolder(node, id, "foreign_keys_folder", "Foreign Keys", DbNodeType::ForeignKeysFolder, &folder_metadata,
+            foreign_keys.into_iter().map(|fk| (fk.name.clone(), DbNodeType::ForeignKey, {
+                let mut m = folder_metadata.clone();
+                m.insert("columns".to_string(), fk.columns.join(", "));
+                m.insert("ref_table".to_string(), fk.ref_table.clone());
+                m.insert("ref_columns".to_string(), fk.ref_columns.join(", "));
+                m
+            })).collect()));
+
+        let triggers = self.list_table_triggers(connection, db, schema, table).await.unwrap_or_default();
+        children.push(self.build_table_subfolder(node, id, "triggers_folder", "Triggers", DbNodeType::TriggersFolder, &folder_metadata,
+            triggers.into_iter().map(|t| (t.name.clone(), DbNodeType::Trigger, {
+                let mut m = folder_metadata.clone();
+                m.insert("event".to_string(), t.event.clone());
+                m.insert("timing".to_string(), t.timing.clone());
+                m
+            })).collect()));
+
+        let checks = self.list_table_checks(connection, db, schema, table).await.unwrap_or_default();
+        children.push(self.build_table_subfolder(node, id, "checks_folder", "Checks", DbNodeType::ChecksFolder, &folder_metadata,
+            checks.into_iter().map(|c| (c.name.clone(), DbNodeType::Check, {
+                let mut m = folder_metadata.clone();
+                if let Some(def) = &c.definition {
+                    m.insert("definition".to_string(), def.clone());
+                }
+                m
+            })).collect()));
+
+        Ok(children)
+    }
+
+    fn build_table_subfolder(&self, node: &DbNode, parent_id: &str, folder_suffix: &str, display_prefix: &str, folder_type: DbNodeType, folder_metadata: &HashMap<String, String>, items: Vec<(String, DbNodeType, HashMap<String, String>)>) -> DbNode {
+        let folder_id = format!("{}:{}", parent_id, folder_suffix);
+        let count = items.len();
+        let mut folder = DbNode::new(folder_id.clone(), format!("{} ({})", display_prefix, count), folder_type, node.connection_id.clone(), node.database_type)
+            .with_parent_context(parent_id)
+            .with_metadata(folder_metadata.clone());
+        if count > 0 {
+            let child_nodes: Vec<DbNode> = items.into_iter().map(|(name, node_type, meta)| {
+                DbNode::new(format!("{}:{}", folder_id, name), name, node_type, node.connection_id.clone(), node.database_type)
+                    .with_metadata(meta).with_parent_context(&folder_id)
+            }).collect();
+            folder.set_children(child_nodes);
+        }
+        folder
+    }
+
+    async fn load_table_folder_children(&self, connection: &dyn DbConnection, node: &DbNode, id: &str) -> Result<Vec<DbNode>> {
+        let ctx = FolderContext::from_node(node, true)?;
+        let table = ctx.table.ok_or_else(|| anyhow::anyhow!("{:?} 节点缺少 table 字段", node.node_type))?;
+        match node.node_type {
+            DbNodeType::ColumnsFolder => {
+                let columns = self.list_columns(connection, ctx.database, ctx.schema, table).await?;
+                Ok(columns.into_iter().map(|c| {
+                    let mut meta = ctx.metadata.clone();
+                    meta.insert("type".to_string(), c.data_type);
+                    meta.insert("is_nullable".to_string(), c.is_nullable.to_string());
+                    meta.insert("is_primary_key".to_string(), c.is_primary_key.to_string());
+                    DbNode::new(format!("{}:{}", id, c.name), c.name, DbNodeType::Column, node.connection_id.clone(), node.database_type)
+                        .with_metadata(meta).with_parent_context(id)
+                }).collect())
+            }
+            DbNodeType::IndexesFolder => {
+                let indexes: Vec<_> = self.list_indexes(connection, ctx.database, ctx.schema, table).await?
+                    .into_iter().filter(|idx| idx.name.to_uppercase() != "PRIMARY").collect();
+                Ok(indexes.into_iter().map(|idx| {
+                    let mut meta = ctx.metadata.clone();
+                    meta.insert("unique".to_string(), idx.is_unique.to_string());
+                    meta.insert("columns".to_string(), idx.columns.join(", "));
+                    DbNode::new(format!("{}:{}", id, idx.name), idx.name, DbNodeType::Index, node.connection_id.clone(), node.database_type)
+                        .with_metadata(meta).with_parent_context(id)
+                }).collect())
+            }
+            DbNodeType::ForeignKeysFolder => {
+                let foreign_keys = self.list_foreign_keys(connection, ctx.database, ctx.schema, table).await.unwrap_or_default();
+                Ok(foreign_keys.into_iter().map(|fk| {
+                    let mut meta = ctx.metadata.clone();
+                    meta.insert("columns".to_string(), fk.columns.join(", "));
+                    meta.insert("ref_table".to_string(), fk.ref_table.clone());
+                    meta.insert("ref_columns".to_string(), fk.ref_columns.join(", "));
+                    DbNode::new(format!("{}:{}", id, fk.name), fk.name, DbNodeType::ForeignKey, node.connection_id.clone(), node.database_type)
+                        .with_metadata(meta).with_parent_context(id)
+                }).collect())
+            }
+            DbNodeType::TriggersFolder => {
+                let triggers = self.list_table_triggers(connection, ctx.database, ctx.schema, table).await.unwrap_or_default();
+                Ok(triggers.into_iter().map(|t| {
+                    let mut meta = ctx.metadata.clone();
+                    meta.insert("event".to_string(), t.event.clone());
+                    meta.insert("timing".to_string(), t.timing.clone());
+                    DbNode::new(format!("{}:{}", id, t.name), t.name, DbNodeType::Trigger, node.connection_id.clone(), node.database_type)
+                        .with_metadata(meta).with_parent_context(id)
+                }).collect())
+            }
+            DbNodeType::ChecksFolder => {
+                let checks = self.list_table_checks(connection, ctx.database, ctx.schema, table).await.unwrap_or_default();
+                Ok(checks.into_iter().map(|c| {
+                    let mut meta = ctx.metadata.clone();
+                    if let Some(def) = &c.definition {
+                        meta.insert("definition".to_string(), def.clone());
+                    }
+                    DbNode::new(format!("{}:{}", id, c.name), c.name, DbNodeType::Check, node.connection_id.clone(), node.database_type)
+                        .with_metadata(meta).with_parent_context(id)
+                }).collect())
             }
             _ => Ok(Vec::new()),
         }
